@@ -65,6 +65,8 @@ class Provider:
     shell_argv and remove_paths are built on those.
     """
 
+    NOT_IMPLEMENTED = None  # set by stubs: the fix shown when a Lab selects this Provider
+
     def __init__(self, project, lab):
         self.project = project
         self.lab = lab

@@ -149,6 +149,8 @@ def load(start):
         for k in sorted(set(table) - set(allowed)):
             raise ConfigError(path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(allowed))
         provider = _required_choice(path, table, key, "provider", sorted(PROVIDERS))
+        if PROVIDERS[provider].NOT_IMPLEMENTED:
+            raise ConfigError(path, key + ".provider", "Provider %r is not implemented yet" % provider, PROVIDERS[provider].NOT_IMPLEMENTED)
         os_name = _required_choice(path, table, key, "os", OSES)
         arch = table.get("arch", host_arch())
         if arch not in ARCHES:

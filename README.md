@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: walking skeleton. Only the Fake Provider exists.
+Status: CLI core. Only the Fake Provider exists; UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -11,6 +11,8 @@ Python 3.9+ and the standard library only.
 ```sh
 python3 tools/build.py                   # -> dist/vmlab.pyz
 python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a subprocess
+# Seam 2, the Provider/Channel contract against a real Lab (docs/adding-a-provider.md):
+VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest discover -s tests -p 'test_contract.py' -v
 ```
 
 ## Project layout
@@ -30,7 +32,7 @@ python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a 
 
 ```toml
 [labs.mac]
-provider = "fake"        # fake (tart, fusion: planned)
+provider = "fake"        # fake (tart, fusion: planned; utm, parallels: stubs)
 os = "macos"             # macos | windows | linux
 arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 memory_gb = 4            # Host RAM the Guest takes; used by --parallel
