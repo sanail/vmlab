@@ -34,6 +34,18 @@ class ScenarioTimeout(GuestTimeout):
     """The Scenario as a whole ran out of time."""
 
 
+class ChannelUse:
+    """Which Channels served a series of Guest calls, and the fallbacks on the way."""
+
+    def __init__(self):
+        self.channels = {}  # Channel name -> calls it served
+        self.fallbacks = []
+
+    def record(self, result):
+        self.channels[result.channel] = self.channels.get(result.channel, 0) + 1
+        self.fallbacks.extend(dict(f, argv=result.argv) for f in result.fallbacks)
+
+
 class Guest:
     def __init__(self, lab, provider, run_dir, launch_app):
         self.lab = lab.name
@@ -47,8 +59,7 @@ class Guest:
         self._deadline = None
         self.checks = []
         self.screenshots = []
-        self.channels = {}  # Channel name -> calls it served
-        self.fallbacks = []
+        self.channel_use = ChannelUse()  # this Run's calls, including its app reset and launch
 
     def _start_clock(self, limit):
         self._limit = limit
@@ -76,8 +87,6 @@ class Guest:
             if remaining < step:
                 raise ScenarioTimeout("Scenario exceeded its %ss timeout (during %s)" % (self._limit, argv))
             raise
-        self.channels[result.channel] = self.channels.get(result.channel, 0) + 1
-        self.fallbacks.extend(dict(f, argv=result.argv) for f in result.fallbacks)
         return result
 
     def launch(self, env=None):
@@ -128,6 +137,7 @@ def run_scenario(path, guest, prepare):
         prepare(fresh, launch)
         guest._start_clock(limit)
         module.scenario(guest)
+        guest._remaining("the end of the Scenario")
         if not guest.checks:
             raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
     except ConfigError:
@@ -153,8 +163,8 @@ def run_scenario(path, guest, prepare):
         "error": error,
         "checks": guest.checks,
         "screenshots": guest.screenshots,
-        "channels": guest.channels,
-        "fallbacks": guest.fallbacks,
+        "channels": guest.channel_use.channels,
+        "fallbacks": guest.channel_use.fallbacks,
     }
 
 

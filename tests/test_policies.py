@@ -192,3 +192,18 @@ class VisualCheckTest(VmlabTestCase):
         self.assertIn("icon looks crisp (visual, unverified)", summary)
         self.assertNotIn("window listed (visual", summary)
         self.assertIn("1 visual", r.out)
+
+
+class ScenarioOverrunTest(VmlabTestCase):
+    def test_a_scenario_that_overruns_outside_guest_calls_still_fails(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("busy.py", """
+            import time
+            TIMEOUT = 1
+
+            def scenario(g):
+                time.sleep(2)
+                g.check("reached", True)
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertIn("exceeded its 1s timeout", self.project.report()["scenarios"][0]["error"])

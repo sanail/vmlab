@@ -21,13 +21,13 @@ RUNS_IGNORE = "runs/"
 SKILL_DIRS = (".claude/skills/vmlab", ".cursor/skills/vmlab", ".agents/skills/vmlab", ".codex/skills/vmlab")
 
 TEMPLATE = """\
-# vmlab project config. Vocabulary: a Lab describes one Guest (a VM) that
-# Scenarios in scenarios/*.py run on. vmlab never rewrites this file.
+# vmlab project config. A Lab describes one Guest (a virtual machine running one
+# OS) that the Scenarios in scenarios/*.py run on. vmlab never rewrites this file.
 #
 # Declare one table per Lab. Uncomment and adapt, e.g.:
 #
 # [labs.mac]
-# provider = "fake"        # fake (tart, fusion: planned)
+# provider = "fake"        # fake (tart, fusion: planned; utm, parallels: stubs)
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 # memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs that don't fit

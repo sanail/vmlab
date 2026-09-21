@@ -10,20 +10,20 @@ import signal
 import subprocess
 
 
-def run(argv, timeout, cwd=None, env=None, stdin_data=None):
+def run(argv, timeout, cwd=None, env=None):
     """Return (code, stdout, stderr); raise subprocess.TimeoutExpired after killing the process group."""
     proc = subprocess.Popen(
         list(argv),
         cwd=cwd,
         env=env,
-        stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         start_new_session=True,
     )
     try:
-        out, err = proc.communicate(stdin_data, timeout=timeout)
+        out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)

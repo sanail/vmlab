@@ -3,7 +3,7 @@ with a pointer to the contributor guide."""
 
 from vmlab.providers.base import Provider
 
-GUIDE = "docs/adding-a-provider.md in the vmlab skill"
+GUIDE = "docs/adding-a-provider.md in the vmlab source repository"
 
 
 def stub(name, hypervisor):

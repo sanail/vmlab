@@ -70,6 +70,7 @@ class Provider:
     def __init__(self, project, lab):
         self.project = project
         self.lab = lab
+        self.on_exec = None  # called with every ExecResult, so reports can note Channels and fallbacks
 
     @classmethod
     def validate_options(cls, config_path, key, options):
@@ -184,6 +185,8 @@ class Provider:
             result.fallbacks = [
                 {"from": name, "to": channel.name, "reason": exc.message} for name, exc in failures
             ]
+            if self.on_exec:
+                self.on_exec(result)
             return result
         raise ChannelError(
             "no Channel reached Guest %s for %s: %s"

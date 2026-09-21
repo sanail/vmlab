@@ -29,6 +29,8 @@ These are built on the methods above; override them only when the Guest needs so
 - `remove_paths(paths, timeout)`: app state reset.
 - `probe_argv()`: the command `doctor` sends down each Channel.
 
+Every call into the hypervisor must be bounded: `start`, `stop`, `restore`, `copy_in`, `screenshot` and `ui_tree` take no timeout argument, so use the Lab's `step_timeout` (or `boot_timeout` for start and restore) and raise `GuestTimeout` when it runs out. A hung hypervisor must never hang a suite.
+
 `guest_id` names the Guest uniquely per project and Lab. Use it for the hypervisor's VM name, so projects never share a Guest by accident.
 
 Keep anything machine-specific or secret out of the project: keys, known_hosts, passwords and registries go under `vmlab.home.vmlab_home()` (mode 0700) or the Keychain.

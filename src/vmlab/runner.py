@@ -22,7 +22,7 @@ from vmlab.home import StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
-from vmlab.scenario import Guest, run_scenario
+from vmlab.scenario import ChannelUse, Guest, run_scenario
 
 
 def discover(project, names):
@@ -133,17 +133,20 @@ def _run_parallel(runs, work, out):
 def deploy(project, lab_names, out, stop_command="vmlab down"):
     """Build if stale, start, install, reset and launch the app on each Lab; leave the Guests running."""
     started_guests = StartedGuests()
-    labs = project.select_labs(lab_names)
-    for lab in labs:
+    kept = []
+    for lab in project.select_labs(lab_names):
         provider = provider_for(project, lab)
         built = build_if_stale(project, lab)
         if not provider.is_running():
             started_guests.add(guest_key(provider))
+        if guest_key(provider) in started_guests:
+            kept.append(lab.name)
         provider.up()
         guest_artifact = install(provider, lab, built["artifact"]) if built else None
         prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
         out("%s: deployed %s%s" % (lab.name, guest_artifact or "(no artifact)", " (rebuilt)" if built and built["built"] else ""))
-    out("Kept running: %s. Stop with: %s %s" % (", ".join(l.name for l in labs), stop_command, " ".join(l.name for l in labs)))
+    if kept:
+        out("Kept running: %s. Stop with: %s %s" % (", ".join(kept), stop_command, " ".join(kept)))
 
 
 def guest_key(provider):
@@ -176,12 +179,13 @@ class _LabRun:
         key = guest_key(provider)
         ours = key in started_guests or not provider.is_running()
         results = []
+        lab_calls = ChannelUse()  # calls outside any Run: suite restore and install
         if not self.error:
             try:
                 if not provider.is_running():
                     started_guests.add(key)
                 provider.up()
-                results = self._scenarios(provider, scenarios, ad_hoc, fresh)
+                results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls)
             except GuestError as exc:
                 self.error = str(exc)
             finally:
@@ -201,6 +205,8 @@ class _LabRun:
             "error": self.error,
             "run_dir": str(self.run_dir),
             "deploy": self.built,
+            "channels": lab_calls.channels,
+            "fallbacks": lab_calls.fallbacks,
             "scenarios": results,
         }
         data["totals"] = report.totals(data)
@@ -208,8 +214,9 @@ class _LabRun:
         _print_summary(data, out)
         return data, ours and keep and provider.is_running()
 
-    def _scenarios(self, provider, scenarios, ad_hoc, fresh):
+    def _scenarios(self, provider, scenarios, ad_hoc, fresh, lab_calls):
         lab = self.lab
+        provider.on_exec = lab_calls.record
         artifact = self.built["artifact"] if self.built else None
         state = {"clean": False, "guest_artifact": None}
 
@@ -232,7 +239,12 @@ class _LabRun:
         def launch_app(env):
             launch(provider, lab, state["guest_artifact"], env)
 
-        return [run_scenario(path, Guest(lab, provider, self.run_dir, launch_app), prepare) for path in scenarios]
+        results = []
+        for path in scenarios:
+            guest = Guest(lab, provider, self.run_dir, launch_app)
+            provider.on_exec = guest.channel_use.record
+            results.append(run_scenario(path, guest, prepare))
+        return results
 
 
 def _new_run_dir(project, lab, started):

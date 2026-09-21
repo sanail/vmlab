@@ -5,6 +5,11 @@ import os
 import threading
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:  # Windows Hosts (not supported in v1): threads are still serialised
+    fcntl = None
+
 _lock = threading.Lock()
 
 
@@ -22,7 +27,10 @@ class StartedGuests:
         self.path = vmlab_home() / "started.json"
 
     def _update(self, change):
-        with _lock:
+        # The thread lock covers --parallel; flock covers concurrent vmlab processes.
+        with _lock, (vmlab_home() / "started.lock").open("a") as lock_file:
+            if fcntl:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
             try:
                 keys = set(json.loads(self.path.read_text(encoding="utf-8")))
             except (OSError, ValueError):

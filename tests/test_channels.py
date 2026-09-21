@@ -170,3 +170,27 @@ class BootTest(VmlabTestCase):
         r = self.project.vmlab("up")
         self.assertExit(r, 1)
         self.assertIn("not reachable within 1s", r.err)
+
+
+class RecipeFallbackTest(VmlabTestCase):
+    def test_fallbacks_during_deploy_and_reset_are_reported_too(self):
+        (self.project.root / "app" / "MyApp.zip").write_text("x")
+        self.project.config(FAKE_LAB + """
+            [labs.mac.fake]
+            channels = ["ssh", "exec"]
+            broken_channels = ["ssh"]
+            [labs.mac.app]
+            artifact = "MyApp.zip"
+            install = "true"
+            launch = "true"
+        """)
+        self.project.scenario("ok.py", 'def scenario(g):\n    g.check("ok", True)\n')
+
+        self.assertExit(self.project.vmlab("run"), 0)
+
+        report = self.project.report()
+        self.assertEqual(report["channels"], {"exec": 1})  # install, before any Scenario
+        self.assertEqual([f["from"] for f in report["fallbacks"]], ["ssh"])
+        [scenario] = report["scenarios"]
+        self.assertEqual(scenario["channels"], {"exec": 1})  # launch, before this Run
+        self.assertEqual(len(scenario["fallbacks"]), 1)
