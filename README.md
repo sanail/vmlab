@@ -15,12 +15,18 @@ python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a 
 
 ## Project layout
 
+`vmlab init` creates it (idempotent; an existing config is never touched):
+
 ```
 .vmlab/
-  vmlab.toml        # Labs
+  vmlab.toml        # Labs; a commented template to start from
+  vmlab.pyz         # the pinned CLI (ADR 0002): run it as `python3 .vmlab/vmlab.pyz ...`
   scenarios/*.py    # Scenarios
+  .gitignore        # ignores runs/
   runs/             # per invocation and Lab: <UTC timestamp>-<lab>/ with report.json, junit.xml, summary.md, screenshots/
 ```
+
+`vmlab self-update [--from PYZ]` replaces the vendored copy and prints `old -> new`. Run from a skill copy, it vendors itself; run from the vendored copy, it picks the newest `<skill>/scripts/vmlab.pyz` among `.claude`, `.cursor`, `.agents` and `.codex` skill folders in the project and in `~`. It refuses to downgrade.
 
 ```toml
 [labs.mac]
@@ -44,6 +50,7 @@ def scenario(g):
 ## CLI
 
 ```
+vmlab init | vmlab self-update [--from PYZ]
 vmlab run [SCENARIO...] [--lab LAB]...   # starts Guests as needed and stops those it started; exit 0 all passed, 1 a Check failed or a Scenario errored, 2 usage/config error
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]

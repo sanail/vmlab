@@ -84,7 +84,7 @@ def find_config(start):
         start / CONFIG_DIR / CONFIG_NAME,
         None,
         "no vmlab config found here or in any parent directory",
-        "run vmlab from inside the project, or create %s/%s declaring at least one [labs.<name>]"
+        "run vmlab from inside the project, or run `vmlab init` in the project root to create %s/%s"
         % (CONFIG_DIR, CONFIG_NAME),
     )
 

@@ -8,7 +8,7 @@ import json
 import os
 import sys
 
-from vmlab import __version__, config, runner
+from vmlab import __version__, config, runner, vendoring
 from vmlab.config import ConfigError
 from vmlab.providers import provider_for
 
@@ -21,6 +21,11 @@ def main(argv=None):
     sub.required = True
 
     sub.add_parser("version", help="print the vmlab version")
+
+    sub.add_parser("init", help="create .vmlab/ here: config template, scenarios, vendored vmlab.pyz")
+
+    p = sub.add_parser("self-update", help="replace the project's vendored vmlab.pyz with a newer one")
+    p.add_argument("--from", dest="source", metavar="PYZ", help="vmlab.pyz to vendor (default: the skill's copy)")
 
     p = sub.add_parser("run", help="run Scenarios on Labs and write reports")
     p.add_argument("scenarios", nargs="*", metavar="SCENARIO", help="Scenario names (default: all)")
@@ -39,6 +44,12 @@ def main(argv=None):
         return EXIT_OK
 
     try:
+        if args.command == "init":
+            vendoring.init(os.getcwd(), out=print)
+            return EXIT_OK
+        if args.command == "self-update":
+            vendoring.self_update(os.getcwd(), args.source, out=print)
+            return EXIT_OK
         project = config.load(os.getcwd())
         if args.command == "run":
             return _run(project, args)
@@ -47,7 +58,7 @@ def main(argv=None):
         if args.command == "status":
             return _status(project, args.json)
     except ConfigError as exc:
-        print("vmlab: config error: %s" % exc, file=sys.stderr)
+        print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
     return EXIT_OK
 

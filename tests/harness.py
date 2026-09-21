@@ -47,6 +47,8 @@ class Project:
     def __init__(self, root):
         self.root = Path(root)
         self.home = self.root / "_vmlab_home"
+        self.fake_user_home = self.root / "_user_home"  # HOME, so tests never see the real ~/.claude
+        self.fake_user_home.mkdir()
         self.dir = self.root / "app" / ".vmlab"
         self.dir.mkdir(parents=True)
 
@@ -64,10 +66,10 @@ class Project:
         path.write_text(textwrap.dedent(body))
         return path
 
-    def vmlab(self, *args, cwd=None, timeout=60):
-        env = dict(os.environ, VMLAB_HOME=str(self.home))
+    def vmlab(self, *args, cwd=None, timeout=60, pyz=None, env=None):
+        env = dict(os.environ, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **(env or {}))
         proc = subprocess.run(
-            [sys.executable, str(zipapp_path())] + [str(a) for a in args],
+            [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),
             env=env,
             capture_output=True,
@@ -75,6 +77,10 @@ class Project:
             timeout=timeout,
         )
         return Result(proc)
+
+    def vmlab_vendored(self, *args, **kwargs):
+        """Run the project's own copy, .vmlab/vmlab.pyz, as CI would."""
+        return self.vmlab(*args, pyz=self.dir / "vmlab.pyz", **kwargs)
 
     def run_dirs(self):
         runs = self.dir / "runs"
