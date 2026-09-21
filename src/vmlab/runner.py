@@ -10,6 +10,7 @@ Guests running. A Scenario declaring FRESH, or --fresh, restores before a
 Scenario. The Lab's app state paths are removed before every Run.
 """
 
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from vmlab import __version__, report
 from vmlab.config import ConfigError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run
 from vmlab.home import StartedGuests
+from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 from vmlab.scenario import Guest, run_scenario
@@ -55,7 +57,7 @@ def discover(project, names):
     return chosen, ad_hoc
 
 
-def run(project, lab_names, scenario_names, out, keep=False, fresh=False, stop_command="vmlab down"):
+def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parallel=False, stop_command="vmlab down"):
     """Run the chosen Scenarios on the chosen Labs. Returns the list of reports."""
     labs = project.select_labs(lab_names)
     scenarios, ad_hoc = discover(project, scenario_names)
@@ -63,15 +65,69 @@ def run(project, lab_names, scenario_names, out, keep=False, fresh=False, stop_c
     runs = [_LabRun(project, lab) for lab in labs]
     for lab_run in runs:
         lab_run.build()
+
+    lock = threading.Lock()
+
+    def locked_out(line):
+        with lock:
+            out(line)
+
+    def work(lab_run):
+        return lab_run.run(scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh)
+
+    outcomes = _run_parallel(runs, work, locked_out) if parallel else [work(r) for r in runs]
     reports, kept = [], []
-    for lab_run in runs:
-        data, still_ours = lab_run.run(scenarios, out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh)
+    for lab_run, (data, still_ours) in zip(runs, outcomes):
         reports.append(data)
         if still_ours:
             kept.append(lab_run.lab.name)
     if kept:
         out("Kept running: %s. Stop with: %s %s" % (", ".join(kept), stop_command, " ".join(kept)))
     return reports
+
+
+def _run_parallel(runs, work, out):
+    """Run work(lab_run) concurrently, starting a Lab only while its memory_gb fits in free
+    Host memory. A Guest that is already running needs none. Returns outcomes in order."""
+    free = free_memory_gb()
+    if free is None:
+        out("warning: cannot measure free Host memory; starting all Labs at once")
+        free = float("inf")
+    pending = list(runs)
+    running = {}  # lab_run -> GB reserved
+    outcomes, errors, announced = {}, [], set()
+    done = threading.Condition()
+
+    def target(lab_run):
+        try:
+            outcomes[lab_run] = work(lab_run)
+        except BaseException as exc:  # re-raised below, after every Lab has finished
+            errors.append(exc)
+        finally:
+            with done:
+                del running[lab_run]
+                done.notify_all()
+
+    with done:
+        while pending or running:
+            for lab_run in list(pending):
+                lab = lab_run.lab
+                need = 0 if provider_for(lab_run.project, lab).is_running() else lab.memory_gb
+                available = free - sum(running.values())
+                if need > available and running:
+                    if lab.name not in announced:
+                        announced.add(lab.name)
+                        out("queued %s: needs %g GB, %.1f GB free while %s run" % (lab.name, need, available, ", ".join(r.lab.name for r in running)))
+                    continue
+                if need > available:
+                    out("warning: %s needs %g GB, more memory than is free (%.1f GB); running it alone" % (lab.name, need, available))
+                pending.remove(lab_run)
+                running[lab_run] = need
+                threading.Thread(target=target, args=(lab_run,), daemon=True).start()
+            done.wait()
+    if errors:
+        raise errors[0]
+    return [outcomes[r] for r in runs]
 
 
 def deploy(project, lab_names, out, stop_command="vmlab down"):

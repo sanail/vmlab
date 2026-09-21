@@ -33,6 +33,7 @@ python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a 
 provider = "fake"        # fake (tart, fusion: planned)
 os = "macos"             # macos | windows | linux
 arch = "arm64"           # arm64 | x86_64; defaults to the Host's
+memory_gb = 4            # Host RAM the Guest takes; used by --parallel
 boot_timeout = 300       # seconds from power-on until the Guest must be reachable
 step_timeout = 60        # default seconds per Guest call
 scenario_timeout = 600   # default seconds per Scenario
@@ -85,13 +86,14 @@ Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VM
 - An **Ad-hoc run** (`vmlab run path/to/scenario.py` outside `scenarios/`) keeps Guest state for fast iteration and leaves its Guests running, printing the stop command.
 - `--fresh` restores before every Scenario; `--keep` leaves Guests running.
 - Before every Run, the Lab's `app.state` paths are removed.
+- Labs run one after another. `--parallel` runs them concurrently, starting a Lab only while its `memory_gb` fits in free Host memory (free + inactive pages; override with `VMLAB_FREE_MEMORY_GB`) and queueing the rest. A Guest that is already running needs no memory, and a Lab larger than all free memory runs alone. Each Lab keeps its own Run folder and reports.
 - vmlab stops only Guests it started (recorded in `$VMLAB_HOME/started.json`), including ones an earlier Ad-hoc or `--keep` run left running. A Guest started outside vmlab, or with `vmlab up`, is never stopped by `vmlab run`.
 
 ## CLI
 
 ```
 vmlab init | vmlab self-update [--from PYZ]
-vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh]
+vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
                                          # exit 0 all passed, 1 a Check failed or a Run errored, 2 usage/config error
 vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs

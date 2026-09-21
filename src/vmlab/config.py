@@ -17,11 +17,12 @@ CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
-LAB_KEYS = ("provider", "os", "arch", "boot_timeout", "step_timeout", "scenario_timeout", "app")
+LAB_KEYS = ("provider", "os", "arch", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
 APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "env", "state")
 DEFAULT_BUILD_TIMEOUT = 1800
 DEFAULT_INSTALL_TIMEOUT = 600
+DEFAULT_MEMORY_GB = 4
 DEFAULT_BOOT_TIMEOUT = 300
 DEFAULT_STEP_TIMEOUT = 60
 DEFAULT_SCENARIO_TIMEOUT = 600
@@ -41,6 +42,7 @@ class Lab:
         self.os = os
         self.arch = arch
         self.options = options  # provider-specific table, e.g. [labs.<name>.fake]
+        self.memory_gb = settings.get("memory_gb", DEFAULT_MEMORY_GB)  # Host RAM the Guest takes when running
         self.boot_timeout = settings.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)  # s from power-on until reachable
         self.step_timeout = settings.get("step_timeout", DEFAULT_STEP_TIMEOUT)  # s per Guest call
         self.scenario_timeout = settings.get("scenario_timeout", DEFAULT_SCENARIO_TIMEOUT)  # s per Scenario
@@ -162,6 +164,7 @@ def load(start):
             os_name,
             arch,
             options,
+            memory_gb=_positive_number(path, table, key, "memory_gb", DEFAULT_MEMORY_GB, "GB"),
             boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),
             step_timeout=_positive_number(path, table, key, "step_timeout", DEFAULT_STEP_TIMEOUT),
             scenario_timeout=_positive_number(path, table, key, "scenario_timeout", DEFAULT_SCENARIO_TIMEOUT),
@@ -181,10 +184,10 @@ def _required_choice(path, table, key, field, choices):
     return value
 
 
-def _positive_number(path, table, key, field, default):
+def _positive_number(path, table, key, field, default, unit="seconds"):
     value = table.get(field, default)
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
-        raise ConfigError(path, "%s.%s" % (key, field), "must be a number of seconds > 0", "e.g. %s = %s" % (field, default))
+        raise ConfigError(path, "%s.%s" % (key, field), "must be a number of %s > 0" % unit, "e.g. %s = %s" % (field, default))
     return value
 
 

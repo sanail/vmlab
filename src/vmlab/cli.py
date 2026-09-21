@@ -34,6 +34,7 @@ def main(argv=None):
     p.add_argument("--lab", action="append", dest="labs", metavar="LAB", help="Lab to run on (repeatable; default: all)")
     p.add_argument("--keep", action="store_true", help="leave Guests vmlab started running")
     p.add_argument("--fresh", action="store_true", help="restore Clean state before every Scenario")
+    p.add_argument("--parallel", action="store_true", help="run Labs concurrently as free Host memory allows")
 
     p = sub.add_parser("deploy", help="build if stale, install and launch the app; Guests stay running (default: all Labs)")
     p.add_argument("labs", nargs="*", metavar="LAB")
@@ -84,7 +85,7 @@ def main(argv=None):
 
 def _run(project, args):
     reports = runner.run(
-        project, args.labs, args.scenarios, out=print, keep=args.keep, fresh=args.fresh, stop_command=_prog() + " down"
+        project, args.labs, args.scenarios, out=print, keep=args.keep, fresh=args.fresh, parallel=args.parallel, stop_command=_prog() + " down"
     )
     return EXIT_OK if all(r["status"] == "passed" for r in reports) else EXIT_FAILED
 
