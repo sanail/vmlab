@@ -79,20 +79,35 @@ class FakeProvider(Provider):
         (fs / "home").mkdir(parents=True)
         self._record("restore")
 
-    def remove_paths(self, paths, timeout):
-        """Guest paths map into fs: ~ to fs/home, / to fs/. Never touches the Host outside fs."""
-        self._record("remove_paths", paths=list(paths))
+    def _host_path(self, guest_path, key):
+        """Guest paths map into fs: ~ to fs/home, / to fs/. Never outside fs."""
         fs = self.fs.resolve()
+        if guest_path == "~" or guest_path.startswith("~/"):
+            target = fs / "home" / guest_path[2:]
+        else:
+            target = fs / guest_path.lstrip("/")
+        target = target.resolve()
+        if fs not in target.parents:
+            raise ConfigError(self.project.config_path, key, "%r leaves the Guest" % guest_path, "use a path inside the Guest")
+        return target
+
+    def shell_argv(self, command):
+        return ["sh", "-c", command]  # Guest commands run on the Host, whatever the Lab's os
+
+    def copy_in(self, src, guest_dir):
+        self._record("copy_in", src=str(src), guest_dir=guest_dir)
+        dest = self._host_path(guest_dir, "labs.%s.app" % self.lab.name) / src.name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(str(src), str(dest), symlinks=True)
+        else:
+            shutil.copy2(str(src), str(dest))
+        return str(dest)
+
+    def remove_paths(self, paths, timeout):
+        self._record("remove_paths", paths=list(paths))
         for path in paths:
-            if path == "~" or path.startswith("~/"):
-                target = fs / "home" / path[2:]
-            else:
-                target = fs / path.lstrip("/")
-            target = target.resolve()
-            if fs not in target.parents:
-                raise ConfigError(
-                    self.project.config_path, "labs.%s.app.state" % self.lab.name, "%r leaves the Guest" % path, "use a path inside the Guest"
-                )
+            target = self._host_path(path, "labs.%s.app.state" % self.lab.name)
             if target.is_dir() and not target.is_symlink():
                 shutil.rmtree(str(target))
             elif target.exists() or target.is_symlink():

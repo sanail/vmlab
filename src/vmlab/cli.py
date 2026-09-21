@@ -35,6 +35,9 @@ def main(argv=None):
     p.add_argument("--keep", action="store_true", help="leave Guests vmlab started running")
     p.add_argument("--fresh", action="store_true", help="restore Clean state before every Scenario")
 
+    p = sub.add_parser("deploy", help="build if stale, install and launch the app; Guests stay running (default: all Labs)")
+    p.add_argument("labs", nargs="*", metavar="LAB")
+
     for name, help_text in (("up", "start Guests"), ("down", "stop Guests")):
         p = sub.add_parser(name, help=help_text + " (default: all Labs)")
         p.add_argument("labs", nargs="*", metavar="LAB")
@@ -61,6 +64,9 @@ def main(argv=None):
         project = config.load(os.getcwd())
         if args.command == "run":
             return _run(project, args)
+        if args.command == "deploy":
+            runner.deploy(project, args.labs, out=print, stop_command=_prog() + " down")
+            return EXIT_OK
         if args.command in ("up", "down"):
             return _up_down(project, args.command, args.labs)
         if args.command == "status":

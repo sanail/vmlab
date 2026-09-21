@@ -16,6 +16,7 @@ from pathlib import Path
 
 from vmlab import __version__, report
 from vmlab.config import ConfigError
+from vmlab.deploy import build_if_stale, install, launch, prepare_run
 from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
@@ -58,72 +59,124 @@ def run(project, lab_names, scenario_names, out, keep=False, fresh=False, stop_c
     """Run the chosen Scenarios on the chosen Labs. Returns the list of reports."""
     labs = project.select_labs(lab_names)
     scenarios, ad_hoc = discover(project, scenario_names)
+    # Builds run first, one Lab at a time: Labs sharing an artifact build it once.
+    runs = [_LabRun(project, lab) for lab in labs]
+    for lab_run in runs:
+        lab_run.build()
     reports, kept = [], []
-    for lab in labs:
-        data, still_ours = _run_lab(project, lab, scenarios, out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh)
+    for lab_run in runs:
+        data, still_ours = lab_run.run(scenarios, out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh)
         reports.append(data)
         if still_ours:
-            kept.append(lab.name)
+            kept.append(lab_run.lab.name)
     if kept:
         out("Kept running: %s. Stop with: %s %s" % (", ".join(kept), stop_command, " ".join(kept)))
     return reports
+
+
+def deploy(project, lab_names, out, stop_command="vmlab down"):
+    """Build if stale, start, install, reset and launch the app on each Lab; leave the Guests running."""
+    started_guests = StartedGuests()
+    labs = project.select_labs(lab_names)
+    for lab in labs:
+        provider = provider_for(project, lab)
+        built = build_if_stale(project, lab)
+        if not provider.is_running():
+            started_guests.add(guest_key(provider))
+        provider.up()
+        guest_artifact = install(provider, lab, built["artifact"]) if built else None
+        prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
+        out("%s: deployed %s%s" % (lab.name, guest_artifact or "(no artifact)", " (rebuilt)" if built and built["built"] else ""))
+    out("Kept running: %s. Stop with: %s %s" % (", ".join(l.name for l in labs), stop_command, " ".join(l.name for l in labs)))
 
 
 def guest_key(provider):
     return "%s:%s" % (provider.lab.provider, provider.guest_id)
 
 
-def _run_lab(project, lab, scenarios, out, keep, ad_hoc, fresh):
-    """Run scenarios on lab; returns (report, whether vmlab left a Guest it owns running)."""
-    provider = provider_for(project, lab)
-    started_guests = StartedGuests()
-    key = guest_key(provider)
-    ours = key in started_guests or not provider.is_running()
-    started = datetime.now(timezone.utc)
-    run_dir = _new_run_dir(project, lab, started)
-    t0 = time.time()
-    results, error = [], None
-    try:
-        if not provider.is_running():
-            started_guests.add(key)
-        provider.up()
-        clean = False
-        if not ad_hoc or fresh:
+class _LabRun:
+    """One Lab's part of an invocation: its run folder, build and Scenarios."""
+
+    def __init__(self, project, lab):
+        self.project = project
+        self.lab = lab
+        self.started = datetime.now(timezone.utc)
+        self.t0 = time.time()
+        self.run_dir = _new_run_dir(project, lab, self.started)
+        self.built = None
+        self.error = None
+
+    def build(self):
+        try:
+            self.built = build_if_stale(self.project, self.lab, log_path=self.run_dir / "build.log")
+        except GuestError as exc:
+            self.error = str(exc)
+
+    def run(self, scenarios, out, keep, ad_hoc, fresh):
+        """Returns (report, whether vmlab left a Guest it owns running)."""
+        lab = self.lab
+        provider = provider_for(self.project, lab)
+        started_guests = StartedGuests()
+        key = guest_key(provider)
+        ours = key in started_guests or not provider.is_running()
+        results = []
+        if not self.error:
+            try:
+                if not provider.is_running():
+                    started_guests.add(key)
+                provider.up()
+                results = self._scenarios(provider, scenarios, ad_hoc, fresh)
+            except GuestError as exc:
+                self.error = str(exc)
+            finally:
+                if ours and not keep:
+                    provider.down()
+                    started_guests.discard(key)
+
+        data = {
+            "vmlab_version": __version__,
+            "lab": lab.name,
+            "provider": lab.provider,
+            "os": lab.os,
+            "arch": lab.arch,
+            "started_at": self.started.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "duration_s": round(time.time() - self.t0, 3),
+            "status": "error" if self.error else report.overall_status(results),
+            "error": self.error,
+            "run_dir": str(self.run_dir),
+            "deploy": self.built,
+            "scenarios": results,
+        }
+        data["totals"] = report.totals(data)
+        report.write(self.run_dir, data)
+        _print_summary(data, out)
+        return data, ours and keep and provider.is_running()
+
+    def _scenarios(self, provider, scenarios, ad_hoc, fresh):
+        lab = self.lab
+        artifact = self.built["artifact"] if self.built else None
+        state = {"clean": False, "guest_artifact": None}
+
+        def restore():
             provider.restore()
-            clean = True
+            state["clean"] = True
+            state["guest_artifact"] = install(provider, lab, artifact) if artifact else None
 
-        def prepare(scenario_fresh):
-            nonlocal clean
-            if (scenario_fresh or fresh) and not clean:
-                provider.restore()
-            clean = False
-            provider.remove_paths(lab.app_state, timeout=lab.step_timeout)
+        if not ad_hoc or fresh:
+            restore()
+        elif artifact:
+            state["guest_artifact"] = install(provider, lab, artifact)
 
-        results = [run_scenario(path, Guest(lab, provider, run_dir), prepare) for path in scenarios]
-    except GuestError as exc:
-        error = str(exc)
-    finally:
-        if ours and not keep:
-            provider.down()
-            started_guests.discard(key)
+        def prepare(scenario_fresh, launch_app):
+            if (scenario_fresh or fresh) and not state["clean"]:
+                restore()
+            state["clean"] = False
+            prepare_run(provider, lab, state["guest_artifact"], launch_app=launch_app and bool(lab.app.launch))
 
-    data = {
-        "vmlab_version": __version__,
-        "lab": lab.name,
-        "provider": lab.provider,
-        "os": lab.os,
-        "arch": lab.arch,
-        "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "duration_s": round(time.time() - t0, 3),
-        "status": "error" if error else report.overall_status(results),
-        "error": error,
-        "run_dir": str(run_dir),
-        "scenarios": results,
-    }
-    data["totals"] = report.totals(data)
-    report.write(run_dir, data)
-    _print_summary(data, out)
-    return data, ours and keep and provider.is_running()
+        def launch_app(env):
+            launch(provider, lab, state["guest_artifact"], env)
+
+        return [run_scenario(path, Guest(lab, provider, self.run_dir, launch_app), prepare) for path in scenarios]
 
 
 def _new_run_dir(project, lab, started):

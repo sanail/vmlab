@@ -83,6 +83,9 @@ def _markdown(report):
             report["started_at"],
         ),
     ]
+    if report["deploy"]:
+        d = report["deploy"]
+        lines += ["", "Build artifact: %s (%s)" % (d["artifact"], "rebuilt" if d["built"] else "up to date")]
     if report["error"]:
         lines += ["", "```", report["error"], "```"]
     for s in report["scenarios"]:

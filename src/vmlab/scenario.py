@@ -3,6 +3,7 @@
 A Scenario is a Python file in .vmlab/scenarios defining:
 
     FRESH = True        # optional: restore Clean state before this Scenario
+    LAUNCH = False      # optional: don't launch the app before this Scenario (call g.launch())
     TIMEOUT = 300       # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
 
     def scenario(g):
@@ -34,12 +35,13 @@ class ScenarioTimeout(GuestTimeout):
 
 
 class Guest:
-    def __init__(self, lab, provider, run_dir):
+    def __init__(self, lab, provider, run_dir, launch_app):
         self.lab = lab.name
         self.os = lab.os
         self.arch = lab.arch
         self._provider = provider
         self._run_dir = run_dir
+        self._launch_app = launch_app
         self._step_timeout = lab.step_timeout
         self._limit = lab.scenario_timeout
         self._deadline = None
@@ -78,6 +80,11 @@ class Guest:
         self.fallbacks.extend(dict(f, argv=result.argv) for f in result.fallbacks)
         return result
 
+    def launch(self, env=None):
+        """Launch the app with the Lab's launch recipe; env adds to the Lab's app.env."""
+        self._remaining("launch")
+        self._launch_app(env)
+
     def tree(self):
         """The accessibility tree of the Guest's desktop."""
         self._remaining("tree")
@@ -108,16 +115,17 @@ class Guest:
 def run_scenario(path, guest, prepare):
     """Execute one Scenario file against guest and return its result dict.
 
-    prepare(fresh) readies the Guest (restore, app state reset) before the
-    Scenario's clock starts; fresh is the Scenario's FRESH declaration.
+    prepare(fresh, launch) readies the Guest (restore, app reset and launch)
+    before the Scenario's clock starts, per its FRESH and LAUNCH declarations.
     """
     started = time.time()
     error = None
     try:
         module = _load(path)
-        fresh = _declared(module, "FRESH", False, lambda v: isinstance(v, bool), "True or False")
+        fresh = _declared(module, "FRESH", False, _is_bool, "True or False")
+        launch = _declared(module, "LAUNCH", True, _is_bool, "True or False")
         limit = _declared(module, "TIMEOUT", guest._limit, _is_seconds, "a number of seconds > 0")
-        prepare(fresh)
+        prepare(fresh, launch)
         guest._start_clock(limit)
         module.scenario(guest)
         if not guest.checks:
@@ -161,6 +169,10 @@ def _declared(module, name, default, valid, expected):
     if not valid(value):
         raise ScenarioError("%s = %r is invalid; use %s" % (name, value, expected))
     return value
+
+
+def _is_bool(value):
+    return isinstance(value, bool)
 
 
 def _is_seconds(value):

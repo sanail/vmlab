@@ -61,8 +61,8 @@ class Provider:
     """Starts, stops and talks to the Guest that realises one Lab.
 
     Implementations provide detect, is_running, start, stop, is_reachable,
-    channels, restore, screenshot and ui_tree; up, down, exec and remove_paths
-    are built on those.
+    channels, restore, copy_in, screenshot and ui_tree; up, down, exec,
+    shell_argv and remove_paths are built on those.
     """
 
     def __init__(self, project, lab):
@@ -105,6 +105,19 @@ class Provider:
     def restore(self):
         """Return the running Guest to its Clean state; it is reachable again afterwards."""
         raise NotImplementedError
+
+    def copy_in(self, src, guest_dir):
+        """Copy the Host file or folder src into guest_dir (created; ~ is the Guest user's home).
+
+        Returns the absolute Guest path of the copy.
+        """
+        raise NotImplementedError
+
+    def shell_argv(self, command):
+        """argv that runs a command line in the Guest's shell: sh, or PowerShell on Windows."""
+        if self.lab.os == "windows":
+            return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
+        return ["sh", "-c", command]
 
     def remove_paths(self, paths, timeout):
         """Delete Guest paths (files or folders; a leading ~ is the Guest user's home) if they exist."""

@@ -37,7 +37,16 @@ boot_timeout = 300       # seconds from power-on until the Guest must be reachab
 step_timeout = 60        # default seconds per Guest call
 scenario_timeout = 600   # default seconds per Scenario
 
-[labs.mac.app]
+[labs.mac.app]                                   # all optional; see "Deploy"
+artifact = "target/release/bundle/macos/MyApp.app"  # Host path or glob (newest match), relative to the project root
+build = "npm run tauri build"                    # Host command, run in the project root when the artifact is stale
+inputs = ["src", "src-tauri", "package.json"]    # stale = missing, or older than any of these
+build_timeout = 1800
+install = "rm -rf /Applications/MyApp.app && cp -R \"$VMLAB_ARTIFACT\" /Applications/"
+install_timeout = 600
+quit = "pkill -x MyApp"                          # exit code ignored
+launch = "open -a /Applications/MyApp.app"
+env = { RUST_LOG = "debug" }                     # for install, quit and launch
 state = ["~/Library/Application Support/MyApp"]  # Guest paths removed before every Run
 
 [labs.mac.fake]
@@ -52,6 +61,7 @@ A Scenario is a Python file defining `scenario(g)`:
 
 ```python
 FRESH = True     # optional: restore Clean state before this Scenario
+LAUNCH = False   # optional: don't launch the app before this Scenario; call g.launch(env={...}) yourself
 TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
 
 def scenario(g):
@@ -62,6 +72,12 @@ def scenario(g):
 ```
 
 Commands reach the Guest over its first working Channel (ADR 0003). When a Channel fails, the call falls back to the next Channel and the report notes it. A non-zero exit code is returned to the Scenario and never triggers a fallback. A call that exceeds its timeout is killed and fails the Run with the Scenario file and line; so does a call no Channel can carry.
+
+## Deploy
+
+Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH`) if its Build artifact is missing or older than one of its `inputs`; Labs sharing an artifact build it once. Its output lands in the Run folder as `build.log`. The artifact is then copied into a uniquely named Guest folder under `~/vmlab/artifacts/` and `install` runs. That happens once per suite, and again after any restore. Before every Run, `quit` runs, the `state` paths are removed and `launch` runs. Guest recipes run in `sh` (PowerShell on Windows) with `env` plus `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH` and `VMLAB_ARTIFACT`, the Guest path of the delivered copy.
+
+`vmlab deploy [LAB...]` does the same without Scenarios and leaves the Guests running, for exploring by hand.
 
 ## Lifecycle
 
@@ -77,6 +93,7 @@ Commands reach the Guest over its first working Channel (ADR 0003). When a Chann
 vmlab init | vmlab self-update [--from PYZ]
 vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh]
                                          # exit 0 all passed, 1 a Check failed or a Run errored, 2 usage/config error
+vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
 vmlab doctor [LAB...] [--json]           # Provider, Guest and per-Channel checks with fixes; exit 1 on FAIL

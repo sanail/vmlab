@@ -19,7 +19,9 @@ OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
 LAB_KEYS = ("provider", "os", "arch", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
-APP_KEYS = ("state",)
+APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "env", "state")
+DEFAULT_BUILD_TIMEOUT = 1800
+DEFAULT_INSTALL_TIMEOUT = 600
 DEFAULT_BOOT_TIMEOUT = 300
 DEFAULT_STEP_TIMEOUT = 60
 DEFAULT_SCENARIO_TIMEOUT = 600
@@ -42,7 +44,23 @@ class Lab:
         self.boot_timeout = settings.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)  # s from power-on until reachable
         self.step_timeout = settings.get("step_timeout", DEFAULT_STEP_TIMEOUT)  # s per Guest call
         self.scenario_timeout = settings.get("scenario_timeout", DEFAULT_SCENARIO_TIMEOUT)  # s per Scenario
-        self.app_state = settings.get("app_state", [])  # Guest paths removed before each Run
+        self.app = settings.get("app") or App({})
+
+
+class App:
+    """The application under test on one Lab: [labs.<name>.app]."""
+
+    def __init__(self, table):
+        self.artifact = table.get("artifact")  # Host path or glob, relative to the project root
+        self.build = table.get("build")  # Host shell command, run in the project root when stale
+        self.inputs = table.get("inputs", [])  # Host paths whose changes make the artifact stale
+        self.build_timeout = table.get("build_timeout", DEFAULT_BUILD_TIMEOUT)
+        self.install = table.get("install")  # Guest shell commands; see vmlab.deploy for the env they get
+        self.install_timeout = table.get("install_timeout", DEFAULT_INSTALL_TIMEOUT)
+        self.quit = table.get("quit")
+        self.launch = table.get("launch")
+        self.env = table.get("env", {})
+        self.state = table.get("state", [])  # Guest paths removed before each Run
 
 
 class Project:
@@ -137,16 +155,7 @@ def load(start):
         if not isinstance(options, dict):
             raise ConfigError(path, "%s.%s" % (key, provider), "must be a table", "write it as [%s.%s]" % (key, provider))
         PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options)
-        app = table.get("app", {})
-        if not isinstance(app, dict):
-            raise ConfigError(path, key + ".app", "must be a table", "write it as [%s.app]" % key)
-        for k in sorted(set(app) - set(APP_KEYS)):
-            raise ConfigError(path, "%s.app.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(APP_KEYS))
-        state = app.get("state", [])
-        if not (isinstance(state, list) and all(isinstance(p, str) and p for p in state)):
-            raise ConfigError(
-                path, key + ".app.state", "must be a list of Guest paths", 'e.g. state = ["~/Library/Application Support/MyApp"]'
-            )
+        app = _app(path, key + ".app", table.get("app", {}))
         labs[name] = Lab(
             name,
             provider,
@@ -156,7 +165,7 @@ def load(start):
             boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),
             step_timeout=_positive_number(path, table, key, "step_timeout", DEFAULT_STEP_TIMEOUT),
             scenario_timeout=_positive_number(path, table, key, "scenario_timeout", DEFAULT_SCENARIO_TIMEOUT),
-            app_state=state,
+            app=app,
         )
 
     return Project(path.parent.parent, path, labs)
@@ -177,3 +186,26 @@ def _positive_number(path, table, key, field, default):
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
         raise ConfigError(path, "%s.%s" % (key, field), "must be a number of seconds > 0", "e.g. %s = %s" % (field, default))
     return value
+
+
+def _app(path, key, table):
+    if not isinstance(table, dict):
+        raise ConfigError(path, key, "must be a table", "write it as [%s]" % key)
+    for k in sorted(set(table) - set(APP_KEYS)):
+        raise ConfigError(path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(APP_KEYS))
+    for field in ("artifact", "build", "install", "quit", "launch"):
+        if field in table and not (isinstance(table[field], str) and table[field].strip()):
+            raise ConfigError(path, "%s.%s" % (key, field), "must be a non-empty string", "e.g. %s = \"...\"" % field)
+    for field, example in (("inputs", '["src", "package.json"]'), ("state", '["~/Library/Application Support/MyApp"]')):
+        value = table.get(field, [])
+        if not (isinstance(value, list) and all(isinstance(v, str) and v for v in value)):
+            raise ConfigError(path, "%s.%s" % (key, field), "must be a list of paths", "e.g. %s = %s" % (field, example))
+    env = table.get("env", {})
+    if not (isinstance(env, dict) and all(isinstance(v, str) for v in env.values())):
+        raise ConfigError(path, key + ".env", "must be a table of strings", 'e.g. env = { RUST_LOG = "debug" }')
+    for field in ("build", "install", "inputs"):
+        if field in table and "artifact" not in table:
+            raise ConfigError(path, key + ".artifact", "missing (needed by %s.%s)" % (key, field), 'e.g. artifact = "dist/MyApp.dmg"')
+    _positive_number(path, table, key, "build_timeout", DEFAULT_BUILD_TIMEOUT)
+    _positive_number(path, table, key, "install_timeout", DEFAULT_INSTALL_TIMEOUT)
+    return App(table)
