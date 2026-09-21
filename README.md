@@ -1,0 +1,53 @@
+# vmlab
+
+An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
+
+Status: walking skeleton. Only the Fake Provider exists.
+
+## Build and test
+
+Python 3.9+ and the standard library only.
+
+```sh
+python3 tools/build.py                   # -> dist/vmlab.pyz
+python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a subprocess
+```
+
+## Project layout
+
+```
+.vmlab/
+  vmlab.toml        # Labs
+  scenarios/*.py    # Scenarios
+  runs/             # per invocation and Lab: <UTC timestamp>-<lab>/ with report.json, junit.xml, summary.md, screenshots/
+```
+
+```toml
+[labs.mac]
+provider = "fake"     # fake (tart, fusion: planned)
+os = "macos"          # macos | windows | linux
+arch = "arm64"        # arm64 | x86_64; defaults to the Host's
+
+[labs.mac.fake]
+ui_tree = "tree.json" # optional scripted UI tree, relative to .vmlab/
+```
+
+A Scenario is a Python file defining `scenario(g)`:
+
+```python
+def scenario(g):
+    r = g.exec(["echo", "hello"])          # r.code, r.stdout, r.stderr, r.ok
+    g.check("echo prints hello", r.stdout.strip() == "hello", detail=r.stderr)
+    g.screenshot("after echo")             # saved in the Run folder as evidence
+```
+
+## CLI
+
+```
+vmlab run [SCENARIO...] [--lab LAB]...   # starts Guests as needed and stops those it started; exit 0 all passed, 1 a Check failed or a Scenario errored, 2 usage/config error
+vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
+vmlab status [--json]
+vmlab version
+```
+
+`VMLAB_HOME` (default `~/.vmlab`) holds host state; the Fake Provider keeps its Guests under `$VMLAB_HOME/fake/`.
