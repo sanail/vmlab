@@ -2,9 +2,15 @@
 
 A Scenario is a Python file in .vmlab/scenarios defining:
 
+    FRESH = True        # optional: restore Clean state before this Scenario
+    TIMEOUT = 300       # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
+
     def scenario(g):
         r = g.exec(["echo", "hello"])
         g.check("echo prints hello", r.stdout.strip() == "hello")
+
+The timeout is enforced at g.* calls: Python code in a Scenario must not block
+outside them.
 """
 
 import importlib.util
@@ -14,13 +20,17 @@ import time
 import traceback
 
 from vmlab.config import ConfigError
-from vmlab.providers.base import GuestError
+from vmlab.providers.base import GuestError, GuestTimeout
 
-DEFAULT_EXEC_TIMEOUT = 60
+DETERMINISTIC, VISUAL = "deterministic", "visual, unverified"
 
 
 class ScenarioError(Exception):
     """The Scenario itself is broken (as opposed to a Check failing)."""
+
+
+class ScenarioTimeout(GuestTimeout):
+    """The Scenario as a whole ran out of time."""
 
 
 class Guest:
@@ -30,28 +40,52 @@ class Guest:
         self.arch = lab.arch
         self._provider = provider
         self._run_dir = run_dir
+        self._step_timeout = lab.step_timeout
+        self._limit = lab.scenario_timeout
+        self._deadline = None
         self.checks = []
         self.screenshots = []
         self.channels = {}  # Channel name -> calls it served
         self.fallbacks = []
 
-    def exec(self, argv, timeout=DEFAULT_EXEC_TIMEOUT, env=None):
+    def _start_clock(self, limit):
+        self._limit = limit
+        self._deadline = time.time() + limit
+
+    def _remaining(self, doing):
+        remaining = self._deadline - time.time()
+        if remaining <= 0:
+            raise ScenarioTimeout("Scenario exceeded its %ss timeout (before %s)" % (self._limit, doing))
+        return remaining
+
+    def exec(self, argv, timeout=None, env=None):
         """Run argv in the Guest. Returns an object with code, stdout, stderr, ok and channel.
 
-        Raises (failing the Run) when no Channel reaches the Guest or the call
-        exceeds timeout seconds; a non-zero exit code is returned, not raised.
+        timeout defaults to the Lab's step_timeout. Raises (failing the Run) when
+        no Channel reaches the Guest or the call times out; a non-zero exit code
+        is returned, not raised.
         """
-        result = self._provider.exec(list(argv), timeout=timeout, env=env)
+        argv = list(argv)
+        step = self._step_timeout if timeout is None else timeout
+        remaining = self._remaining(argv)
+        try:
+            result = self._provider.exec(argv, timeout=min(step, remaining), env=env)
+        except GuestTimeout:
+            if remaining < step:
+                raise ScenarioTimeout("Scenario exceeded its %ss timeout (during %s)" % (self._limit, argv))
+            raise
         self.channels[result.channel] = self.channels.get(result.channel, 0) + 1
         self.fallbacks.extend(dict(f, argv=result.argv) for f in result.fallbacks)
         return result
 
     def tree(self):
         """The accessibility tree of the Guest's desktop."""
+        self._remaining("tree")
         return self._provider.ui_tree()
 
     def screenshot(self, name):
         """Save a screenshot as evidence and return its path relative to the run folder."""
+        self._remaining("screenshot")
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "screenshot"
         rel = "screenshots/%02d-%s.png" % (len(self.screenshots) + 1, slug)
         dest = self._run_dir / rel
@@ -60,18 +94,32 @@ class Guest:
         self.screenshots.append(rel)
         return rel
 
-    def check(self, name, passed, detail=None):
-        """Record a Check. A failed Check fails the Scenario but does not stop it."""
-        self.checks.append({"name": name, "passed": bool(passed), "detail": detail})
+    def check(self, name, passed, detail=None, visual=False):
+        """Record a Check. A failed Check fails the Scenario but does not stop it.
+
+        visual=True marks a judgement made by looking at a screenshot: it is
+        reported as "visual, unverified" because it is not deterministic.
+        """
+        kind = VISUAL if visual else DETERMINISTIC
+        self.checks.append({"name": name, "passed": bool(passed), "detail": detail, "kind": kind})
         return bool(passed)
 
 
-def run_scenario(path, guest):
-    """Execute one Scenario file against guest and return its result dict."""
+def run_scenario(path, guest, prepare):
+    """Execute one Scenario file against guest and return its result dict.
+
+    prepare(fresh) readies the Guest (restore, app state reset) before the
+    Scenario's clock starts; fresh is the Scenario's FRESH declaration.
+    """
     started = time.time()
     error = None
     try:
-        _load(path).scenario(guest)
+        module = _load(path)
+        fresh = _declared(module, "FRESH", False, lambda v: isinstance(v, bool), "True or False")
+        limit = _declared(module, "TIMEOUT", guest._limit, _is_seconds, "a number of seconds > 0")
+        prepare(fresh)
+        guest._start_clock(limit)
+        module.scenario(guest)
         if not guest.checks:
             raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
     except ConfigError:
@@ -106,6 +154,17 @@ def _scenario_line(path, tb):
     """'name.py:LINE' of the innermost Scenario frame in tb."""
     lines = [f.lineno for f in traceback.extract_tb(tb) if f.filename == str(path)]
     return "%s:%s" % (path.name, lines[-1]) if lines else path.name
+
+
+def _declared(module, name, default, valid, expected):
+    value = getattr(module, name, default)
+    if not valid(value):
+        raise ScenarioError("%s = %r is invalid; use %s" % (name, value, expected))
+    return value
+
+
+def _is_seconds(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
 def _load(path):

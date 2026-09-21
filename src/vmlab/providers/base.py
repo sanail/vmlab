@@ -60,8 +60,9 @@ class Channel:
 class Provider:
     """Starts, stops and talks to the Guest that realises one Lab.
 
-    Implementations provide is_running, start, stop, is_reachable, channels,
-    screenshot and ui_tree; up, down and exec are built on those.
+    Implementations provide detect, is_running, start, stop, is_reachable,
+    channels, restore, screenshot and ui_tree; up, down, exec and remove_paths
+    are built on those.
     """
 
     def __init__(self, project, lab):
@@ -100,6 +101,29 @@ class Provider:
     def channels(self):
         """The Guest's Channels, preferred first."""
         raise NotImplementedError
+
+    def restore(self):
+        """Return the running Guest to its Clean state; it is reachable again afterwards."""
+        raise NotImplementedError
+
+    def remove_paths(self, paths, timeout):
+        """Delete Guest paths (files or folders; a leading ~ is the Guest user's home) if they exist."""
+        if not paths:
+            return
+        if self.lab.os == "windows":
+            # %VARS% expand; ~ is the user profile.
+            quoted = ["'%s'" % p.replace("'", "''") for p in paths]
+            script = (
+                "foreach ($p in @(%s)) { $p = [Environment]::ExpandEnvironmentVariables($p) -replace '^~', $env:USERPROFILE; "
+                "Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }" % ", ".join(quoted)
+            )
+            argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
+        else:
+            script = 'for p in "$@"; do case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; rm -rf -- "$p"; done'
+            argv = ["sh", "-c", script, "sh"] + list(paths)
+        result = self.exec(argv, timeout)
+        if not result.ok:
+            raise GuestError("resetting app state %s failed: %s" % (paths, result.stderr.strip()))
 
     def probe_argv(self):
         """A command that succeeds on any healthy Guest, used to test Channels."""

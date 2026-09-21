@@ -3,6 +3,8 @@
 import json
 import xml.etree.ElementTree as ET
 
+from vmlab.scenario import VISUAL
+
 STATUS_ORDER = ("passed", "failed", "error")
 
 
@@ -22,6 +24,7 @@ def totals(report):
         "scenarios": len(report["scenarios"]),
         "checks": len(checks),
         "failed_checks": sum(not c["passed"] for c in checks),
+        "visual_checks": sum(c["kind"] == VISUAL for c in checks),
         "errors": sum(s["status"] == "error" for s in report["scenarios"]) + bool(report["error"]),
     }
 
@@ -45,6 +48,8 @@ def _write_junit(path, report):
         classname = "%s.%s" % (report["lab"], s["name"])
         for c in s["checks"]:
             case = ET.SubElement(suite, "testcase", classname=classname, name=c["name"])
+            if c["kind"] == VISUAL:
+                ET.SubElement(ET.SubElement(case, "properties"), "property", name="kind", value=VISUAL)
             if not c["passed"]:
                 failure = ET.SubElement(case, "failure", message=c["detail"] or "Check failed")
                 failure.text = _evidence(s)
@@ -64,7 +69,7 @@ def _markdown(report):
     lines = [
         "# vmlab Run: %s" % report["lab"],
         "",
-        "**%s** · %s/%s via %s · %d Scenario(s), %d Check(s), %d failed, %d error(s) · started %s"
+        "**%s** · %s/%s via %s · %d Scenario(s), %d Check(s) (%d visual, unverified), %d failed, %d error(s) · started %s"
         % (
             report["status"].upper(),
             report["os"],
@@ -72,6 +77,7 @@ def _markdown(report):
             report["provider"],
             t["scenarios"],
             t["checks"],
+            t["visual_checks"],
             t["failed_checks"],
             t["errors"],
             report["started_at"],
@@ -85,7 +91,8 @@ def _markdown(report):
             lines += ["Channels: %s" % ", ".join("%s (%d calls)" % kv for kv in sorted(s["channels"].items())), ""]
         for c in s["checks"]:
             mark = "PASS" if c["passed"] else "FAIL"
-            lines.append("- %s %s%s" % (mark, c["name"], " (%s)" % c["detail"] if c["detail"] else ""))
+            visual = " (%s)" % VISUAL if c["kind"] == VISUAL else ""
+            lines.append("- %s %s%s%s" % (mark, c["name"], visual, ": %s" % c["detail"] if c["detail"] else ""))
         for f in s["fallbacks"]:
             lines.append("- Channel %s failed (%s); %s served %s" % (f["from"], f["reason"], f["to"], f["argv"]))
         if s["error"]:

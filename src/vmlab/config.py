@@ -17,8 +17,12 @@ CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
-LAB_KEYS = ("provider", "os", "arch", "boot_timeout")  # plus one options table named after each Provider
+LAB_KEYS = ("provider", "os", "arch", "boot_timeout", "step_timeout", "scenario_timeout", "app")
+# ...plus one options table named after each Provider
+APP_KEYS = ("state",)
 DEFAULT_BOOT_TIMEOUT = 300
+DEFAULT_STEP_TIMEOUT = 60
+DEFAULT_SCENARIO_TIMEOUT = 600
 
 
 class ConfigError(Exception):
@@ -29,13 +33,16 @@ class ConfigError(Exception):
 
 
 class Lab:
-    def __init__(self, name, provider, os, arch, options, boot_timeout=DEFAULT_BOOT_TIMEOUT):
+    def __init__(self, name, provider, os, arch, options, **settings):
         self.name = name
         self.provider = provider
         self.os = os
         self.arch = arch
         self.options = options  # provider-specific table, e.g. [labs.<name>.fake]
-        self.boot_timeout = boot_timeout  # seconds from power-on until a Channel must work
+        self.boot_timeout = settings.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)  # s from power-on until reachable
+        self.step_timeout = settings.get("step_timeout", DEFAULT_STEP_TIMEOUT)  # s per Guest call
+        self.scenario_timeout = settings.get("scenario_timeout", DEFAULT_SCENARIO_TIMEOUT)  # s per Scenario
+        self.app_state = settings.get("app_state", [])  # Guest paths removed before each Run
 
 
 class Project:
@@ -130,8 +137,27 @@ def load(start):
         if not isinstance(options, dict):
             raise ConfigError(path, "%s.%s" % (key, provider), "must be a table", "write it as [%s.%s]" % (key, provider))
         PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options)
-        boot_timeout = _positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT)
-        labs[name] = Lab(name, provider, os_name, arch, options, boot_timeout)
+        app = table.get("app", {})
+        if not isinstance(app, dict):
+            raise ConfigError(path, key + ".app", "must be a table", "write it as [%s.app]" % key)
+        for k in sorted(set(app) - set(APP_KEYS)):
+            raise ConfigError(path, "%s.app.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(APP_KEYS))
+        state = app.get("state", [])
+        if not (isinstance(state, list) and all(isinstance(p, str) and p for p in state)):
+            raise ConfigError(
+                path, key + ".app.state", "must be a list of Guest paths", 'e.g. state = ["~/Library/Application Support/MyApp"]'
+            )
+        labs[name] = Lab(
+            name,
+            provider,
+            os_name,
+            arch,
+            options,
+            boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),
+            step_timeout=_positive_number(path, table, key, "step_timeout", DEFAULT_STEP_TIMEOUT),
+            scenario_timeout=_positive_number(path, table, key, "scenario_timeout", DEFAULT_SCENARIO_TIMEOUT),
+            app_state=state,
+        )
 
     return Project(path.parent.parent, path, labs)
 

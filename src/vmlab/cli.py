@@ -10,6 +10,7 @@ import sys
 
 from vmlab import __version__, config, doctor, runner, vendoring
 from vmlab.config import ConfigError
+from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 
@@ -31,6 +32,8 @@ def main(argv=None):
     p = sub.add_parser("run", help="run Scenarios on Labs and write reports")
     p.add_argument("scenarios", nargs="*", metavar="SCENARIO", help="Scenario names (default: all)")
     p.add_argument("--lab", action="append", dest="labs", metavar="LAB", help="Lab to run on (repeatable; default: all)")
+    p.add_argument("--keep", action="store_true", help="leave Guests vmlab started running")
+    p.add_argument("--fresh", action="store_true", help="restore Clean state before every Scenario")
 
     for name, help_text in (("up", "start Guests"), ("down", "stop Guests")):
         p = sub.add_parser(name, help=help_text + " (default: all Labs)")
@@ -74,13 +77,18 @@ def main(argv=None):
 
 
 def _run(project, args):
-    reports = runner.run(project, args.labs, args.scenarios, out=print)
+    reports = runner.run(
+        project, args.labs, args.scenarios, out=print, keep=args.keep, fresh=args.fresh, stop_command=_prog() + " down"
+    )
     return EXIT_OK if all(r["status"] == "passed" for r in reports) else EXIT_FAILED
 
 
 def _up_down(project, command, names):
+    started_guests = StartedGuests()
     for lab in project.select_labs(names):
-        getattr(provider_for(project, lab), command)()
+        provider = provider_for(project, lab)
+        getattr(provider, command)()
+        started_guests.discard(runner.guest_key(provider))  # the user now owns (or stopped) it
         print("%s %s" % (lab.name, "running" if command == "up" else "stopped"))
     return EXIT_OK
 
@@ -115,6 +123,14 @@ def _status(project, as_json):
             state = "running" if r["running"] else "stopped"
             print("%-12s %-8s %s/%s via %s (%s)" % (r["lab"], state, r["os"], r["arch"], r["provider"], r["guest"]))
     return EXIT_OK
+
+
+def _prog():
+    """How the user invoked vmlab, for commands we print back."""
+    argv0 = sys.argv[0]
+    if argv0.endswith(".pyz"):
+        return "python3 %s" % os.path.relpath(argv0)
+    return "vmlab"
 
 
 def _zipapp_main():

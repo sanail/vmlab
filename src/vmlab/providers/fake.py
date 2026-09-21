@@ -14,6 +14,7 @@ commands.jsonl. Options, under [labs.<name>.fake]:
 
 import json
 import os
+import shutil
 import struct
 import subprocess
 import time
@@ -33,8 +34,13 @@ class FakeProvider(Provider):
     @property
     def state_dir(self):
         path = vmlab_home() / "fake" / self.guest_id
-        (path / "fs").mkdir(parents=True, exist_ok=True)
+        (path / "fs" / "home").mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def fs(self):
+        """The Guest's filesystem root; the Guest user's home is fs/home."""
+        return self.state_dir / "fs"
 
     @property
     def _running_marker(self):
@@ -66,6 +72,31 @@ class FakeProvider(Provider):
             return time.time() >= float(self._running_marker.read_text())
         except (OSError, ValueError):
             return False
+
+    def restore(self):
+        fs = self.fs
+        shutil.rmtree(str(fs))
+        (fs / "home").mkdir(parents=True)
+        self._record("restore")
+
+    def remove_paths(self, paths, timeout):
+        """Guest paths map into fs: ~ to fs/home, / to fs/. Never touches the Host outside fs."""
+        self._record("remove_paths", paths=list(paths))
+        fs = self.fs.resolve()
+        for path in paths:
+            if path == "~" or path.startswith("~/"):
+                target = fs / "home" / path[2:]
+            else:
+                target = fs / path.lstrip("/")
+            target = target.resolve()
+            if fs not in target.parents:
+                raise ConfigError(
+                    self.project.config_path, "labs.%s.app.state" % self.lab.name, "%r leaves the Guest" % path, "use a path inside the Guest"
+                )
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(str(target))
+            elif target.exists() or target.is_symlink():
+                target.unlink()
 
     def channels(self):
         return [FakeChannel(self, name) for name in self.lab.options.get("channels", DEFAULT_CHANNELS)]
@@ -124,7 +155,8 @@ class FakeChannel(Channel):
             time.sleep(timeout)
             raise _timeout(argv, timeout, self.name)
         try:
-            code, out, err = hostproc.run(argv, timeout, cwd=str(p.state_dir / "fs"), env=dict(os.environ, **env))
+            env = dict(os.environ, HOME=str(p.fs / "home"), **env)
+            code, out, err = hostproc.run(argv, timeout, cwd=str(p.fs), env=env)
         except subprocess.TimeoutExpired:
             raise _timeout(argv, timeout, self.name)
         except FileNotFoundError:
