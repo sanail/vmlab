@@ -22,7 +22,7 @@ def totals(report):
         "scenarios": len(report["scenarios"]),
         "checks": len(checks),
         "failed_checks": sum(not c["passed"] for c in checks),
-        "errors": sum(s["status"] == "error" for s in report["scenarios"]),
+        "errors": sum(s["status"] == "error" for s in report["scenarios"]) + bool(report["error"]),
     }
 
 
@@ -37,6 +37,10 @@ def _write_junit(path, report):
         time="%.3f" % report["duration_s"],
         timestamp=report["started_at"],
     )
+    if report["error"]:
+        case = ET.SubElement(suite, "testcase", classname=report["lab"], name="Guest setup")
+        error = ET.SubElement(case, "error", message=report["error"].splitlines()[0])
+        error.text = report["error"]
     for s in report["scenarios"]:
         classname = "%s.%s" % (report["lab"], s["name"])
         for c in s["checks"]:
@@ -73,11 +77,17 @@ def _markdown(report):
             report["started_at"],
         ),
     ]
+    if report["error"]:
+        lines += ["", "```", report["error"], "```"]
     for s in report["scenarios"]:
         lines += ["", "## %s: %s" % (s["name"], s["status"]), ""]
+        if s["channels"]:
+            lines += ["Channels: %s" % ", ".join("%s (%d calls)" % kv for kv in sorted(s["channels"].items())), ""]
         for c in s["checks"]:
             mark = "PASS" if c["passed"] else "FAIL"
             lines.append("- %s %s%s" % (mark, c["name"], " (%s)" % c["detail"] if c["detail"] else ""))
+        for f in s["fallbacks"]:
+            lines.append("- Channel %s failed (%s); %s served %s" % (f["from"], f["reason"], f["to"], f["argv"]))
         if s["error"]:
             lines += ["", "```", s["error"], "```"]
         for shot in s["screenshots"]:

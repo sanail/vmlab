@@ -17,7 +17,8 @@ CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
-LAB_KEYS = ("provider", "os", "arch")  # plus one options table named after each Provider
+LAB_KEYS = ("provider", "os", "arch", "boot_timeout")  # plus one options table named after each Provider
+DEFAULT_BOOT_TIMEOUT = 300
 
 
 class ConfigError(Exception):
@@ -28,12 +29,13 @@ class ConfigError(Exception):
 
 
 class Lab:
-    def __init__(self, name, provider, os, arch, options):
+    def __init__(self, name, provider, os, arch, options, boot_timeout=DEFAULT_BOOT_TIMEOUT):
         self.name = name
         self.provider = provider
         self.os = os
         self.arch = arch
         self.options = options  # provider-specific table, e.g. [labs.<name>.fake]
+        self.boot_timeout = boot_timeout  # seconds from power-on until a Channel must work
 
 
 class Project:
@@ -128,7 +130,8 @@ def load(start):
         if not isinstance(options, dict):
             raise ConfigError(path, "%s.%s" % (key, provider), "must be a table", "write it as [%s.%s]" % (key, provider))
         PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options)
-        labs[name] = Lab(name, provider, os_name, arch, options)
+        boot_timeout = _positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT)
+        labs[name] = Lab(name, provider, os_name, arch, options, boot_timeout)
 
     return Project(path.parent.parent, path, labs)
 
@@ -140,4 +143,11 @@ def _required_choice(path, table, key, field, choices):
     value = table[field]
     if value not in choices:
         raise ConfigError(path, full, "unknown %s %r" % (field, value), "use one of: %s" % ", ".join(choices))
+    return value
+
+
+def _positive_number(path, table, key, field, default):
+    value = table.get(field, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ConfigError(path, "%s.%s" % (key, field), "must be a number of seconds > 0", "e.g. %s = %s" % (field, default))
     return value

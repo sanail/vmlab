@@ -9,10 +9,12 @@ A Scenario is a Python file in .vmlab/scenarios defining:
 
 import importlib.util
 import re
+import sys
 import time
 import traceback
 
 from vmlab.config import ConfigError
+from vmlab.providers.base import GuestError
 
 DEFAULT_EXEC_TIMEOUT = 60
 
@@ -30,10 +32,19 @@ class Guest:
         self._run_dir = run_dir
         self.checks = []
         self.screenshots = []
+        self.channels = {}  # Channel name -> calls it served
+        self.fallbacks = []
 
-    def exec(self, argv, timeout=DEFAULT_EXEC_TIMEOUT):
-        """Run argv in the Guest. Returns an object with code, stdout, stderr and ok."""
-        return self._provider.exec(list(argv), timeout=timeout)
+    def exec(self, argv, timeout=DEFAULT_EXEC_TIMEOUT, env=None):
+        """Run argv in the Guest. Returns an object with code, stdout, stderr, ok and channel.
+
+        Raises (failing the Run) when no Channel reaches the Guest or the call
+        exceeds timeout seconds; a non-zero exit code is returned, not raised.
+        """
+        result = self._provider.exec(list(argv), timeout=timeout, env=env)
+        self.channels[result.channel] = self.channels.get(result.channel, 0) + 1
+        self.fallbacks.extend(dict(f, argv=result.argv) for f in result.fallbacks)
+        return result
 
     def tree(self):
         """The accessibility tree of the Guest's desktop."""
@@ -67,6 +78,8 @@ def run_scenario(path, guest):
         raise
     except ScenarioError as exc:
         error = str(exc)
+    except GuestError as exc:
+        error = "%s: %s" % (_scenario_line(path, sys.exc_info()[2]), exc)
     except Exception:
         error = traceback.format_exc(limit=-3).strip()
 
@@ -84,7 +97,15 @@ def run_scenario(path, guest):
         "error": error,
         "checks": guest.checks,
         "screenshots": guest.screenshots,
+        "channels": guest.channels,
+        "fallbacks": guest.fallbacks,
     }
+
+
+def _scenario_line(path, tb):
+    """'name.py:LINE' of the innermost Scenario frame in tb."""
+    lines = [f.lineno for f in traceback.extract_tb(tb) if f.filename == str(path)]
+    return "%s:%s" % (path.name, lines[-1]) if lines else path.name
 
 
 def _load(path):

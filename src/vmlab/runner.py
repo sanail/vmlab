@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from vmlab import __version__, report
 from vmlab.config import ConfigError
 from vmlab.providers import provider_for
+from vmlab.providers.base import GuestError
 from vmlab.scenario import Guest, run_scenario
 
 
@@ -46,13 +47,16 @@ def run(project, lab_names, scenario_names, out):
 
 def _run_lab(project, lab, scenarios, out):
     provider = provider_for(project, lab)
+    started = datetime.now(timezone.utc)
+    run_dir = _new_run_dir(project, lab, started)
+    t0 = time.time()
     started_by_us = not provider.is_running()
-    provider.up()
+    results, error = [], None
     try:
-        started = datetime.now(timezone.utc)
-        run_dir = _new_run_dir(project, lab, started)
-        t0 = time.time()
+        provider.up()
         results = [run_scenario(path, Guest(lab, provider, run_dir)) for path in scenarios]
+    except GuestError as exc:
+        error = str(exc)
     finally:
         if started_by_us:
             provider.down()
@@ -65,7 +69,8 @@ def _run_lab(project, lab, scenarios, out):
         "arch": lab.arch,
         "started_at": started.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "duration_s": round(time.time() - t0, 3),
-        "status": report.overall_status(results),
+        "status": "error" if error else report.overall_status(results),
+        "error": error,
         "run_dir": str(run_dir),
         "scenarios": results,
     }
@@ -89,6 +94,8 @@ def _new_run_dir(project, lab, started):
 
 
 def _print_summary(data, out):
+    if data["error"]:
+        out("ERROR %s: %s" % (data["lab"], data["error"]))
     for s in data["scenarios"]:
         if s["status"] == "error":
             out("ERROR %s/%s: %s" % (data["lab"], s["name"], s["error"].splitlines()[-1]))

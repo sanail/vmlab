@@ -30,6 +30,7 @@ TEMPLATE = """\
 # provider = "fake"        # fake (tart, fusion: planned)
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
+# boot_timeout = 300       # seconds from power-on until the Guest must be reachable
 #
 # [labs.mac.fake]          # options of the Lab's Provider
 # ui_tree = "tree.json"    # scripted UI tree, relative to this file

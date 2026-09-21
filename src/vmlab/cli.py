@@ -8,9 +8,10 @@ import json
 import os
 import sys
 
-from vmlab import __version__, config, runner, vendoring
+from vmlab import __version__, config, doctor, runner, vendoring
 from vmlab.config import ConfigError
 from vmlab.providers import provider_for
+from vmlab.providers.base import GuestError
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
 
@@ -35,6 +36,10 @@ def main(argv=None):
         p = sub.add_parser(name, help=help_text + " (default: all Labs)")
         p.add_argument("labs", nargs="*", metavar="LAB")
 
+    p = sub.add_parser("doctor", help="check Providers, Guests and Channels (default: all Labs)")
+    p.add_argument("labs", nargs="*", metavar="LAB")
+    p.add_argument("--json", action="store_true", help="print JSON")
+
     p = sub.add_parser("status", help="show whether each Lab's Guest is running")
     p.add_argument("--json", action="store_true", help="print JSON")
 
@@ -57,9 +62,14 @@ def main(argv=None):
             return _up_down(project, args.command, args.labs)
         if args.command == "status":
             return _status(project, args.json)
+        if args.command == "doctor":
+            return _doctor(project, args.labs, args.json)
     except ConfigError as exc:
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
+    except GuestError as exc:
+        print("vmlab: error: %s" % exc, file=sys.stderr)
+        return EXIT_FAILED
     return EXIT_OK
 
 
@@ -73,6 +83,15 @@ def _up_down(project, command, names):
         getattr(provider_for(project, lab), command)()
         print("%s %s" % (lab.name, "running" if command == "up" else "stopped"))
     return EXIT_OK
+
+
+def _doctor(project, names, as_json):
+    findings = doctor.diagnose(project, project.select_labs(names))
+    if as_json:
+        print(json.dumps(findings, indent=2))
+    else:
+        doctor.render(findings, print)
+    return EXIT_FAILED if doctor.failed(findings) else EXIT_OK
 
 
 def _status(project, as_json):
