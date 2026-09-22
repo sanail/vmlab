@@ -21,7 +21,6 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | `restore()` | Return the running Guest to its Clean state (snapshot revert, or re-clone from the Base guest). It must be reachable again when this returns. |
 | `copy_in(src, guest_dir)` | Copy a Host file or folder into `guest_dir` (created; `~` is the Guest user's home). Return the absolute Guest path of the copy. |
 | `screenshot(dest)` | Write a PNG of the Guest's screen to `dest`, Host-side where the hypervisor can. |
-| `ui_tree()` | The accessibility tree, in the shared JSON shape (UI contract). |
 
 These are built on the methods above; override them only when the Guest needs something else:
 
@@ -29,8 +28,11 @@ These are built on the methods above; override them only when the Guest needs so
 - `shell_argv(command)`: `sh -c`, or PowerShell on Windows.
 - `remove_paths(paths, timeout)`: app state reset.
 - `probe_argv()`: the command `doctor` sends down each Channel.
+- `ui_call(command, params, timeout)`: the UI contract. It runs the Guest OS's UI helper (`vmlab.uihelpers`) over the Guest's Channels, so a Provider gets the UI contract for free once exec works. Only a Provider whose Guests need no helper overrides it, as the Fake Provider does.
 
-Every call into the hypervisor must be bounded: `start`, `stop`, `restore`, `copy_in`, `screenshot` and `ui_tree` take no timeout argument, so use the Lab's `step_timeout` (or `boot_timeout` for start and restore) and raise `GuestTimeout` when it runs out. A hung hypervisor must never hang a suite.
+The UI helpers are per OS, not per Provider: `src/vmlab/guest/<os>/` holds them and `src/vmlab/uihelpers.py` runs them. A helper takes `COMMAND JSON` and prints one JSON object; `src/vmlab/ui.py` does everything above that once (roles, node shape, matching, chords, waiting). Provisioning a Base guest must install the helper, so no Run compiles anything.
+
+Every call into the hypervisor must be bounded: `start`, `stop`, `restore`, `copy_in` and `screenshot` take no timeout argument, so use the Lab's `step_timeout` (or `boot_timeout` for start and restore) and raise `GuestTimeout` when it runs out. A hung hypervisor must never hang a suite.
 
 `guest_id` names the Guest uniquely per project and Lab. Use it for the hypervisor's VM name, so projects never share a Guest by accident.
 
@@ -58,7 +60,7 @@ Add it to `PROVIDERS` in `src/vmlab/providers/__init__.py`, replacing the stub i
 vmlab has two seams (spec 0001, *Testing Decisions*):
 
 - **Seam 1** (every commit): `python3 -m unittest discover -s tests` drives the built zipapp against the **Fake Provider**. It covers everything that does not depend on a real hypervisor: config, lifecycle, fallback, timeouts, deploy and reports. A new Provider rarely needs Seam 1 tests, except for its own config validation.
-- **Seam 2** (manual or scheduled): `tests/contract/test_contract.py` checks the Provider/Channel contract against a **real** Lab through the CLI. It covers up, every Channel healthy, exec (stdout, stderr, exit code, env, quoting), timeouts, deploy (copy in and install), screenshots, restore and down. With no settings it runs against a Fake Lab, so it stays green in Seam 1 too.
+- **Seam 2** (manual or scheduled): `tests/contract/test_contract.py` checks the Provider/Channel contract against a **real** Lab through the CLI. It covers up, every Channel healthy, exec (stdout, stderr, exit code, env, quoting), timeouts, deploy (copy in and install), screenshots, every UI contract command (in the OS's stock text editor), restore and down. On macOS, run it a second time with `VMLAB_UI_HELPER=jxa` to cover the JXA fallback. With no settings it runs against a Fake Lab, so it stays green in Seam 1 too.
 
 To run Seam 2 against your Provider, describe one Lab in a TOML file **without** an `[labs.<lab>.app]` table (the suite adds its own):
 

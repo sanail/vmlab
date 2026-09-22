@@ -63,6 +63,14 @@ def _diagnose_lab(provider, lab):
             )
     if not working:
         findings.append(_finding(lab, "no Channel reaches the Guest", FAIL, "every Channel failed", "fix one of the Channels above"))
+        return findings
+    try:
+        ok, detail = provider.ui_helper().describe(PROBE_TIMEOUT)
+    except GuestError as exc:
+        ok, detail = False, exc.message
+    if ok is not None:
+        fix = None if ok else "re-provision the Lab's Base guest: vmlab base create NAME --reprovision (NAME from vmlab base list)"
+        findings.append(_finding(lab, "UI helper", OK if ok else WARN, detail, fix))
     return findings
 
 

@@ -14,6 +14,7 @@ class DoctorTest(VmlabTestCase):
         self.assertRegex(r.out, r"ok\s+mac: Provider fake")
         self.assertRegex(r.out, r"ok\s+mac: Channel ssh")
         self.assertRegex(r.out, r"ok\s+mac: Channel exec")
+        self.assertRegex(r.out, r"ok\s+mac: UI helper")
 
     def test_a_broken_preferred_channel_is_a_warning_with_a_fix(self):
         self.project.config(FAKE_LAB + '[labs.mac.fake]\nchannels = ["ssh", "exec"]\nbroken_channels = ["ssh"]\n')

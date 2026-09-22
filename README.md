@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: CLI core, the Fake Provider and the Tart Provider (macOS Guests). VMware Fusion is planned; UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
+Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests) and the UI contract on macOS. VMware Fusion is planned; UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -69,7 +69,7 @@ vmlab base create macos-tahoe   # asks before downloading the image (tens of GB)
 vmlab base list
 ```
 
-`base create` clones a cirruslabs `*-base` image and provisions it: vmlab's SSH key, Remote Login, no sleep or screen saver, window restore off, and TCC grants (Accessibility, Screen Recording, Input Monitoring, Apple Events to System Events and Finder) for both Channels. It then reboots the Guest from outside, checks `kern.boottime` changed, and proves each Channel reaches System Events. `--reprovision` runs it again; so does a newer vmlab whose provisioning changed.
+`base create` clones a cirruslabs `*-base` image and provisions it: vmlab's SSH key, Remote Login, no sleep or screen saver, window and app restore off, the UI helper, and TCC grants (Accessibility, Screen Recording, Input Monitoring, Apple Events to System Events and Finder) for both Channels. It then reboots the Guest from outside, checks `kern.boottime` changed, and proves each Channel reaches System Events and holds the UI helper's Accessibility grant. `--reprovision` runs it again; so does a newer vmlab whose provisioning changed.
 
 **Guest-only security trade-off.** Granting automation permissions without MDM means writing TCC.db directly, which needs SIP off. The cirruslabs `*-base` images ship with SIP off. This affects only the throwaway Guest, never the Host.
 
@@ -93,6 +93,16 @@ channels = ["ssh", "exec"]   # SSH (multiplexed), then `tart exec` (the Tart gue
 - macOS runs at most two macOS VMs at once, so `--parallel` can't run a third.
 - `VMLAB_TART` overrides the `tart` binary.
 
+Provisioning also readies the desktop for UI work: loginwindow no longer relaunches the apps that ran at power-off (the image ships with Terminal), apps don't rewrite typed text (automatic capitalisation, spelling correction and smart punctuation are off), and the UI helper `vmlab-ui` (Swift: Accessibility + CGEvent) is compiled into `/usr/local/vmlab/bin`. Nothing is compiled at first use. Where the helper is missing (a Base guest provisioned by an older vmlab, or no Command Line Tools), UI commands fall back to a JXA script, which is slower, types through System Events (so it follows the Guest's keyboard layout), does not check what lies under a click, and does not wake lazy WebKit or Electron trees; `vmlab doctor` warns about it. Input events are paced a few milliseconds apart so the window server keeps their order; that is pacing, not waiting, which is always condition-plus-timeout.
+
+macOS traps the helper handles, so Scenarios don't have to:
+
+- **WebKit's accessibility tree is lazy** and goes to the *next* client that connects: a cold first read of a WebKit app (Tauri, Safari, WKWebView) shows no page content at all. The first time the helper meets an app process it reads it once to wake it, then reads again from a fresh process; after that even new windows come through on the first read.
+- **AXManualAccessibility** turns the tree on in Chromium and Electron apps. WebKit rejects it (error -25205), so it is set best effort and the wake-up read above is what makes WebKit work.
+- **Keyboard layouts**: chords are sent by physical key code (`cmd+c` copies on a Russian layout too) and text is typed as Unicode, independent of the layout.
+- **Focus stealing**: staging text in another app and pressing the app's hotkey happen in one Guest call (`stage-text --then`), and the result records which app was frontmost when the chord went out.
+- **Covered elements**: an element under the Dock, another window or scrolled out of view still has bounds. `click` asks Accessibility what lies under the point first and refuses with what it found there.
+
 A Scenario is a Python file defining `scenario(g)`:
 
 ```python
@@ -105,6 +115,39 @@ def scenario(g):
     g.check("echo prints hello", r.stdout.strip() == "hello", detail=r.stderr)
     g.screenshot("after echo")             # saved in the Run folder as evidence
     g.check("icon looks right", True, visual=True)  # a judgement from a screenshot: reported "visual, unverified"
+```
+
+## UI contract
+
+Scenarios and the agent read and drive the Guest's UI with the same commands and JSON on every OS (macOS now; Linux and Windows next). `vmlab ui COMMAND [--lab LAB]` prints JSON; each Scenario method returns the same object:
+
+| CLI | Scenario | Result |
+| --- | --- | --- |
+| `ui tree [--app APP]` | `g.tree(app=None)` | the node tree below |
+| `ui find [--text T] [--role R] [--app APP]` | `g.find(text=, role=, app=)` | `{"matches": [node without children, plus "app"]}` |
+| `ui click [--text/--role/--app] [--index N]`, `ui click --at X Y` | `g.click(..., index=0)`, `g.click(at=(x, y))` | `{"x", "y", "element", "under"}` |
+| `ui press CHORD` | `g.press("cmd+shift+space")` | `{"chord": "shift+cmd+space"}` |
+| `ui type TEXT` | `g.type(text)` | `{"typed": n}` |
+| `ui clipboard [--set TEXT]` | `g.clipboard()`, `g.set_clipboard(text)` | `{"text"}` |
+| `ui stage-text TEXT [--app APP] [--then CHORD]` | `g.stage_text(text, app=None, then=None)` | `{"app", "file", "frontmost", "selected", "pressed"}` |
+| `ui wait-for CONDITION [--timeout S]` | `g.wait_for(..., timeout=None)` | `{"met", "waited_s", "condition"[, "matches"]}` |
+| `ui screenshot [--out PATH]` | `g.screenshot(name)` | `{"path"}` (Scenarios: the path in the Run folder) |
+
+Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` in screen points, or null), `focused`, `enabled`, `native_role` (e.g. `AXButton`) and `children`. The root is the `desktop`, with `truncated` true when a size limit cut the tree short; its children are applications (with `pid`), holding their windows and tray items.
+
+- `find` matches `--text` against name, value and description: exact matches win, otherwise substrings. `--role` takes the cross-OS or the native role.
+- `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point.
+- Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key: `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`, `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...). An unknown key is a usage error (exit 2).
+- `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or gedit), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.
+- `wait-for` takes exactly one condition: an element (`--text`/`--role`/`--app`, or `--gone` for its disappearance), `--process NAME`, `--file PATH` or `--log PATH --pattern REGEX`. It polls until the condition holds or the timeout (default: the Lab's `step_timeout`) passes, never with fixed sleeps. Unmet, the CLI exits 1 and a Scenario gets `"met": false` to check.
+- UI commands need a running Guest (`vmlab up` or `vmlab deploy`). In a Scenario they count against its timeout like `g.exec`.
+
+```python
+def scenario(g):
+    staged = g.stage_text("Ohm's law relates voltage", then="cmd+shift+space")
+    g.check("hotkey went to the editor", staged["frontmost"] == staged["app"], detail=staged)
+    palette = g.wait_for(text="Selection", app="MyApp", timeout=10)
+    g.check("palette read the selection", palette["met"], detail=palette)
 ```
 
 Commands reach the Guest over its first working Channel (ADR 0003). When a Channel fails, the call falls back to the next Channel and the report notes it. A non-zero exit code is returned to the Scenario and never triggers a fallback. A call that exceeds its timeout is killed and fails the Run with the Scenario file and line; so does a call no Channel can carry.
@@ -134,7 +177,8 @@ vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
 vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
-vmlab doctor [LAB...] [--json]           # Provider, Guest and per-Channel checks with fixes; exit 1 on FAIL
+vmlab doctor [LAB...] [--json]           # Provider, Guest, per-Channel and UI helper checks with fixes; exit 1 on FAIL
+vmlab ui tree|find|click|press|type|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab version
 ```
 

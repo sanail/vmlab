@@ -8,8 +8,10 @@ import functools
 import json
 import os
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
-from vmlab import __version__, bases, config, doctor, runner, vendoring
+from vmlab import __version__, bases, config, doctor, runner, ui, vendoring
 from vmlab.config import ConfigError
 from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
@@ -58,6 +60,8 @@ def main(argv=None):
     p.add_argument("labs", nargs="*", metavar="LAB")
     p.add_argument("--json", action="store_true", help="print JSON")
 
+    _ui_parser(sub)
+
     p = sub.add_parser("status", help="show whether each Lab's Guest is running")
     p.add_argument("--json", action="store_true", help="print JSON")
 
@@ -87,7 +91,9 @@ def main(argv=None):
             return _status(project, args.json)
         if args.command == "doctor":
             return _doctor(project, args.labs, args.json)
-    except (ConfigError, bases.UsageError) as exc:
+        if args.command == "ui":
+            return _ui(project, args)
+    except (ConfigError, bases.UsageError, ui.UsageError) as exc:
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
     except GuestError as exc:
@@ -117,6 +123,86 @@ def _ask(question):
     if not sys.stdin.isatty():
         return False
     return input("%s [y/N] " % question).strip().lower() in ("y", "yes")
+
+
+def _ui_parser(sub):
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
+    element = argparse.ArgumentParser(add_help=False)
+    element.add_argument("--text", help="name, value or description: exact matches win, else substring")
+    element.add_argument("--role", help="cross-OS role (button, textfield, window, ...) or native role")
+    element.add_argument("--app", help="only inside this application")
+
+    p = sub.add_parser("ui", help="read and drive a running Guest's UI; prints JSON (the same shapes on every OS)")
+    ui_sub = p.add_subparsers(dest="ui_command", metavar="UI_COMMAND")
+    ui_sub.required = True
+    p = ui_sub.add_parser("tree", parents=[common], help="the accessibility tree of the desktop or one app")
+    p.add_argument("--app")
+    ui_sub.add_parser("find", parents=[common, element], help="elements by text and/or role")
+    p = ui_sub.add_parser("click", parents=[common, element], help="click an element's middle (or --at X Y)")
+    p.add_argument("--index", type=int, default=0, help="which match to click (default: the first)")
+    p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="click this screen point instead")
+    p = ui_sub.add_parser("press", parents=[common], help="press a key chord, e.g. cmd+shift+space")
+    p.add_argument("chord")
+    p = ui_sub.add_parser("type", parents=[common], help="type text into whatever has focus")
+    p.add_argument("text")
+    p = ui_sub.add_parser("wait-for", parents=[common, element], help="wait for one condition; exit 1 if it is not met in time")
+    p.add_argument("--gone", action="store_true", help="wait for the element to disappear")
+    p.add_argument("--process", help="a process of this name runs")
+    p.add_argument("--file", help="this Guest path exists (~ is the Guest user's home)")
+    p.add_argument("--log", help="this Guest file has a line matching --pattern")
+    p.add_argument("--pattern", help="a Python regular expression")
+    p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
+    p = ui_sub.add_parser("clipboard", parents=[common], help="read the clipboard (or --set it)")
+    p.add_argument("--set", metavar="TEXT")
+    p = ui_sub.add_parser("stage-text", parents=[common], help="open text in a third-party editor, select it all, then press --then; one Guest call")
+    p.add_argument("text")
+    p.add_argument("--app", help="the editor (default: TextEdit, Notepad or gedit)")
+    p.add_argument("--then", metavar="CHORD", help="chord to press once the text is selected")
+    p = ui_sub.add_parser("screenshot", parents=[common], help="save a PNG of the Guest's screen")
+    p.add_argument("--out", help="where to save it (default: .vmlab/runs/<time>-<lab>-screenshot.png)")
+
+
+def _ui(project, args):
+    if args.lab:
+        lab = project.lab(args.lab)
+    elif len(project.labs) == 1:
+        [lab] = project.labs.values()
+    else:
+        raise ui.UsageError("the project has several Labs; pick one with --lab (%s)" % ", ".join(project.labs))
+    provider = provider_for(project, lab)
+    if not provider.is_running():
+        raise GuestError("Guest %s is not running" % lab.name, "vmlab up %s   (or vmlab deploy %s)" % (lab.name, lab.name))
+    contract = ui.UI(provider, lambda doing: lab.step_timeout)
+    c = args.ui_command
+    if c == "tree":
+        result = contract.tree(args.app)
+    elif c == "find":
+        result = contract.find(text=args.text, role=args.role, app=args.app)
+    elif c == "click":
+        at = tuple(args.at) if args.at else None
+        result = contract.click(text=args.text, role=args.role, app=args.app, index=args.index, at=at)
+    elif c == "press":
+        result = contract.press(args.chord)
+    elif c == "type":
+        result = contract.type(args.text)
+    elif c == "wait-for":
+        timeout = lab.step_timeout if args.timeout is None else args.timeout
+        result = contract.wait_for(
+            timeout, text=args.text, role=args.role, app=args.app, gone=args.gone, process=args.process, file=args.file, log=args.log, pattern=args.pattern
+        )
+    elif c == "clipboard":
+        result = contract.clipboard(set=args.set)
+    elif c == "stage-text":
+        result = contract.stage_text(args.text, app=args.app, then=args.then)
+    else:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = Path(args.out) if args.out else project.runs_dir / ("%s-%s-screenshot.png" % (stamp, lab.name))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        provider.screenshot(dest)
+        result = {"path": str(dest.resolve())}
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return EXIT_FAILED if c == "wait-for" and not result["met"] else EXIT_OK
 
 
 def _up_down(project, command, names):

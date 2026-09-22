@@ -9,7 +9,10 @@ table (the suite adds its own), and point the suite at it:
 
 A real Lab runs in a project of its own under $VMLAB_HOME/contract/<lab>, so
 its Guest is reused between runs and never touches your projects. Tests run
-in order: up, Channels, exec, timeouts, deploy, screenshot, restore, down.
+in order: up, Channels, exec, timeouts, deploy, screenshot, the UI contract
+(in the OS's stock text editor), restore, down.
+
+VMLAB_UI_HELPER=jxa runs the macOS UI part through the JXA fallback.
 """
 
 import json
@@ -107,6 +110,19 @@ def cmd(g, posix, windows):
     return ["powershell", "-NoProfile", "-Command", windows] if g.os == "windows" else ["sh", "-c", posix]
 """
 
+# The UI contract: every node has these keys on every OS.
+UI = COMMANDS + """
+import os
+import uuid
+
+NODE_KEYS = {"role", "name", "value", "description", "bounds", "focused", "enabled", "native_role", "children"}
+
+def walk(node):
+    yield node
+    for child in node["children"]:
+        yield from walk(child)
+"""
+
 
 class ContractTest(unittest.TestCase):
     target = None
@@ -178,7 +194,61 @@ def scenario(g):
         [shot] = report["scenarios"][0]["screenshots"]
         self.assertTrue((Path(report["run_dir"]) / shot).read_bytes().startswith(b"\x89PNG"))
 
-    def test_07_restore_returns_to_clean_state(self):
+    def test_07_ui_tree_and_find_share_one_shape(self):
+        self.assertPassed(*self.target.scenario("ui_tree.py", UI + """
+def scenario(g):
+    text = "vmlab contract " + uuid.uuid4().hex[:8]
+    staged = g.stage_text(text)
+    g.check("the editor is frontmost when staged", staged["frontmost"] == staged["app"], detail=staged)
+    g.check("the staged text is selected", staged["selected"] == text, detail=staged)
+    tree = g.tree(app=staged["app"])
+    bad = [n for n in walk(tree) if not NODE_KEYS <= set(n)]
+    g.check("every node has the shared shape", not bad, detail=bad[:1])
+    g.check("the root is the desktop", tree["role"] == "desktop", detail=tree["role"])
+    g.check("the tree holds just the editor", [a["role"] for a in tree["children"]] == ["application"], detail=[a["name"] for a in tree["children"]])
+    found = g.find(role="textarea", text=text, app=staged["app"])["matches"]
+    g.check("the text area is found by role and text", len(found) == 1 and found[0]["value"] == text, detail=found)
+    g.check("a match has no children", found and "children" not in found[0])
+"""))
+
+    def test_08_ui_input_clipboard_click_and_wait(self):
+        self.assertPassed(*self.target.scenario("ui_input.py", UI + """
+def scenario(g):
+    mod = "cmd" if g.os == "macos" else "ctrl"
+    tag = uuid.uuid4().hex[:8]
+    staged = g.stage_text("copy me " + tag, then=mod + "+c")
+    app = staged["app"]
+    g.check("the chord pressed in the staging call copied the selection", g.clipboard()["text"] == "copy me " + tag, detail=g.clipboard())
+    g.set_clipboard("clip " + tag)
+    g.check("the clipboard can be set", g.clipboard()["text"] == "clip " + tag)
+    # The JXA fallback types through System Events, which follows the keyboard layout: ASCII only.
+    typed = ("typed u " if os.environ.get("VMLAB_UI_HELPER") == "jxa" else "typed \u00fc ") + tag
+    g.check("type reports what it typed", g.type(typed)["typed"] == len(typed))
+    waited = g.wait_for(role="textarea", text=typed, app=app, timeout=10)
+    g.check("typing replaced the selection", waited["met"], detail=waited)
+    g.screenshot("before the click")  # evidence, should something cover the text area
+    clicked = g.click(role="textarea", text=typed, app=app)
+    g.check("the click landed on the text area", clicked["element"]["role"] == "textarea", detail=clicked)
+    g.press(mod + "+a")
+    g.press(mod + "+c")
+    g.check("chords select and copy after a click", g.clipboard()["text"] == typed, detail=g.clipboard())
+    g.check("wait-for a vanished element times out unmet", not g.wait_for(text="no such element " + tag, timeout=1)["met"])
+    g.check("wait-for gone", g.wait_for(text="no such element " + tag, gone=True, timeout=1)["met"])
+    g.exec(cmd(g, "touch ~/contract-ui-" + tag, "New-Item -Force (Join-Path $HOME contract-ui-" + tag + ")"))
+    g.check("wait-for a file", g.wait_for(file="~/contract-ui-" + tag, timeout=10)["met"])
+"""))
+
+    def test_09_ui_cli_prints_the_same_json(self):
+        proc = self.target.vmlab("ui", "clipboard", "--set", "from the CLI", "--lab", self.target.lab)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout), {"text": "from the CLI"})
+        proc = self.target.vmlab("ui", "tree", "--lab", self.target.lab)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["role"], "desktop")
+        proc = self.target.vmlab("ui", "press", "ctrl+nokey", "--lab", self.target.lab)
+        self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_10_restore_returns_to_clean_state(self):
         self.assertPassed(*self.target.scenario("dirty.py", COMMANDS + """
 def scenario(g):
     g.check("marker written", g.exec(cmd(g, "touch ~/contract-marker", "New-Item -Force (Join-Path $HOME contract-marker)")).ok)
@@ -189,7 +259,7 @@ def scenario(g):
     g.check("marker gone after restore", not r.ok)
 """, "--fresh"))
 
-    def test_08_down_stops_the_guest(self):
+    def test_11_down_stops_the_guest(self):
         proc = self.target.vmlab("down", self.target.lab)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse(self.target.status()["running"])

@@ -62,8 +62,8 @@ class Provider:
     """Starts, stops and talks to the Guest that realises one Lab.
 
     Implementations provide detect, is_running, start, stop, is_reachable,
-    channels, restore, copy_in, screenshot and ui_tree; up, down, exec,
-    shell_argv and remove_paths are built on those.
+    channels, restore, copy_in and screenshot; up, down, exec, shell_argv,
+    remove_paths and ui_call are built on those.
     """
 
     NOT_IMPLEMENTED = None  # set by stubs: the fix shown when a Lab selects this Provider
@@ -73,6 +73,7 @@ class Provider:
         self.project = project
         self.lab = lab
         self.on_exec = None  # called with every ExecResult, so reports can note Channels and fallbacks
+        self._ui_helper = None
 
     @classmethod
     def validate_options(cls, config_path, key, options):
@@ -151,9 +152,20 @@ class Provider:
         """Write a PNG screenshot of the Guest's screen to dest."""
         raise NotImplementedError
 
-    def ui_tree(self):
-        """Return the accessibility tree of the Guest's desktop as JSON-able data."""
-        raise NotImplementedError
+    def ui_call(self, command, params, timeout):
+        """Run one UI contract command in the Guest's helper (vmlab.uihelpers) and return its JSON result.
+
+        vmlab.ui builds the cross-OS commands on this; a Provider overrides it only
+        when its Guests need no helper (the Fake Provider).
+        """
+        return self.ui_helper().call(command, params, timeout)
+
+    def ui_helper(self):
+        if self._ui_helper is None:
+            from vmlab import uihelpers
+
+            self._ui_helper = uihelpers.for_provider(self)
+        return self._ui_helper
 
     def up(self):
         """Start the Guest if needed and wait until it is reachable. Idempotent."""

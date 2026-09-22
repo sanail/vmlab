@@ -20,6 +20,7 @@ import sys
 import time
 import traceback
 
+from vmlab import ui
 from vmlab.config import ConfigError
 from vmlab.providers.base import GuestError, GuestTimeout
 
@@ -94,10 +95,57 @@ class Guest:
         self._remaining("launch")
         self._launch_app(env)
 
-    def tree(self):
-        """The accessibility tree of the Guest's desktop."""
-        self._remaining("tree")
-        return self._provider.ui_tree()
+    # The UI contract (vmlab.ui): each method returns what `vmlab ui <command>` prints.
+
+    def tree(self, app=None):
+        """The accessibility tree of the Guest's desktop, or of one app."""
+        return self._ui_call(lambda contract: contract.tree(app))
+
+    def find(self, text=None, role=None, app=None):
+        """{"matches": [...]}: elements by text (exact beats substring) and/or role, optionally in one app."""
+        return self._ui_call(lambda contract: contract.find(text=text, role=role, app=app))
+
+    def click(self, text=None, role=None, app=None, index=0, at=None):
+        """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing matches."""
+        return self._ui_call(lambda contract: contract.click(text=text, role=role, app=app, index=index, at=at))
+
+    def press(self, chord):
+        """Press a key chord such as "cmd+shift+space", by physical key (any keyboard layout)."""
+        return self._ui_call(lambda contract: contract.press(chord))
+
+    def type(self, text):
+        """Type text into whatever has focus."""
+        return self._ui_call(lambda contract: contract.type(text))
+
+    def clipboard(self):
+        """{"text": ...}: the Guest's clipboard as text."""
+        return self._ui_call(lambda contract: contract.clipboard())
+
+    def set_clipboard(self, text):
+        """Put text on the Guest's clipboard."""
+        return self._ui_call(lambda contract: contract.clipboard(set=text))
+
+    def stage_text(self, text, app=None, then=None):
+        """Open text in a third-party editor, select it all and press the chord then, all in one Guest call."""
+        return self._ui_call(lambda contract: contract.stage_text(text, app=app, then=then))
+
+    def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, timeout=None):
+        """Wait until one condition holds: an element appears (or is gone), a process runs, a file
+        exists, or a log file has a line matching pattern. Returns {"met": bool, ...}; never raises
+        for an unmet condition. timeout defaults to the Lab's step_timeout."""
+        timeout = self._step_timeout if timeout is None else timeout
+        return self._ui_call(
+            lambda contract: contract.wait_for(timeout, text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern)
+        )
+
+    def _ui_call(self, fn):
+        self._remaining("a UI command")
+        try:
+            return fn(ui.UI(self._provider, lambda doing: min(self._step_timeout, self._remaining(doing))))
+        except GuestTimeout as exc:
+            if not isinstance(exc, ScenarioTimeout) and time.time() >= self._deadline:
+                raise ScenarioTimeout("Scenario exceeded its %ss timeout (during a UI command)" % self._limit)
+            raise
 
     def screenshot(self, name):
         """Save a screenshot as evidence and return its path relative to the run folder."""
@@ -144,7 +192,7 @@ def run_scenario(path, guest, prepare):
         raise
     except ScenarioError as exc:
         error = str(exc)
-    except GuestError as exc:
+    except (GuestError, ui.UsageError) as exc:
         error = "%s: %s" % (_scenario_line(path, sys.exc_info()[2]), exc)
     except Exception:
         error = traceback.format_exc(limit=-3).strip()

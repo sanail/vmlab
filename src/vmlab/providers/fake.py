@@ -3,7 +3,8 @@
 It is shipped (not test-only) so the CLI can be exercised end to end without a
 hypervisor. The Guest's filesystem is a plain directory; commands run on the
 Host with that directory as the working directory and are recorded in
-commands.jsonl. Options, under [labs.<name>.fake]:
+commands.jsonl. The UI contract serves the scripted tree and emulates a text
+editor for stage-text (ui_call). Options, under [labs.<name>.fake]:
 
     ui_tree = "path/to/tree.json"   # scripted UI tree, relative to the config file
     channels = ["ssh", "exec"]      # Channel names, preferred first
@@ -23,7 +24,7 @@ import zlib
 from vmlab import hostproc
 from vmlab.config import ConfigError
 from vmlab.home import vmlab_home
-from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestTimeout, Provider
+from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
@@ -139,13 +140,82 @@ class FakeProvider(Provider):
         if isinstance(boot, bool) or not isinstance(boot, (int, float)) or boot < 0:
             raise ConfigError(config_path, key + ".boot_seconds", "must be a number >= 0", "e.g. boot_seconds = 2")
 
-    def ui_tree(self):
-        self._record("ui_tree")
+    def ui_call(self, command, params, timeout):
+        """The UI contract without a helper: the scripted tree, plus a text editor that stage-text opens.
+
+        Clicks and key presses are recorded; in the editor, a click focuses the text
+        area, cmd+a selects all, cmd+c / cmd+v copy and paste (or ctrl+...), and typing replaces
+        the selection. The clipboard and the editor live in the Guest's filesystem,
+        so restoring Clean state clears them.
+        """
+        self._record("ui", command=command, params=params)
+        if not self.is_reachable():
+            raise ChannelError("Guest %s is not running" % self.lab.name, "vmlab up %s" % self.lab.name)
+        state = self._ui_state()
+        editor = state.get("editor")
+        area = editor["children"][0]["children"][0] if editor else None
+        if command == "tree":
+            tree = self._scripted_tree()
+            apps = tree.get("children", []) + ([editor] if editor else [])
+            if params.get("app"):
+                apps = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()]
+            return dict(tree, children=apps)
+        if command == "click":
+            if area and _inside(area["bounds"], params["x"], params["y"]):
+                area["focused"], state["selected"] = True, False
+            self._save_ui_state(state)
+            return {"x": params["x"], "y": params["y"], "under": None}
+        if command == "press":
+            shortcut = _shortcut(params)
+            if area and area["focused"]:
+                if shortcut == "a":
+                    state["selected"] = True
+                elif shortcut == "c" and state["selected"]:
+                    state["clipboard"] = area["value"]
+                elif shortcut == "v":
+                    _type_into(area, state, state.get("clipboard") or "")
+            self._save_ui_state(state)
+            return {"key": params["key"], "modifiers": params["modifiers"]}
+        if command == "type":
+            if area and area["focused"]:
+                _type_into(area, state, params["text"])
+                self._save_ui_state(state)
+            return {"typed": len(params["text"])}
+        if command == "clipboard":
+            if "set" in params:
+                state["clipboard"] = params["set"]
+                self._save_ui_state(state)
+            return {"text": state.get("clipboard")}
+        if command == "stage-text":
+            path = "/tmp/vmlab-stage.txt"
+            window = {"role": "window", "name": "vmlab-stage.txt", "bounds": {"x": 100, "y": 100, "w": 600, "h": 400}, "children": [
+                {"role": "textarea", "value": params["text"], "focused": True, "bounds": {"x": 100, "y": 130, "w": 600, "h": 370}},
+            ]}  # fmt: skip
+            state["editor"] = {"role": "application", "name": params["app"], "pid": 0, "focused": True, "children": [window]}
+            state["selected"] = True
+            pressed = params.get("then")
+            if pressed and _shortcut(pressed) == "c":
+                state["clipboard"] = params["text"]
+            self._save_ui_state(state)
+            return {"app": params["app"], "file": path, "frontmost": params["app"], "selected": params["text"], "pressed": pressed}
+        raise GuestError("unknown UI command %r" % command)
+
+    def ui_helper(self):
+        return _EmulatedHelper()
+
+    def _scripted_tree(self):
         name = self.lab.options.get("ui_tree")
         if not name:
             return DEFAULT_TREE
         key = "labs.%s.fake.ui_tree" % self.lab.name
         return _read_tree(self.project.vmlab_dir / name, self.project.config_path, key)
+
+    def _ui_state(self):
+        path = self.fs / "ui-state.json"
+        return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {"clipboard": None, "editor": None, "selected": False}
+
+    def _save_ui_state(self, state):
+        (self.fs / "ui-state.json").write_text(json.dumps(state), encoding="utf-8")
 
 
 class FakeChannel(Channel):
@@ -177,6 +247,25 @@ class FakeChannel(Channel):
         except FileNotFoundError:
             code, out, err = 127, "", "%s: command not found\n" % argv[0]
         return ExecResult(argv, code, out, err)
+
+
+class _EmulatedHelper:
+    def describe(self, timeout):
+        return True, "emulated by the Fake Provider"
+
+
+def _shortcut(chord):
+    """The key of an editing shortcut, cmd+<key> or ctrl+<key> (whichever the Lab's OS uses), else None."""
+    return chord["key"] if chord["modifiers"] in (["cmd"], ["ctrl"]) else None
+
+
+def _inside(bounds, x, y):
+    return bounds["x"] <= x < bounds["x"] + bounds["w"] and bounds["y"] <= y < bounds["y"] + bounds["h"]
+
+
+def _type_into(area, state, text):
+    area["value"] = text if state["selected"] else area["value"] + text
+    state["selected"] = False
 
 
 def _timeout(argv, timeout, channel):

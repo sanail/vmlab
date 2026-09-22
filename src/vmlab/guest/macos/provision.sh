@@ -2,7 +2,8 @@
 # Provision a macOS Base guest for vmlab. Idempotent: safe to re-run after a failure.
 #
 # Runs as the Guest user through `tart exec` (the Tart guest agent), which needs
-# nothing set up yet. Argument: vmlab's SSH public key.
+# nothing set up yet. Arguments: vmlab's SSH public key, and the path of the UI
+# helper's Swift source, already copied into the Guest.
 #
 # Security trade-off, Guest only: SIP must be off, because granting Accessibility,
 # Screen Recording and Apple Events to automation without MDM means writing TCC.db
@@ -10,6 +11,7 @@
 set -euo pipefail
 
 PUBKEY="$1"
+UI_SRC="$2"
 say() { printf '  %s\n' "$*"; }
 fail() { printf 'provision: %s\n' "$*" >&2; exit 1; }
 
@@ -32,10 +34,37 @@ say "power: never sleep, no screen saver"
 sudo -n pmset -a sleep 0 displaysleep 0 disksleep 0 >/dev/null
 defaults -currentHost write com.apple.screensaver idleTime -int 0
 
-say "desktop: no windows restored at login"
+say "desktop: no apps or windows restored at login"
 defaults write NSGlobalDomain NSQuitAlwaysKeepsWindows -bool false
 defaults write com.apple.loginwindow TALLogoutSavesState -bool false
+# loginwindow relaunches whatever ran when the Guest was powered off (the image
+# ships with Terminal). The per-host global domain turns that off; the plain
+# global one does too, but makes AppKit log "ApplePersistence=NO" more widely.
+defaults -currentHost write -g ApplePersistence -bool false
 rm -rf ~/Library/Saved\ Application\ State/*.savedState
+osascript -e 'quit app "Terminal"' >/dev/null 2>&1 || true
+
+say "typing: no automatic capitalisation, spelling correction or smart punctuation"
+# Otherwise apps rewrite what vmlab types ("typed" arrives as "Typed").
+for key in NSAutomaticCapitalizationEnabled NSAutomaticSpellingCorrectionEnabled NSAutomaticPeriodSubstitutionEnabled \
+  NSAutomaticQuoteSubstitutionEnabled NSAutomaticDashSubstitutionEnabled NSAutomaticTextCompletionEnabled \
+  WebAutomaticSpellingCorrectionEnabled; do
+  defaults write -g "$key" -bool false
+done
+
+say "UI helper: compile vmlab-ui (Accessibility + CGEvent)"
+UI_DIR=/usr/local/vmlab
+if ! xcrun --find swiftc >/dev/null 2>&1; then
+  say "  no Swift compiler (Command Line Tools): UI commands will use the slower JXA fallback"
+elif [ -x "$UI_DIR/bin/vmlab-ui" ] && cmp -s "$UI_SRC" "$UI_DIR/src/vmlab-ui.swift"; then
+  say "  already built from this source"
+else
+  sudo -n mkdir -p "$UI_DIR/bin" "$UI_DIR/src"
+  xcrun swiftc -O -o "$UI_SRC.bin" "$UI_SRC" || fail "compiling the UI helper failed (output above)"
+  sudo -n install -m 755 "$UI_SRC.bin" "$UI_DIR/bin/vmlab-ui"
+  sudo -n install -m 644 "$UI_SRC" "$UI_DIR/src/vmlab-ui.swift"
+  rm -f "$UI_SRC.bin"
+fi
 
 say "TCC: grant automation to vmlab's Channels"
 SYS_DB="/Library/Application Support/com.apple.TCC/TCC.db"

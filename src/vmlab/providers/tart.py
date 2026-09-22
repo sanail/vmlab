@@ -32,7 +32,7 @@ import tempfile
 import time
 import uuid
 
-from vmlab import bases, hostproc
+from vmlab import bases, hostproc, uihelpers
 from vmlab.config import ConfigError
 from vmlab.home import vmlab_home
 from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
@@ -48,7 +48,7 @@ STOP_GRACE = 30  # s a Guest gets to shut down before tart forces it off
 CLONE_TIMEOUT = 4 * 3600  # s for a first clone, which downloads the image
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 900
-PROVISION_VERSION = 2  # bump when provision.sh changes; `base create` then re-provisions
+PROVISION_VERSION = 3  # bump when provision.sh or the UI helper changes; `base create` then re-provisions
 DESKTOP_PROBE = ["/usr/bin/pgrep", "-qx", "Dock"]  # the GUI session is up
 SYSTEM_EVENTS_PROBE = ["/usr/bin/osascript", "-e", 'tell application "System Events" to count processes']
 SYSTEM_EVENTS_TIMEOUT = 30  # s; longer means a TCC consent dialog is waiting for a click
@@ -329,9 +329,6 @@ class TartProvider(Provider):
             )
         dest.write_bytes(png)
 
-    def ui_tree(self):
-        raise GuestError("the macOS UI contract is not implemented yet", "use g.exec() and g.screenshot() for now")
-
 
 def create_base(name, image, confirm, reprovision, out):
     """Clone image into the Base guest's VM (asking before a download), provision it,
@@ -372,11 +369,15 @@ def create_base(name, image, confirm, reprovision, out):
 
     out("provisioning %s" % vm.name)
     user = _checked(agent.exec(["/usr/bin/id", "-un"], CALL_TIMEOUT, {}), "id -un").stdout.strip()
-    script = _read_guest_file("macos/provision.sh")
+    ui_src = "/tmp/vmlab-ui-%s.swift" % uuid.uuid4().hex[:8]
     with tempfile.TemporaryFile() as stdin:
-        stdin.write(script)
+        stdin.write(_read_guest_file("macos/vmlab-ui.swift"))
         stdin.seek(0)
-        result = agent.exec(["/bin/bash", "-s", "--", public_key()], PROVISION_TIMEOUT, {}, stdin=stdin)
+        _checked(agent.exec(["/bin/sh", "-c", 'cat > "$1"', "sh", ui_src], CALL_TIMEOUT, {}, stdin=stdin), "copy the UI helper's source")
+    with tempfile.TemporaryFile() as stdin:
+        stdin.write(_read_guest_file("macos/provision.sh"))
+        stdin.seek(0)
+        result = agent.exec(["/bin/bash", "-s", "--", public_key(), ui_src], PROVISION_TIMEOUT, {}, stdin=stdin)
     for line in result.stdout.splitlines():
         out(line)
     if not result.ok:
@@ -410,6 +411,15 @@ def create_base(name, image, confirm, reprovision, out):
                 )
             _checked(result, "System Events over Channel %s" % channel.name, "re-run `vmlab base create %s --reprovision`" % name)
             out("  Channel %s reaches System Events" % channel.name)
+            result = channel.exec(["/bin/sh", "-c", uihelpers.MACOS_GUARD, "sh", "version"], CALL_TIMEOUT, {})
+            if result.code != uihelpers.MISSING:
+                info = json.loads(_checked(result, "vmlab-ui over Channel %s" % channel.name).stdout)
+                if not info.get("trusted"):
+                    raise GuestError(
+                        "vmlab-ui has no Accessibility grant over Channel %s" % channel.name,
+                        "re-run `vmlab base create %s --reprovision`" % name,
+                    )
+                out("  Channel %s: vmlab-ui has the Accessibility grant" % channel.name)
     finally:
         ssh.close()
     vm.stop(BASE_BOOT_TIMEOUT)
