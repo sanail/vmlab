@@ -1,0 +1,703 @@
+#!/usr/bin/env python3
+"""vmlab-ui for Linux Guests: the Linux side of vmlab's UI contract.
+
+vmlab sends this file to `python3 - COMMAND JSON` on stdin with every call, so
+it is never out of step with the Host. It prints one JSON object; on failure it
+exits 1 with a message on stderr. The Host maps native roles to vmlab's
+cross-OS roles and does all matching (vmlab.ui); this helper only reads the
+tree and acts at screen coordinates. Commands and parameters are those of the
+macOS helper (guest/macos/vmlab-ui.swift).
+
+The session type, X11 or Wayland, is asked of logind at every call, and the
+session's environment (DISPLAY, WAYLAND_DISPLAY, ...) is taken from systemd's
+user manager, into which the session imports it: a Channel's own login has none.
+
+- The tree comes from AT-SPI in both sessions.
+- X11: windows from the window manager (python3-xlib), input through XTEST
+  (xdotool, which also types characters the keyboard layout lacks), the
+  clipboard through xclip.
+- Wayland (GNOME): a client can neither learn where windows are nor move the
+  pointer to a point, so vmlab's GNOME Shell extension (shell-extension/) does
+  that, and input and the clipboard go through it too.
+
+Traps (README: "Linux Guests with VMware Fusion"):
+- Toolkits disagree about coordinates. GTK 4 reports every element at (0, 0) in
+  screen coordinates, in either session; GTK 3 on Wayland reports them relative
+  to its window, shadow included. So every element's position is read relative
+  to its window, and the window's position comes from the window manager:
+  whichever of its rectangles, with or without the client-side shadow, has the
+  size the toolkit reports for the window.
+- Hidden widgets (a tab in the background, a hidden window) stay in the tree
+  without the VISIBLE or SHOWING state; they are left out.
+- Registrations of apps that no longer answer would cost AT-SPI's default
+  timeout each: timeouts are short.
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+import uuid
+
+VERSION = 1
+EXTENSION_VERSION = 1  # of shell-extension/, installed at provisioning
+MAX_NODES = 5000
+MAX_TEXT = 100000  # characters of an element's text
+ATSPI_TIMEOUT_MS = 500
+POLL = 0.1
+SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP")
+REPROVISION = "re-provision the Base guest: vmlab base create NAME --reprovision"
+SELECT_ALL = ("a", ["ctrl"])
+
+# linux/input-event-codes.h, for the Wayland session
+EVDEV = dict(
+    {c: n for c, n in zip("qwertyuiop", range(16, 26))},
+    **{c: n for c, n in zip("asdfghjkl", range(30, 39))},
+    **{c: n for c, n in zip("zxcvbnm", range(44, 51))},
+    **{str(d): 2 + (d - 1) % 10 for d in range(10)},
+    **{"f%d" % n: 58 + n for n in range(1, 11)},
+    f11=87, f12=88, space=57, enter=28, tab=15, escape=1, backspace=14, delete=111, up=103, down=108,
+    left=105, right=106, home=102, end=107, pageup=104, pagedown=109, minus=12, equal=13, comma=51,
+    period=52, slash=53, semicolon=39, quote=40, backslash=43, grave=41, leftbracket=26, rightbracket=27,
+    ctrl=29, alt=56, shift=42, cmd=125,
+)  # fmt: skip
+# X keysym names, for xdotool; letters and digits are their own names
+KEYSYMS = dict(
+    {"f%d" % n: "F%d" % n for n in range(1, 13)},
+    space="space", enter="Return", tab="Tab", escape="Escape", backspace="BackSpace", delete="Delete",
+    up="Up", down="Down", left="Left", right="Right", home="Home", end="End", pageup="Prior",
+    pagedown="Next", minus="minus", equal="equal", comma="comma", period="period", slash="slash",
+    semicolon="semicolon", quote="apostrophe", backslash="backslash", grave="grave",
+    leftbracket="bracketleft", rightbracket="bracketright", ctrl="ctrl", alt="alt", shift="shift", cmd="super",
+)  # fmt: skip
+
+
+def fail(message):
+    sys.stderr.write("vmlab-ui: %s\n" % message)
+    sys.exit(1)
+
+
+def emit(value):
+    sys.stdout.write(json.dumps(value) + "\n")
+
+
+def output(argv, timeout=10):
+    """stdout of argv, or None if it failed or is missing."""
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout if result.returncode == 0 else None
+
+
+def run(argv, what, timeout=30):
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        fail("%s is not installed; %s" % (argv[0], REPROVISION))
+    except subprocess.TimeoutExpired:
+        fail("%s did not finish within %ss" % (what, timeout))
+    if result.returncode:
+        fail("%s failed: %s" % (what, (result.stderr or result.stdout).strip() or "exit %d" % result.returncode))
+    return result.stdout
+
+
+def session():
+    """"x11" or "wayland": the type of the user's graphical session, whose environment is then in os.environ."""
+    uid = os.getuid()
+    os.environ.setdefault("XDG_RUNTIME_DIR", "/run/user/%d" % uid)
+    os.environ.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=%s/bus" % os.environ["XDG_RUNTIME_DIR"])
+    sid = (output(["loginctl", "show-user", str(uid), "-p", "Display", "--value"]) or "").strip()
+    kind = (output(["loginctl", "show-session", sid, "-p", "Type", "--value"]) or "").strip() if sid else ""
+    if kind not in ("x11", "wayland"):
+        fail("no graphical session is logged in (logind: %s); wait for the desktop, e.g. `vmlab up`" % (kind or "none"))
+    env = {}
+    for line in (output(["systemctl", "--user", "show-environment"]) or "").splitlines():
+        key, _, value = line.partition("=")
+        if key in SESSION_KEYS:
+            env[key] = value
+    # After a session change the user manager may still hold the previous session's values.
+    if env.get("XDG_SESSION_TYPE") != kind:
+        fail("the %s session has not published its environment yet; wait for the desktop" % kind)
+    os.environ.update(env)
+    return kind
+
+
+def process_name(pid):
+    try:
+        with open("/proc/%d/comm" % pid) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+class Window:
+    """A top-level window as the window manager sees it. frame is what shows on screen,
+    buffer includes a client-side shadow; both (x, y, w, h) in screen coordinates."""
+
+    def __init__(self, id, pid, title, frame, buffer, focused, hidden, background):
+        self.id, self.pid, self.title = id, pid, title
+        self.frame, self.buffer = tuple(frame), tuple(buffer)
+        self.focused, self.hidden, self.background = focused, hidden, background
+
+    def contains(self, x, y):
+        fx, fy, fw, fh = self.frame
+        return fx <= x < fx + fw and fy <= y < fy + fh
+
+
+class WaylandShell:
+    """GNOME on Wayland, through vmlab's Shell extension (org.vmlab.Shell)."""
+
+    def __init__(self):
+        from gi.repository import Gio, GLib
+
+        self.GLib = GLib
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.Gio = Gio
+        try:
+            version = self._call("Version")[0]
+        except GLib.Error:
+            fail("vmlab's GNOME Shell extension (vmlab-ui@vmlab) is not running; %s" % REPROVISION)
+        if version != EXTENSION_VERSION:
+            fail("vmlab's GNOME Shell extension is version %s, this vmlab needs %s; %s" % (version, EXTENSION_VERSION, REPROVISION))
+
+    def _call(self, method, signature=None, *args, timeout_ms=30000):
+        params = self.GLib.Variant("(%s)" % signature, args) if signature else None
+        result = self.bus.call_sync(
+            "org.vmlab.Shell", "/org/vmlab/Shell", "org.vmlab.Shell", method, params, None,
+            self.Gio.DBusCallFlags.NO_AUTO_START, timeout_ms, None,
+        )  # fmt: skip
+        return result.unpack() if result is not None else ()
+
+    def describe(self):
+        return "vmlab GNOME Shell extension %d" % EXTENSION_VERSION
+
+    def state(self):
+        """(screen (w, h), windows bottom to top)."""
+        data = json.loads(self._call("Windows")[0])
+        # Meta.WindowType: 1 desktop, 2 dock
+        windows = [
+            Window(w["id"], w["pid"], w["title"], w["frame"], w["buffer"], w["focused"], w["hidden"], w.get("type") in (1, 2))
+            for w in data["windows"]
+        ]
+        return tuple(data["screen"]), windows
+
+    def activate(self, window):
+        self._call("Activate", "t", window.id)
+
+    def click(self, x, y):
+        self._call("Click", "dd", float(x), float(y))
+
+    def press(self, key, modifiers):
+        self._call("Keys", "au", [EVDEV[m] for m in modifiers] + [EVDEV[key]])
+
+    def type(self, text):
+        self._call("Type", "s", text)
+
+    def clipboard(self):
+        return json.loads(self._call("ClipboardGet")[0])["text"]
+
+    def set_clipboard(self, text):
+        self._call("ClipboardSet", "s", text)
+
+
+class X11:
+    """An X11 session: the window manager's EWMH properties, xdotool and xclip."""
+
+    def __init__(self):
+        try:
+            from Xlib import X, display
+        except ImportError:
+            fail("python3-xlib is not installed; %s" % REPROVISION)
+        self.X = X
+        try:
+            self.display = display.Display()
+        except Exception as exc:
+            fail("cannot open the X display %s: %s" % (os.environ.get("DISPLAY"), exc))
+        self.root = self.display.screen().root
+
+    def describe(self):
+        return "xdotool"
+
+    def _atom(self, name):
+        return self.display.intern_atom(name)
+
+    def _prop(self, window, name, kind=0):
+        try:
+            value = window.get_full_property(self._atom(name), kind)
+        except Exception:  # the window went away
+            return None
+        return value.value if value is not None else None
+
+    def _title(self, window):
+        title = self._prop(window, "_NET_WM_NAME", self._atom("UTF8_STRING"))
+        if title is None:
+            title = self._prop(window, "WM_NAME", self.X.AnyPropertyType)
+        if isinstance(title, bytes):
+            title = title.decode("utf-8", "replace")
+        return title or ""
+
+    def state(self):
+        screen = self.display.screen()
+        active = (self._prop(self.root, "_NET_ACTIVE_WINDOW") or [0])[0]
+        background = {self._atom("_NET_WM_WINDOW_TYPE_DESKTOP"), self._atom("_NET_WM_WINDOW_TYPE_DOCK")}
+        hidden_state = self._atom("_NET_WM_STATE_HIDDEN")
+        windows = []
+        for wid in self._prop(self.root, "_NET_CLIENT_LIST_STACKING") or []:
+            window = self.display.create_resource_object("window", wid)
+            try:
+                geometry = window.get_geometry()
+                origin = self.root.translate_coords(window, 0, 0)
+                mapped = window.get_attributes().map_state == self.X.IsViewable
+            except Exception:
+                continue
+            buffer = (origin.x, origin.y, geometry.width, geometry.height)
+            left, right, top, bottom = list(self._prop(window, "_GTK_FRAME_EXTENTS") or [0, 0, 0, 0])[:4]
+            frame = (origin.x + left, origin.y + top, geometry.width - left - right, geometry.height - top - bottom)
+            types = set(self._prop(window, "_NET_WM_WINDOW_TYPE") or [])
+            hidden = not mapped or hidden_state in set(self._prop(window, "_NET_WM_STATE") or [])
+            pid = (self._prop(window, "_NET_WM_PID") or [0])[0]
+            windows.append(Window(wid, pid, self._title(window), frame, buffer, wid == active, hidden, bool(types & background)))
+        return (screen.width_in_pixels, screen.height_in_pixels), windows
+
+    def activate(self, window):
+        from Xlib.protocol import event
+
+        # Source 2: a pager, which window managers obey without focus-stealing prevention.
+        message = event.ClientMessage(
+            window=self.display.create_resource_object("window", window.id),
+            client_type=self._atom("_NET_ACTIVE_WINDOW"),
+            data=(32, [2, self.X.CurrentTime, 0, 0, 0]),
+        )
+        self.root.send_event(message, event_mask=self.X.SubstructureRedirectMask | self.X.SubstructureNotifyMask)
+        self.display.flush()
+
+    def click(self, x, y):
+        run(["xdotool", "mousemove", "--sync", str(x), str(y), "click", "1"], "xdotool click")
+
+    def press(self, key, modifiers):
+        chord = "+".join([KEYSYMS[m] for m in modifiers] + [KEYSYMS.get(key, key)])
+        run(["xdotool", "key", "--clearmodifiers", chord], "xdotool key %s" % chord)
+
+    def type(self, text):
+        run(["xdotool", "type", "--delay", "8", "--", text], "xdotool type", timeout=30 + len(text) // 10)
+
+    def clipboard(self):
+        return output(["xclip", "-selection", "clipboard", "-o"])
+
+    def set_clipboard(self, text):
+        # xclip stays behind to own the selection; it must not hold this call's pipes.
+        try:
+            proc = subprocess.Popen(
+                ["xclip", "-selection", "clipboard", "-i"], stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )  # fmt: skip
+        except FileNotFoundError:
+            fail("xclip is not installed; %s" % REPROVISION)
+        proc.communicate(text.encode("utf-8"))
+        deadline = time.time() + 5
+        while self.clipboard() != text:
+            if time.time() >= deadline:
+                fail("xclip did not take the clipboard")
+            time.sleep(POLL)
+
+
+class UI:
+    def __init__(self, kind):
+        import gi
+
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+
+        Atspi.set_timeout(ATSPI_TIMEOUT_MS, ATSPI_TIMEOUT_MS)
+        self.Atspi = Atspi
+        self.S = Atspi.StateType
+        self.kind = kind
+        self.ws = WaylandShell() if kind == "wayland" else X11()
+        self.screen, self.windows = self.ws.state()
+        self.nodes, self.truncated = 0, False
+
+    def refresh(self):
+        self.screen, self.windows = self.ws.state()
+
+    # MARK: - Reading the tree
+
+    def apps(self):
+        """[(accessible, name, pid)] of every application AT-SPI knows."""
+        desktop = self.Atspi.get_desktop(0)
+        found = []
+        for i in range(desktop.get_child_count()):
+            try:
+                app = desktop.get_child_at_index(i)
+                if app is not None:
+                    found.append((app, app.get_name() or "", app.get_process_id()))
+            except Exception:  # an app that stopped answering
+                continue
+        return found
+
+    def matches(self, name, pid, wanted):
+        wanted = wanted.lower()
+        return name.lower() == wanted or (process_name(pid) or "").lower() == wanted
+
+    def app_name(self, pid):
+        for _, name, p in self.apps():
+            if p == pid:
+                return name
+        return process_name(pid) or ""
+
+    def frontmost(self):
+        focused = [w for w in self.windows if w.focused]
+        return self.app_name(focused[0].pid) if focused else ""
+
+    def has(self, accessible, state):
+        try:
+            return accessible.get_state_set().contains(state)
+        except Exception:
+            return False
+
+    def toplevels(self, app):
+        """The app's windows (accessibles) that show on screen."""
+        out = []
+        try:
+            count = app.get_child_count()
+        except Exception:
+            return out
+        for i in range(count):
+            try:
+                window = app.get_child_at_index(i)
+            except Exception:
+                continue
+            if window is not None and self.has(window, self.S.SHOWING):
+                out.append(window)
+        return out
+
+    def placement(self, window, pid):
+        """(coordinate type, (dx, dy)) turning the window's elements' extents into screen points."""
+        Atspi = self.Atspi
+        try:
+            ext = window.get_extents(Atspi.CoordType.WINDOW)
+            title = window.get_name() or ""
+        except Exception:
+            return Atspi.CoordType.SCREEN, (0, 0)
+        mine = [w for w in reversed(self.windows) if w.pid == pid and not w.hidden]
+        for pool in ([w for w in mine if w.title == title], mine):
+            for w in pool:
+                for x, y, width, height in (w.frame, w.buffer):
+                    if abs(width - ext.width) <= 2 and abs(height - ext.height) <= 2:
+                        return Atspi.CoordType.WINDOW, (x - ext.x, y - ext.y)
+        # A window the window manager does not know by this app and size: trust the toolkit.
+        return Atspi.CoordType.SCREEN, (0, 0)
+
+    def bounds(self, accessible, placement):
+        kind, (dx, dy) = placement
+        try:
+            if "Component" not in accessible.get_interfaces():
+                return None
+            e = accessible.get_extents(kind)
+        except Exception:
+            return None
+        if e.x <= -(1 << 30) or e.y <= -(1 << 30) or not (0 <= e.width < 1 << 16 and 0 <= e.height < 1 << 16):
+            return None  # "no position", or garbage from a widget that is not laid out
+        return {"x": e.x + dx, "y": e.y + dy, "w": e.width, "h": e.height}
+
+    def text(self, accessible):
+        Text = self.Atspi.Text
+        count = Text.get_character_count(accessible)
+        return Text.get_text(accessible, 0, min(count, MAX_TEXT)).replace("￼", "") if count else ""
+
+    def node(self, accessible, placement, depth, max_depth):
+        self.nodes += 1
+        S = self.S
+        try:
+            native = accessible.get_role_name() or "unknown"
+            name = accessible.get_name() or ""
+            description = accessible.get_description() or None
+            interfaces = accessible.get_interfaces()
+            states = accessible.get_state_set()
+        except Exception:
+            return None
+        node = {
+            "native_role": native, "name": name, "value": None, "description": description,
+            "bounds": self.bounds(accessible, placement), "focused": states.contains(S.FOCUSED),
+            "enabled": states.contains(S.ENABLED), "children": [],
+        }  # fmt: skip
+        try:
+            if "Text" in interfaces and native != "password text":
+                text = self.text(accessible)
+                if "EditableText" in interfaces or (text and text != name):
+                    node["value"] = text
+            elif "Value" in interfaces:
+                value = self.Atspi.Value.get_current_value(accessible)
+                node["value"] = ("%d" % value) if value == int(value) else ("%g" % value)
+        except Exception:
+            pass
+        if native == "text":  # one AT-SPI role for labels, fields and text areas
+            node["role"] = "textarea" if states.contains(S.MULTI_LINE) else "textfield" if states.contains(S.SINGLE_LINE) else "text"
+        try:
+            count = accessible.get_child_count()
+        except Exception:
+            count = 0
+        if count and depth >= max_depth:
+            self.truncated = True
+            return node
+        for i in range(count):
+            if self.nodes >= MAX_NODES:
+                self.truncated = True
+                break
+            try:
+                child = accessible.get_child_at_index(i)
+            except Exception:
+                continue
+            if child is None or not self.has(child, S.VISIBLE):
+                continue
+            kid = self.node(child, placement, depth + 1, max_depth)
+            if kid is not None:
+                node["children"].append(kid)
+        return node
+
+    def tree(self, params):
+        wanted = params.get("app")
+        max_depth = params.get("depth") or 60
+        focused_pid = next((w.pid for w in self.windows if w.focused), None)
+        on_screen = {w.pid for w in self.windows if not w.hidden and not w.background}
+        apps = []
+        for app, name, pid in self.apps():
+            if (self.matches(name, pid, wanted) if wanted else pid in on_screen) and self.nodes < MAX_NODES:
+                windows = []
+                for window in self.toplevels(app):
+                    child = self.node(window, self.placement(window, pid), 1, max_depth)
+                    if child is not None:
+                        windows.append(child)
+                apps.append({
+                    "native_role": "application", "name": name, "value": None, "description": None, "bounds": None,
+                    "focused": pid == focused_pid, "enabled": True, "pid": pid, "children": windows,
+                })  # fmt: skip
+        width, height = self.screen
+        emit({
+            "native_role": "desktop", "name": "", "value": None, "description": None,
+            "bounds": {"x": 0, "y": 0, "w": width, "h": height}, "focused": False, "enabled": True,
+            "truncated": self.truncated, "children": apps,
+        })  # fmt: skip
+
+    # MARK: - Acting
+
+    def under(self, x, y):
+        """[(label, bounds)] from the deepest element at the point up to its window, or None if no window is there."""
+        window = next((w for w in reversed(self.windows) if not w.hidden and w.contains(x, y)), None)
+        if window is None:
+            return None
+        for app, _, pid in self.apps():
+            if pid != window.pid:
+                continue
+            for top in self.toplevels(app):
+                placement = self.placement(top, pid)
+                b = self.bounds(top, placement)
+                if not b or not (b["x"] <= x < b["x"] + b["w"] and b["y"] <= y < b["y"] + b["h"]):
+                    continue
+                chain = [(self.label(top), b)]
+                node = top
+                for _ in range(200):
+                    hit = None
+                    try:
+                        count = node.get_child_count()
+                    except Exception:
+                        break
+                    for i in range(count):
+                        try:
+                            child = node.get_child_at_index(i)
+                        except Exception:
+                            continue
+                        if child is None or not self.has(child, self.S.VISIBLE):
+                            continue
+                        cb = self.bounds(child, placement)
+                        if cb and cb["x"] <= x < cb["x"] + cb["w"] and cb["y"] <= y < cb["y"] + cb["h"]:
+                            hit = (child, cb)  # the last child drawn there is on top
+                    if hit is None:
+                        break
+                    node = hit[0]
+                    chain.insert(0, (self.label(node), hit[1]))
+                return chain
+        return [(window.title, {"x": window.frame[0], "y": window.frame[1], "w": window.frame[2], "h": window.frame[3]})]
+
+    def label(self, accessible):
+        try:
+            name = (accessible.get_name() or "").strip()
+            if name:
+                return name
+            if "Text" in accessible.get_interfaces():
+                return self.text(accessible).strip()
+            return (accessible.get_description() or "").strip()
+        except Exception:
+            return ""
+
+    def click(self, params):
+        try:
+            x, y = int(params["x"]), int(params["y"])
+        except (KeyError, TypeError, ValueError):
+            fail("click needs x and y")
+        width, height = self.screen
+        if not (0 <= x < width and 0 <= y < height):
+            fail("(%d, %d) is off the screen (%dx%d)" % (x, y, width, height))
+        chain = self.under(x, y)
+        expect = params.get("expect")
+        if expect is not None:
+            # Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
+            wanted_label, wanted_bounds = expect.get("label") or "", expect.get("bounds")
+            hit = bool(chain) and (
+                (wanted_label and chain[0][0] == wanted_label)
+                or (wanted_bounds is not None and any(b == wanted_bounds for _, b in chain[:12]))
+                or (not wanted_label and wanted_bounds is None)
+            )
+            if not hit:
+                what = '"%s"' % chain[0][0] if chain else "nothing"
+                fail("something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (x, y, what))
+        self.ws.click(x, y)
+        emit({"x": x, "y": y, "under": chain[0][0] if chain else None})
+
+    def press(self, key, modifiers):
+        table = EVDEV if self.kind == "wayland" else KEYSYMS
+        for name in list(modifiers) + [key]:
+            if name not in table and not (self.kind == "x11" and len(name) == 1 and name.isalnum()):
+                fail("unknown key %s" % name)
+        self.ws.press(key, modifiers)
+
+    def wait_for(self, deadline, what):
+        while True:
+            value = what()
+            if value is not None:
+                return value
+            if time.time() >= deadline:
+                return None
+            time.sleep(POLL)
+
+    def bring_to_front(self, window, app_name, deadline):
+        def front():
+            self.refresh()
+            if any(w.focused and w.id == window.id for w in self.windows):
+                return True
+            self.ws.activate(window)
+            return None
+
+        if self.wait_for(deadline, front) is None:
+            fail("%s did not come to the front in time; frontmost is %s" % (app_name, self.frontmost() or "nothing"))
+
+    def focus(self, params):
+        wanted = params.get("app") or fail("focus needs an app")
+        deadline = time.time() + float(params.get("timeout") or 30)
+        pids = {pid for _, name, pid in self.apps() if self.matches(name, pid, wanted)}
+        pids |= {w.pid for w in self.windows if (process_name(w.pid) or "").lower() == wanted.lower()}
+        windows = [w for w in self.windows if w.pid in pids and not w.background]
+        if not windows:
+            fail("%s is not running" % wanted if not pids else "%s has no windows" % wanted)
+        raised = None
+        if "window" in params:
+            titled = [w for w in windows if params["window"] in w.title]
+            if not titled:
+                fail('%s has no window titled like "%s"; its windows: %s' % (wanted, params["window"], [w.title for w in windows]))
+            target, raised = titled[-1], titled[-1].title
+        else:
+            target = windows[-1]
+        name = self.app_name(target.pid)
+        self.bring_to_front(target, name, deadline)
+        emit({"app": name, "window": raised, "frontmost": self.frontmost()})
+
+    def selection(self, pid):
+        """The selected text in the app's focused element, or None."""
+        Text = self.Atspi.Text
+        for app, _, p in self.apps():
+            if p != pid:
+                continue
+            stack = self.toplevels(app)
+            seen = 0
+            while stack and seen < MAX_NODES:
+                node = stack.pop()
+                seen += 1
+                try:
+                    if node.get_state_set().contains(self.S.FOCUSED) and "Text" in node.get_interfaces():
+                        if not Text.get_n_selections(node):
+                            return None
+                        r = Text.get_selection(node, 0)
+                        return Text.get_text(node, r.start_offset, r.end_offset)
+                    stack.extend(c for c in (node.get_child_at_index(i) for i in range(node.get_child_count())) if c is not None)
+                except Exception:
+                    continue
+        return None
+
+    def stage_text(self, params):
+        text, app = params.get("text"), params.get("app")
+        if text is None or not app:
+            fail("stage-text needs text and app")
+        deadline = time.time() + float(params.get("timeout") or 30)
+        stem = "vmlab-stage-%s" % uuid.uuid4().hex[:8]
+        path = "/tmp/%s.txt" % stem
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            # Its own session and no pipes: the editor outlives this call.
+            subprocess.Popen([app, path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            fail("cannot start %s: %s; is it installed?" % (app, exc))
+
+        def shown():
+            self.refresh()
+            return next((w for w in reversed(self.windows) if stem in w.title), None)
+
+        window = self.wait_for(deadline, shown)
+        if window is None:
+            fail("%s showed no window for %s in time; windows: %s" % (app, os.path.basename(path), [w.title for w in self.windows]))
+        name = self.wait_for(deadline, lambda: next((n for _, n, p in self.apps() if p == window.pid), None)) or app
+        self.bring_to_front(window, name, deadline)
+        self.press(*SELECT_ALL)
+        selected = self.wait_for(deadline, lambda: text if self.selection(window.pid) == text else None)
+        if selected is None:
+            selected = self.selection(window.pid)
+        self.refresh()
+        frontmost = self.frontmost()  # what the trigger lands on, recorded before it is pressed
+        pressed = None
+        then = params.get("then")
+        if then:
+            self.press(then["key"], then.get("modifiers") or [])
+            pressed = {"key": then["key"], "modifiers": then.get("modifiers") or []}
+        emit({"app": name, "file": path, "frontmost": frontmost, "selected": selected, "pressed": pressed})
+
+
+def main(argv):
+    if len(argv) < 2:
+        fail("usage: vmlab-ui COMMAND [JSON]")
+    command = argv[1]
+    try:
+        params = json.loads(argv[2]) if len(argv) > 2 else {}
+    except ValueError:
+        fail("parameters are not JSON: %s" % argv[2])
+    kind = session()
+    ui = UI(kind)
+    if command == "version":
+        emit({"helper": "linux", "version": VERSION, "session": kind, "input": ui.ws.describe(), "trusted": True})
+    elif command == "tree":
+        ui.tree(params)
+    elif command == "click":
+        ui.click(params)
+    elif command == "press":
+        ui.press(params.get("key"), params.get("modifiers") or [])
+        emit({"key": params.get("key"), "modifiers": params.get("modifiers") or []})
+    elif command == "type":
+        text = params.get("text")
+        if text is None:
+            fail("type needs text")
+        ui.ws.type(text)
+        emit({"typed": len(text)})
+    elif command == "clipboard":
+        if "set" in params:
+            ui.ws.set_clipboard(params["set"])
+        emit({"text": ui.ws.clipboard()})
+    elif command == "focus":
+        ui.focus(params)
+    elif command == "stage-text":
+        ui.stage_text(params)
+    else:
+        fail("unknown command %s" % command)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

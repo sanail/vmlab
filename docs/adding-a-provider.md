@@ -28,9 +28,10 @@ These are built on the methods above; override them only when the Guest needs so
 - `shell_argv(command)`: `sh -c`, or PowerShell on Windows.
 - `remove_paths(paths, timeout)`: app state reset.
 - `probe_argv()`: the command `doctor` sends down each Channel.
+- `wrap_argv(argv, env)`: how every command is run; the default runs it as is. The Fusion Provider wraps Linux commands so they get the desktop session's environment.
 - `ui_call(command, params, timeout)`: the UI contract. It runs the Guest OS's UI helper (`vmlab.uihelpers`) over the Guest's Channels, so a Provider gets the UI contract for free once exec works. Only a Provider whose Guests need no helper overrides it, as the Fake Provider does.
 
-The UI helpers are per OS, not per Provider: `src/vmlab/guest/<os>/` holds them and `src/vmlab/uihelpers.py` runs them. A helper takes `COMMAND JSON` and prints one JSON object; `src/vmlab/ui.py` does everything above that once (roles, node shape, matching, chords, waiting). Provisioning a Base guest must install the helper, so no Run compiles anything.
+The UI helpers are per OS, not per Provider: `src/vmlab/guest/<os>/` holds them and `src/vmlab/uihelpers.py` runs them. A helper takes `COMMAND JSON` and prints one JSON object; `src/vmlab/ui.py` does everything above that once (roles, node shape, matching, chords, waiting). Provisioning a Base guest must install what the helper needs, so no Run compiles or installs anything (the macOS helper is compiled then; the Linux helper is plain Python sent with each call, and provisioning installs the GNOME Shell extension it drives on Wayland).
 
 Every call into the hypervisor must be bounded: `start`, `stop`, `restore`, `copy_in` and `screenshot` take no timeout argument, so use the Lab's `step_timeout` (or `boot_timeout` for start and restore) and raise `GuestTimeout` when it runs out. A hung hypervisor must never hang a suite.
 

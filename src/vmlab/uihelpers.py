@@ -9,6 +9,11 @@ MACOS_HELPER when the Base guest is provisioned. Where it is missing (a Base
 guest provisioned by an older vmlab), the JXA fallback guest/macos/vmlab-ui.js
 is sent to osascript on stdin with every call: slower, and typing depends on
 the keyboard layout. VMLAB_UI_HELPER=jxa forces the fallback, to test it.
+
+Linux: guest/linux/vmlab-ui.py, sent to the Guest's python3 on stdin with
+every call, so it never lags behind the Host. It reads AT-SPI and acts through
+xdotool in an X11 session or vmlab's GNOME Shell extension (installed when the
+Base guest is provisioned) in a Wayland session, whichever is logged in.
 """
 
 import json
@@ -33,6 +38,8 @@ def macos_helper_info(channel, timeout):
 def for_provider(provider):
     if provider.lab.os == "macos":
         return MacHelper(provider)
+    if provider.lab.os == "linux":
+        return LinuxHelper(provider)
     return Unsupported(provider)
 
 
@@ -80,6 +87,24 @@ class MacHelper:
         if untrusted:
             return False, "vmlab-ui %s has no Accessibility grant over Channel %s" % (version, ", ".join(untrusted))
         return True, "vmlab-ui %s, trusted over %s" % (version, ", ".join(trusted))
+
+
+class LinuxHelper:
+    def __init__(self, provider):
+        self.provider = provider
+
+    def _exec(self, command, params, timeout):
+        with tempfile.TemporaryFile() as script:
+            script.write(pkgutil.get_data("vmlab", "guest/linux/vmlab-ui.py"))
+            return self.provider.exec(["python3", "-", command, json.dumps(params)], timeout, stdin=script)
+
+    def call(self, command, params, timeout):
+        return _result(self._exec(command, params, timeout), command, "vmlab-ui.py")
+
+    def describe(self, timeout):
+        """(ok, detail) for doctor: can the helper reach the desktop session and its input tools?"""
+        info = _result(self._exec("version", {}, timeout), "version", "vmlab-ui.py")
+        return True, "%s session; input through %s" % (info.get("session"), info.get("input"))
 
 
 class Unsupported:

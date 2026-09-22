@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux Guests; Windows planned) and the UI contract on macOS. UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
+Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux Guests; Windows planned) and the UI contract on macOS and Linux (X11 and Wayland). UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -124,7 +124,7 @@ How the unattended install works, for when it needs debugging:
 - The Ubuntu installer wants a click before it writes the disk unless `autoinstall` is on the kernel command line, and editing that means typing into GRUB. Instead, the job waits for the installer to ask and confirms over the installer's own local API, as the Install button does.
 - The job reports the installer's state on the VM's serial port, which Fusion writes to `install-serial.log` in the VM's folder; `base create` prints the state as it changes. The installer powers the VM off when it is done.
 
-Provisioning (`src/vmlab/guest/linux/provision.sh`, idempotent, under a minute) prepares a desktop session that automation can drive: GDM logs the user in automatically; screen lock, blanking and suspend are off (an idle GNOME suspends the Guest, VMware Tools included, even at the login screen); the accessibility bus is on (for Qt apps too); the welcome wizard (which also returns as a "what's new" tour after release upgrades), the update notifier, the crash reporter and background apt updates are off, since they pop up over the app under test or hold the package lock during Runs; and it installs AT-SPI (`python3-pyatspi`), `xdotool` for X11, `ydotool` with its daemon and `/dev/uinput` access for Wayland, `wl-clipboard` and `xclip`. The session is GNOME on Wayland. The UI contract on Linux comes next; until then `g.exec()` and `g.screenshot()` work on these Labs.
+Provisioning (`src/vmlab/guest/linux/provision.sh`, idempotent, about a minute) prepares desktop sessions that automation can drive: GDM logs the user in automatically; screen lock, blanking and suspend are off (an idle GNOME suspends the Guest, VMware Tools included, even at the login screen); the accessibility bus is on (for Qt apps too); the welcome wizard (which also returns as a "what's new" tour after release upgrades), the update notifier, the crash reporter and background apt updates are off, since they pop up over the app under test or hold the package lock during Runs. For the UI contract it installs AT-SPI (`python3-pyatspi`), vmlab's GNOME Shell extension (below), and for X11 an Xfce session with `xdotool`, `python3-xlib`, `xclip` and `wmctrl`: GNOME 50 no longer has an X11 session. The default session is GNOME on Wayland.
 
 ```toml
 [labs.linux]
@@ -136,15 +136,27 @@ memory_gb = 4
 base = "ubuntu-26.04"          # the Base guest to clone
 cpu = 4
 channels = ["ssh", "vmrun"]    # SSH (multiplexed), then vmrun guest operations through VMware Tools
+session = "wayland"            # GNOME on Wayland; "x11": Xfce on X11. Testing both means two Labs
 ```
 
-- Clean state is the clone's `vmlab-clean` snapshot, taken when the clone is made: restoring reverts to it. A clone is made again on the next start after its Base guest is provisioned again.
+- Clean state is the clone's `vmlab-clean` snapshot, taken when the clone is made: restoring reverts to it. A clone is made again on the next start after its Base guest is provisioned again, or after the Lab's `session` changes.
+- A Lab with `session = "x11"` boots its new clone once to make Xfce its autologin session (in AccountsService, where GDM looks) before `vmlab-clean` is taken, so restores keep the session. Every start checks that the Guest logged into the session its Lab asks for.
+- Commands (`g.exec()`, the app recipes) run with the desktop session's environment (`DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`, `XDG_SESSION_TYPE`, ...), taken from the user's systemd manager, into which the session imports it; values the command sets itself win. So `launch = "setsid /opt/myapp/myapp >/dev/null 2>&1 &"` opens the app on the Guest's screen. `systemd-run --user --collect /opt/myapp/myapp` works too, and keeps the app out of the Channel's session.
 - Two vmlab processes never share a Guest: `run` and `deploy` hold a lock on it (any Provider), and a second one fails at once, naming the process that holds it.
 - The Guest's IP is looked up at every boot, never hardcoded: from what VMware Tools publish (`guestinfo.ip`), else `vmrun getGuestIPAddress` (which can claim for minutes that Tools are not running when they are), else Fusion's DHCP lease for the VM's MAC. SSH works as with Tart: vmlab's key and known_hosts, the host key pinned under the Base guest's name.
 - The vmrun Channel needs no network and no sshd, but it takes several vmrun calls per command (about 3 s, against about 12 ms over SSH). Each call writes its output to files named for that call alone, so concurrent calls never mix, and a call that times out is killed in the Guest too. vmrun takes the Guest password on its command line, so it is visible in the Host's process list while a call runs; the password is random, stored in `$VMLAB_HOME/fusion/` (mode 0600), and guards a throwaway Guest on Fusion's private NAT network. Nothing in the Guest ever needs it: sudo is passwordless.
 - Screenshots are Host-side (`vmcli MKS captureScreenshot`): no Guest credentials, and no Wayland consent dialog.
 - Guests run without a window and without sound. `VMLAB_VMRUN` and `VMLAB_VMCLI` override the Fusion binaries.
 - `vmlab clean` treats Fusion leftovers as it treats Tart's (see above), using the clone records in `$VMLAB_HOME/fusion/`; deleting an unused Base guest also deletes its Guest credentials.
+
+The UI helper (`src/vmlab/guest/linux/vmlab-ui.py`) is plain Python sent with every call, so it never lags behind vmlab. It reads the tree through AT-SPI in both sessions, and asks logind at every call which session is logged in. In X11 it asks the window manager where windows are and sends input through XTEST (`xdotool`, which also types characters the keyboard layout lacks). On Wayland no client may learn where windows are, move the pointer to a point or raise another app, and GNOME Shell's own Introspect interface refuses unknown callers, so vmlab's GNOME Shell extension (`src/vmlab/guest/linux/shell-extension/`, only in the Guest) does it: window geometry and focus, a virtual pointer and keyboard, the clipboard. The Linux traps it handles:
+
+- **Coordinates**: GTK 4 reports every element at (0, 0) in screen coordinates, in both sessions, and GTK 3 on Wayland reports them relative to its window, shadow included. So elements are read relative to their window, and the window's place comes from the window manager: whichever of its rectangles (with or without the client-side shadow) has the size the toolkit reports.
+- **Pointer on Wayland**: `ydotool` moves the pointer relatively, through pointer acceleration: asked for (100, 100) it landed at (200, 200). The extension's virtual pointer moves to the exact point.
+- **Typing on Wayland**: key events can only type what the keyboard layout has, so text goes to Wayland apps through the input method, as from the on-screen keyboard: any character, on any layout. Apps under Xwayland get key events instead. Chords are always key events, by physical key.
+- **Hidden widgets**: a background tab or a hidden window stays in the AT-SPI tree; elements without the visible state are left out.
+- **Rebooting a Guest with unsaved documents**: an editor's inhibitor blocks `systemctl reboot` in the Guest. vmlab never reboots from inside: it stops the Guest from the Host (powering it off if it does not shut down in time) and starts it again.
+- **WebKitGTK** paints a window once and then never again with its DMA-BUF renderer on the Guest's software GL (Fusion passes no 3D to arm64 Linux), so screenshots freeze on the first frame. The session sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
 
 A Scenario is a Python file defining `scenario(g)`:
 
@@ -162,7 +174,7 @@ def scenario(g):
 
 ## UI contract
 
-Scenarios and the agent read and drive the Guest's UI with the same commands and JSON on every OS (macOS now; Linux and Windows next). `vmlab ui COMMAND [--lab LAB]` prints JSON; each Scenario method returns the same object:
+Scenarios and the agent read and drive the Guest's UI with the same commands and JSON on every OS (macOS and Linux now; Windows next). `vmlab ui COMMAND [--lab LAB]` prints JSON; each Scenario method returns the same object:
 
 | CLI | Scenario | Result |
 | --- | --- | --- |
@@ -183,7 +195,7 @@ Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`,
 - `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point.
 - Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key: `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`, `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...). An unknown key is a usage error (exit 2).
 - `focus` brings a running app to the front and waits until it is frontmost; `--window` first raises its first window whose title contains TITLE. An app that is not running, or a window that is not there, is an error naming what is.
-- `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or gedit), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.
+- `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or GNOME Text Editor, `gnome-text-editor`), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.
 - `wait-for` takes exactly one condition: an element (`--text`/`--role`/`--app`, or `--gone` for its disappearance), `--process NAME`, `--file PATH` or `--log PATH --pattern REGEX`. It polls until the condition holds or the timeout (default: the Lab's `step_timeout`) passes, never with fixed sleeps. Unmet, the CLI exits 1 and a Scenario gets `"met": false` to check.
 - UI commands need a running Guest (`vmlab up` or `vmlab deploy`). In a Scenario they count against its timeout like `g.exec`.
 

@@ -202,17 +202,24 @@ class Provider:
         if self.is_running():
             self.stop()
 
+    def wrap_argv(self, argv, env):
+        """argv as the Channels run it, with env. A Provider may wrap every command, e.g. to give
+        it the desktop session's environment; results and reports still show argv."""
+        return argv
+
     def exec(self, argv, timeout, env=None, stdin=None):
         """Run argv in the Guest over the first Channel that works; stdin is an optional binary file."""
         failures = []
+        wrapped = self.wrap_argv(list(argv), dict(env or {}))
         for channel in self.channels():
             if stdin is not None:
                 stdin.seek(0)  # a failed Channel may have read some of it
             try:
-                result = channel.exec(list(argv), timeout, dict(env or {}), stdin=stdin)
+                result = channel.exec(list(wrapped), timeout, dict(env or {}), stdin=stdin)
             except ChannelError as exc:
                 failures.append((channel.name, exc))
                 continue
+            result.argv = list(argv)
             result.channel = channel.name
             result.fallbacks = [
                 {"from": name, "to": channel.name, "reason": exc.message} for name, exc in failures

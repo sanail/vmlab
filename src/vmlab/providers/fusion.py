@@ -14,15 +14,22 @@ length of a call; it guards a throwaway Guest on Fusion's private NAT network.
 Screenshots are Host-side (vmcli MKS captureScreenshot): no Guest credentials,
 no Wayland consent dialog.
 
+The desktop session is GNOME on Wayland, or Xfce on X11 for Labs that ask for
+it: a new clone of such a Lab boots once to switch its autologin session
+before its Clean state is taken. Commands run with the session's environment
+(DISPLAY, WAYLAND_DISPLAY, ...), as a terminal on its desktop would.
+
 Options, under [labs.<name>.fusion]:
 
     base = "ubuntu-26.04"     # Base guest to clone (vmlab base list)
     cpu = 4
     channels = ["ssh", "vmrun"]
+    session = "wayland"       # or "x11"
 """
 
 import base64
 import hashlib
+import io
 import json
 import os
 import pkgutil
@@ -32,6 +39,7 @@ import secrets
 import shlex
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import time
 import urllib.request
@@ -41,11 +49,14 @@ from pathlib import Path
 from vmlab import bases, hostproc
 from vmlab.config import ConfigError, host_arch
 from vmlab.home import vmlab_home
-from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.base import BOOT_POLL_SECONDS, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
 from vmlab.providers.ssh import SshChannel, pin_host_key, public_key
 
-DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"]}
+DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"], "session": "wayland"}
 CHANNELS = ("ssh", "vmrun")
+# The autologin session (name of its .desktop file) for each session type. Base guests boot into Wayland.
+SESSIONS = {"wayland": "ubuntu", "x11": "xfce"}
+SESSION_NAMES = {"wayland": "Wayland", "x11": "X11"}
 FUSION_APP = "/Applications/VMware Fusion.app"
 INSTALL_FIX = (
     "install VMware Fusion (free; ask before installing anything on the Host): "
@@ -57,14 +68,54 @@ PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest b
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 1800
-PROVISION_VERSION = 1  # bump when provision.sh changes; `base create` then re-provisions
+PROVISION_VERSION = 2  # bump when provision.sh or the Shell extension changes; `base create` then re-provisions
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
 DISK_OP_TIMEOUT = 600  # s for clone, snapshot, revert and delete while creating a Base guest
 CLEAN_SNAPSHOT = "vmlab-clean"
-# The graphical session is up (autologin done): a Run can drive the desktop.
-DESKTOP_PROBE = ["/bin/sh", "-c", 'XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user is-active --quiet graphical-session.target']
+# The graphical session is up (autologin done) and has published its environment: a Run
+# can drive the desktop. Prints the session type. logind knows the type; the user manager's
+# environment may still be the previous session's until the new one imports its own.
+DESKTOP_PROBE = ["/bin/sh", "-c", """
+uid=$(id -u); XDG_RUNTIME_DIR=/run/user/$uid; export XDG_RUNTIME_DIR
+s=$(loginctl show-user "$uid" -p Display --value 2>/dev/null); [ -n "$s" ] || exit 1
+t=$(loginctl show-session "$s" -p Type --value) || exit 1
+env=$(systemctl --user show-environment 2>/dev/null) || exit 1
+printf '%s\\n' "$env" | grep -qx "XDG_SESSION_TYPE=$t" || exit 1
+case $t in
+wayland) systemctl --user is-active --quiet graphical-session.target ;;
+x11) DISPLAY=$(printf '%s\\n' "$env" | sed -n 's/^DISPLAY=//p') XAUTHORITY=$(printf '%s\\n' "$env" | sed -n 's/^XAUTHORITY=//p') wmctrl -m >/dev/null 2>&1 ;;
+*) false ;;
+esac && echo "$t"
+"""]
+# Runs a command with the desktop session's environment, as the user manager holds it, over what
+# the Channel's login set (XDG_SESSION_TYPE=tty, ...). Only plain values are taken, so the eval
+# sees no shell syntax.
+SESSION_ENV = r"""
+XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; : "${DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus}"
+export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+eval "$(systemctl --user show-environment 2>/dev/null | sed -n -E 's/^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|DESKTOP_SESSION|GTK_MODULES|QT_ACCESSIBILITY|QT_LINUX_ACCESSIBILITY_ALWAYS_ON|WEBKIT_DISABLE_DMABUF_RENDERER)=([A-Za-z0-9_:/.,@+-]*)$/\1=\2; export \1/p')"
+exec "$@"
+"""
+# Sets the user's autologin session ($1: name, $2: type) in AccountsService, where GDM looks.
+SWITCH_SESSION = r"""
+dir=/usr/share/wayland-sessions; [ "$2" = x11 ] && dir=/usr/share/xsessions
+[ -f "$dir/$1.desktop" ] || { echo "the Guest has no $2 session $1 ($dir/$1.desktop is missing)" >&2; exit 3; }
+sudo -n python3 -c '
+import configparser, sys
+path, name, kind = sys.argv[1:]
+config = configparser.ConfigParser()
+config.optionxform = str
+config.read(path)
+if not config.has_section("User"):
+    config.add_section("User")
+config["User"].update(Session=name, XSession=name, SessionType=kind)
+with open(path, "w") as f:
+    config.write(f, space_around_delimiters=False)
+' "/var/lib/AccountsService/users/$(id -un)" "$1" "$2" && sync
+"""
+EXTENSION_DIR = "/tmp/vmlab-shell-extension"  # where provisioning finds the Shell extension's files
 # $VMLAB_HOME/fusion/<clone>.json: which project, Lab and Base guest a clone serves, and which
 # provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans (vmlab.clean).
 CLONE_RECORD = ".json"
@@ -337,6 +388,7 @@ class FusionProvider(Provider):
         self.options = dict(DEFAULTS, **lab.options)
         self.vm = FusionVM(vmx_path(self.guest_id))
         self._channels = None
+        self._seen_session = None  # the session type the desktop probe last found
 
     @classmethod
     def validate_options(cls, config_path, key, options):
@@ -353,6 +405,8 @@ class FusionProvider(Provider):
             raise ConfigError(
                 config_path, key + ".channels", "must list Channels from: %s" % ", ".join(CHANNELS), 'e.g. channels = ["ssh", "vmrun"]'
             )
+        if options.get("session", DEFAULTS["session"]) not in SESSIONS:
+            raise ConfigError(config_path, key + ".session", "must be one of: %s" % ", ".join(sorted(SESSIONS)), 'e.g. session = "x11"')
 
     @property
     def base_name(self):
@@ -381,24 +435,83 @@ class FusionProvider(Provider):
     def is_running(self):
         return self.vm.is_running()
 
+    @property
+    def session(self):
+        return self.options["session"]
+
     def start(self):
         record = self._base()
         self._close_channels()
-        made_from = _clone_record(self.guest_id).get("made_from")
-        if self.vm.exists() and made_from != bases.provisioning(record):
-            # The Base guest was provisioned again since: the clone lacks what changed.
+        clone = _clone_record(self.guest_id)
+        made_from = clone.get("made_from")
+        if self.vm.exists() and (
+            made_from != bases.provisioning(record)  # the Base guest was provisioned again: the clone lacks what changed
+            or clone.get("session", DEFAULTS["session"]) != self.session
+            or CLEAN_SNAPSHOT not in self.vm.snapshots()  # its session switch did not finish
+        ):
             self.vm.delete(self.lab.boot_timeout)
         if not self.vm.exists():
             base_vm = FusionVM(record["vmx"])
             if base_vm.is_running():
                 raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, "vmrun stop '%s'" % base_vm.vmx)
             base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
-            self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
             made_from = bases.provisioning(record)
-        _write_clone_record(self.guest_id, {"project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from})
+            self._write_clone_record(made_from)
+            if self.session != DEFAULTS["session"]:
+                self._switch_session()
+            self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
+        self._write_clone_record(made_from)
+        self._configure()
+        self.vm.start(self.lab.boot_timeout)
+
+    def _write_clone_record(self, made_from):
+        _write_clone_record(self.guest_id, {
+            "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
+            "session": self.session,
+        })  # fmt: skip
+
+    def _configure(self):
         # At every start: reverting to vmlab-clean brings back the settings of the moment it was taken.
         self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024)})
+
+    def _switch_session(self):
+        """Boot a new clone once to make the Lab's session its autologin session, then stop it."""
+        name = SESSION_NAMES[self.session]
+        self._configure()
         self.vm.start(self.lab.boot_timeout)
+        try:
+            deadline = time.time() + self.lab.boot_timeout
+            while not self.is_reachable():
+                if time.time() >= deadline:
+                    raise GuestError(
+                        "the new clone of Lab %s did not reach its desktop within %ss, so it was not switched to the %s session"
+                        % (self.lab.name, self.lab.boot_timeout, name),
+                        "raise labs.%s.boot_timeout if it is just slow; `vmlab up %s` tries again" % (self.lab.name, self.lab.name),
+                    )
+                time.sleep(BOOT_POLL_SECONDS)
+            result = self.exec(["/bin/sh", "-c", SWITCH_SESSION, "sh", SESSIONS[self.session], self.session], CALL_TIMEOUT)
+            if not result.ok:
+                raise GuestError(
+                    "switching Lab %s to the %s session failed: %s" % (self.lab.name, name, result.stderr.strip()),
+                    "re-provision its Base guest, which then installs it: vmlab base create %s --reprovision" % self.base_name,
+                )
+        finally:
+            self.stop()
+
+    def up(self):
+        super().up()
+        if self._seen_session != self.session:
+            raise GuestError(
+                "Lab %s asks for the %s session, but its Guest logged into %s" % (self.lab.name, SESSION_NAMES[self.session], SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")),
+                "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again"
+                % (self.lab.name, self.lab.name, self.lab.name),
+            )
+
+    def wrap_argv(self, argv, env):
+        if self.lab.os != "linux":
+            return argv
+        # The caller's env again after the session's: what the caller set wins.
+        return ["/bin/sh", "-c", SESSION_ENV, "sh"] + (["env"] + ["%s=%s" % kv for kv in sorted(env.items())] if env else []) + argv
 
     def stop(self):
         self._close_channels()
@@ -411,7 +524,9 @@ class FusionProvider(Provider):
         # A probe, not a Run's call: trying the next Channel after a timeout is safe here.
         for channel in self.channels():
             try:
-                if channel.exec(DESKTOP_PROBE, PROBE_TIMEOUT, {}).ok:
+                result = channel.exec(DESKTOP_PROBE, PROBE_TIMEOUT, {})
+                if result.ok:
+                    self._seen_session = result.stdout.strip()
                     return True
             except GuestError:
                 continue
@@ -642,10 +757,21 @@ def _provision(name, vm, out):
             vm.start()
         _wait(vm, ssh, ["true"], BASE_BOOT_TIMEOUT, "SSH with vmlab's key")
         out("provisioning %s" % vm.name)
+        with tempfile.TemporaryFile() as archive:
+            with tarfile.open(fileobj=archive, mode="w") as tar:
+                for filename in ("metadata.json", "extension.js"):
+                    data = pkgutil.get_data("vmlab", "guest/linux/shell-extension/" + filename)
+                    info = tarfile.TarInfo(filename)
+                    info.size, info.mode = len(data), 0o644
+                    tar.addfile(info, io.BytesIO(data))
+            archive.seek(0)
+            result = ssh.exec(["/bin/sh", "-c", 'rm -rf "$1" && mkdir -p "$1" && tar -xf - -C "$1"', "sh", EXTENSION_DIR], CALL_TIMEOUT, {}, stdin=archive)
+        if not result.ok:
+            raise GuestError("copying the Shell extension into %s failed: %s" % (vm.name, result.stderr.strip()), "re-run `vmlab base create %s`" % name)
         with tempfile.TemporaryFile() as stdin:
             stdin.write(pkgutil.get_data("vmlab", "guest/linux/provision.sh"))
             stdin.seek(0)
-            result = ssh.exec(["/bin/bash", "-s"], PROVISION_TIMEOUT, {}, stdin=stdin)
+            result = ssh.exec(["/bin/bash", "-s", "--", EXTENSION_DIR], PROVISION_TIMEOUT, {}, stdin=stdin)
         for line in result.stdout.splitlines():
             out(line)
         if not result.ok:
@@ -662,6 +788,7 @@ def _provision(name, vm, out):
         if not result.ok:
             raise GuestError("the vmrun Channel cannot see the desktop session: %s" % result.stderr.strip(), "re-run `vmlab base create %s --reprovision`" % name)
         out("  Channel vmrun reaches the desktop session")
+        out("  the UI helper reaches the desktop: %s" % _ui_helper_detail(ssh, name))
     finally:
         ssh.close()
     vm.stop()
@@ -672,6 +799,22 @@ def _provision(name, vm, out):
     record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot)
     bases.Registry().put(name, record)
     out('Base guest %s is ready (Fusion VM %s). Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))
+
+
+def _ui_helper_detail(ssh, name):
+    """What the UI helper reports once the desktop, and in it vmlab's Shell extension, answers it."""
+    deadline = time.time() + BASE_BOOT_TIMEOUT
+    while True:
+        with tempfile.TemporaryFile() as stdin:
+            stdin.write(pkgutil.get_data("vmlab", "guest/linux/vmlab-ui.py"))
+            stdin.seek(0)
+            result = ssh.exec(["python3", "-", "version"], CALL_TIMEOUT, {}, stdin=stdin)
+        if result.ok:
+            info = json.loads(result.stdout)
+            return "%s session; input through %s" % (info["session"], info["input"])
+        if time.time() >= deadline:
+            raise GuestError("the UI helper cannot drive the desktop of %s: %s" % (name, result.stderr.strip()), "re-run `vmlab base create %s --reprovision`" % name)
+        time.sleep(2)
 
 
 def _wait(vm, channel, probe, timeout, what):

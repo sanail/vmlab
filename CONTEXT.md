@@ -36,6 +36,10 @@ _Avoid_: golden image, template
 The packaged application (e.g. `.app`/`.dmg`, `.msi`/`.exe`, `.AppImage`/`.deb`) that is delivered into a **Guest**.
 _Avoid_: binary, package, build
 
+**Desktop session**:
+The graphical login session inside a Linux **Guest** (GNOME on Wayland, or Xfce on X11) whose screen the UI contract drives. A **Lab** chooses one.
+_Avoid_: session (alone, which could mean a **Run**)
+
 **Scenario**:
 An ordered sequence of steps performed against the application in a **Guest**, containing **Checks**.
 _Avoid_: test case, script, flow

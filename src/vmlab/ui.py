@@ -30,9 +30,9 @@ STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text) gives up before it
 # sh: $1 with a leading ~ expanded to the Guest user's home, as $p
 EXPAND_TILDE = 'p=$1; case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; '
 
-STAGE_APPS = {"macos": "TextEdit", "windows": "Notepad", "linux": "gedit"}
+STAGE_APPS = {"macos": "TextEdit", "windows": "Notepad", "linux": "gnome-text-editor"}
 
-# Native roles to cross-OS roles. Anything unlisted becomes its lowercased native role.
+# Native roles to cross-OS roles. Anything unlisted becomes its native role, lowercased, without spaces or "AX".
 MACOS_ROLES = {
     "AXApplication": "application",
     "AXWindow": "window",
@@ -69,7 +69,55 @@ MACOS_ROLES = {
     "AXHeading": "heading",
     "AXProgressIndicator": "progressbar",
 }
-NATIVE_ROLES = {"macos": MACOS_ROLES}
+# AT-SPI role names. "text" is labels, fields and text areas alike: the helper sets their role from their states.
+LINUX_ROLES = {
+    "frame": "window",
+    "window": "window",
+    "dialog": "dialog",
+    "alert": "dialog",
+    "file chooser": "dialog",
+    "push button": "button",
+    "button": "button",
+    "check box": "checkbox",
+    "radio button": "radiobutton",
+    "entry": "textfield",
+    "password text": "textfield",
+    "label": "text",
+    "static": "text",
+    "paragraph": "text",
+    "link": "link",
+    "image": "image",
+    "icon": "image",
+    "menu bar": "menubar",
+    "menu": "menu",
+    "menu item": "menuitem",
+    "check menu item": "menuitem",
+    "radio menu item": "menuitem",
+    "combo box": "combobox",
+    "list": "list",
+    "list box": "list",
+    "table": "table",
+    "tree table": "tree",
+    "tree": "tree",
+    "table row": "row",
+    "list item": "row",
+    "table cell": "cell",
+    "page tab list": "tabs",
+    "page tab": "tab",
+    "panel": "group",
+    "filler": "group",
+    "grouping": "group",
+    "section": "group",
+    "scroll pane": "scrollarea",
+    "scroll bar": "scrollbar",
+    "slider": "slider",
+    "tool bar": "toolbar",
+    "document web": "document",
+    "document frame": "document",
+    "heading": "heading",
+    "progress bar": "progressbar",
+}
+NATIVE_ROLES = {"macos": MACOS_ROLES, "linux": LINUX_ROLES}
 
 MODIFIERS = {
     "ctrl": "ctrl", "control": "ctrl",
@@ -111,7 +159,7 @@ def normalize(node, os_name):
     out = dict(NODE_DEFAULTS, **node)
     native = out.get("native_role")
     if "role" not in node:
-        out["role"] = NATIVE_ROLES.get(os_name, {}).get(native) or re.sub(r"^AX", "", native or "").lower() or "unknown"
+        out["role"] = NATIVE_ROLES.get(os_name, {}).get(native) or re.sub(r"^AX|\s+", "", native or "").lower() or "unknown"
     out["native_role"] = native if native is not None else out["role"]
     for key in EXTRA_KEYS:  # helper detail outside the shared shape
         out.pop(key, None)
@@ -345,9 +393,14 @@ class UI:
         started = time.time()
         deadline = started + timeout
         extra = {}
+        first = True
         while True:
-            # A poll may not outlive the wait by more than a moment.
-            poll_timeout = min(self.call_timeout("wait-for"), max(1, deadline - time.time() + 1))
+            # A poll may not outlive the wait by more than a moment, except the first: the answer
+            # is never "not met" without one look, even over a Channel slower than the wait.
+            poll_timeout = self.call_timeout("wait-for")
+            if not first:
+                poll_timeout = min(poll_timeout, max(1, deadline - time.time() + 1))
+            first = False
             try:
                 met, extra = condition.poll(self, poll_timeout)
             except GuestTimeout as exc:

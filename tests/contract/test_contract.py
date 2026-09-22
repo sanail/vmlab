@@ -13,7 +13,9 @@ in order: up, Channels, exec, timeouts, deploy, screenshot, the UI contract
 (in the OS's stock text editor; skipped on OSes that have no UI helper yet),
 restore, down.
 
-VMLAB_UI_HELPER=jxa runs the macOS UI part through the JXA fallback.
+VMLAB_UI_HELPER=jxa runs the macOS UI part through the JXA fallback. A Linux
+Lab runs it in its session: run the suite once with a Wayland Lab and once
+with a Lab that sets session = "x11".
 """
 
 import json
@@ -29,7 +31,7 @@ from pathlib import Path
 
 from harness import zipapp_path
 
-UI_OSES = ("macos",)  # Guest OSes with a UI helper (vmlab.uihelpers)
+UI_OSES = ("macos", "linux")  # Guest OSes with a UI helper (vmlab.uihelpers)
 
 FAKE_LAB = """
 [labs.contract]
@@ -258,7 +260,7 @@ def scenario(g):
     g.check("wait-for a file", g.wait_for(file="~/contract-ui-" + tag, timeout=10)["met"])
     title = os.path.basename(staged["file"])
     focused = g.focus(app, window=title)
-    g.check("focus raises the window and fronts the app", (focused["app"], focused["window"], focused["frontmost"]) == (app, title, app), detail=focused)
+    g.check("focus raises the window and fronts the app", (focused["app"], focused["frontmost"]) == (app, app) and (focused["window"] == title if g.os == "macos" else title in focused["window"]), detail=focused)
 """))
 
     @ui

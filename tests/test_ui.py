@@ -188,6 +188,43 @@ class UiCliTest(UiTestCase):
         self.assertEqual(self.ui("tree", "--lab", "win")["role"], "desktop")
 
 
+class LinuxUiTest(VmlabTestCase):
+    """Linux helpers report AT-SPI role names; the Host maps them like macOS's AX roles."""
+
+    TREE = {
+        "native_role": "desktop",
+        "children": [{"native_role": "application", "name": "gnome-text-editor", "children": [{
+            "native_role": "frame", "name": "notes.txt - Text Editor", "children": [
+                {"native_role": "push button", "name": "Open"},
+                {"native_role": "label", "name": "notes.txt"},
+                {"native_role": "text", "role": "textarea", "value": "hello"},  # the helper tells text areas from fields
+                {"native_role": "check box", "name": "Wrap"},
+                {"native_role": "spin button", "name": "Size"},
+            ],
+        }]}],
+    }  # fmt: skip
+
+    def setUp(self):
+        super().setUp()
+        self.project.config('[labs.linux]\nprovider = "fake"\nos = "linux"\n[labs.linux.fake]\nui_tree = "tree.json"\n')
+        (self.project.dir / "tree.json").write_text(json.dumps(self.TREE))
+        self.assertExit(self.project.vmlab("up"), 0)
+
+    def test_at_spi_roles_map_to_the_cross_os_roles(self):
+        r = self.project.vmlab("ui", "tree")
+        self.assertExit(r, 0)
+        roles = [(n["native_role"], n["role"]) for n in walk(json.loads(r.out))]
+        self.assertEqual(roles, [
+            ("desktop", "desktop"), ("application", "application"), ("frame", "window"), ("push button", "button"),
+            ("label", "text"), ("text", "textarea"), ("check box", "checkbox"), ("spin button", "spinbutton"),
+        ])  # fmt: skip
+
+    def test_stage_text_opens_the_stock_editor(self):
+        r = self.project.vmlab("ui", "stage-text", "Ohm law")
+        self.assertExit(r, 0)
+        self.assertEqual(json.loads(r.out)["app"], "gnome-text-editor")
+
+
 class UiScenarioTest(UiTestCase):
     def test_scenario_api_returns_the_cli_shapes(self):
         self.project.scenario("ui.py", """

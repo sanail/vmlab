@@ -1,0 +1,7 @@
+{
+  "uuid": "vmlab-ui@vmlab",
+  "name": "vmlab UI",
+  "description": "What vmlab's UI helper needs from GNOME Shell on Wayland: window geometry and focus, pointer and keyboard input, the clipboard. Installed in vmlab's throwaway Guests only.",
+  "shell-version": ["50"],
+  "version": 1
+}

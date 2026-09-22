@@ -160,6 +160,9 @@ class FusionConfigTest(FusionTestCase):
     def test_channels_must_be_known(self):
         self.assertConfigError(FUSION_LAB + '[labs.linux.fusion]\nchannels = ["exec"]\n', "labs.linux.fusion.channels", "ssh", "vmrun")
 
+    def test_session_is_x11_or_wayland(self):
+        self.assertConfigError(FUSION_LAB + '[labs.linux.fusion]\nsession = "mir"\n', "labs.linux.fusion.session", "x11", "wayland")
+
     def test_a_valid_lab_loads(self):
         self.project.config(FUSION_LAB + '[labs.linux.fusion]\nbase = "ubuntu-26.04"\ncpu = 2\nchannels = ["vmrun"]\n')
         r = self.vmlab("status", "--json")
@@ -260,6 +263,33 @@ class FusionCloneTest(FusionTestCase):
         self.assertEqual(len(self.calls("deleteVM")), 1)
         self.assertIn("-snapshot=vmlab-provisioned-second", self.calls("clone")[-1])
         self.assertEqual(len(self.clones()), 1)
+
+    def test_an_x11_lab_gets_clean_state_only_once_its_session_is_switched(self):
+        # The session is switched in the booted clone, before vmlab-clean is taken; no Guest boots here.
+        self.project.config(FUSION_LAB + '[labs.linux.fusion]\nsession = "x11"\n')
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("X11 session", r.err)
+        [vm] = self.clones().values()
+        self.assertNotIn("vmlab-clean", vm["snapshots"])
+        self.assertFalse(vm["running"], "a clone left half-prepared is stopped")
+
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1, "a clone without Clean state is made again")
+        self.assertEqual(len(self.calls("clone")), 2)
+
+    def test_changing_the_session_recreates_the_clone(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.project.config(FUSION_LAB + '[labs.linux.fusion]\nsession = "x11"\n')
+
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+        self.assertEqual(len(self.calls("clone")), 2)
 
     def test_down_stops_the_clone(self):
         self.vmlab("up")

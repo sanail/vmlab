@@ -2,11 +2,16 @@
 # Provision an Ubuntu desktop Base guest for vmlab. Idempotent: safe to re-run after a failure.
 #
 # Runs as the Guest user over SSH, after the unattended install gave that user
-# passwordless sudo, vmlab's SSH key and open-vm-tools. It prepares a desktop
-# session that automation can drive: autologin, no screen lock or blanking, the
-# accessibility bus on, input and clipboard tools, and nothing that pops up or
-# takes the package lock in the middle of a Run.
+# passwordless sudo, vmlab's SSH key and open-vm-tools. It prepares desktop
+# sessions that automation can drive, GNOME on Wayland (the default) and Xfce
+# on X11: autologin, no screen lock or blanking, the accessibility bus on,
+# input and clipboard tools, vmlab's GNOME Shell extension, and nothing that
+# pops up or takes the package lock in the middle of a Run.
+#
+# $1: a folder holding the Shell extension's files (vmlab copies them there first).
 set -euo pipefail
+EXTENSION_SRC=${1:?usage: provision.sh EXTENSION_DIR}
+EXTENSION_UUID=vmlab-ui@vmlab
 
 say() { printf '  %s\n' "$*"; }
 fail() { printf 'provision: %s\n' "$*" >&2; exit 1; }
@@ -25,16 +30,25 @@ for _ in $(seq 1 300); do
   sleep 1
 done
 
-say "packages: accessibility bus, input and clipboard tools, VMware Tools"
-# at-spi2-core + python3-pyatspi read the UI tree; xdotool (X11) and ydotool
-# (Wayland, through /dev/uinput) send input; wl-clipboard and xclip reach the
-# clipboard; open-vm-tools-desktop serves vmrun and resizes the screen.
-PACKAGES="open-vm-tools-desktop openssh-server at-spi2-core python3-pyatspi gir1.2-atspi-2.0 xdotool ydotool wl-clipboard xclip wmctrl x11-utils psmisc"
-missing=$(for p in $PACKAGES; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed" || echo "$p"; done)
-if [ -n "$missing" ]; then
+say "packages: accessibility bus, input and clipboard tools, VMware Tools, an X11 session"
+# at-spi2-core + python3-pyatspi read the UI tree (vmlab-ui.py); in X11 sessions
+# xdotool sends input, python3-xlib asks the window manager, xclip reaches the
+# clipboard and wmctrl tells that the window manager is up; open-vm-tools-desktop
+# serves vmrun and resizes the screen; gnome-text-editor is where stage-text
+# stages text.
+PACKAGES="open-vm-tools-desktop openssh-server at-spi2-core python3-pyatspi gir1.2-atspi-2.0 python3-xlib xdotool xclip wmctrl x11-utils psmisc gnome-text-editor"
+# GNOME 50 has no X11 session any more: Xfce provides one, on the same GDM. Without
+# recommends it stays small (no screen saver, power manager or extra apps).
+X11_PACKAGES="xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy dbus-x11"
+missing() { for p in "$@"; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed" || echo "$p"; done; }
+# shellcheck disable=SC2086
+missing_packages=$(missing $PACKAGES) missing_x11=$(missing $X11_PACKAGES)
+if [ -n "$missing_packages$missing_x11" ]; then
   sudo -n apt-get update -qq
   # shellcheck disable=SC2086
-  sudo -n apt-get install -y -qq $missing >/dev/null
+  [ -z "$missing_packages" ] || sudo -n apt-get install -y -qq $missing_packages >/dev/null
+  # shellcheck disable=SC2086
+  [ -z "$missing_x11" ] || sudo -n apt-get install -y -qq --no-install-recommends $missing_x11 >/dev/null
 fi
 
 say "power: the Guest never suspends (an idle GNOME would, and take VMware Tools with it)"
@@ -48,12 +62,24 @@ say "no crash reporter: its dialogs steal focus"
 sudo -n systemctl disable --now apport.service >/dev/null 2>&1 || true
 [ -f /etc/default/apport ] && sudo -n sed -i 's/^enabled=1/enabled=0/' /etc/default/apport
 
-say "desktop: log $USER_NAME in automatically"
+say "desktop: log $USER_NAME in automatically, into GNOME on Wayland"
 sudo -n tee /etc/gdm3/custom.conf >/dev/null <<EOF
 # Written by vmlab: the Guest boots straight into the desktop session.
 [daemon]
 AutomaticLoginEnable=true
 AutomaticLogin=$USER_NAME
+EOF
+# GDM starts the session AccountsService names; Labs with session = "x11" switch their clone to xfce.
+sudo -n python3 - "/var/lib/AccountsService/users/$USER_NAME" <<'EOF'
+import configparser, sys
+config = configparser.ConfigParser()
+config.optionxform = str
+config.read(sys.argv[1])
+if not config.has_section("User"):
+    config.add_section("User")
+config["User"].update(Session="ubuntu", XSession="ubuntu", SessionType="wayland")
+with open(sys.argv[1], "w") as f:
+    config.write(f, space_around_delimiters=False)
 EOF
 
 say "desktop: no screen lock, blanking or sleep; accessibility on; no welcome tour"
@@ -87,6 +113,10 @@ welcome-dialog-last-shown-version='999'
 [org/gnome/software]
 download-updates=false
 allow-updates=false
+
+[org/gnome/shell]
+enabled-extensions=['vmlab-ui@vmlab']
+disable-extension-version-validation=true
 EOF
 # The session writes its own toolkit-accessibility=false at login; a lock keeps ours.
 sudo -n mkdir -p /etc/dconf/db/local.d/locks
@@ -98,13 +128,29 @@ sudo -n systemctl --global mask gnome-initial-setup-first-login.service gnome-in
 mkdir -p ~/.config
 echo yes > ~/.config/gnome-initial-setup-done
 
-say "accessibility: Qt apps join the accessibility bus too"
-sudo -n mkdir -p /etc/environment.d
-printf 'QT_ACCESSIBILITY=1\nQT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\n' | sudo -n tee /etc/environment.d/90-vmlab-a11y.conf >/dev/null
+say "UI: vmlab's GNOME Shell extension (window geometry, focus, input and clipboard on Wayland)"
+sudo -n rm -rf "/usr/share/gnome-shell/extensions/$EXTENSION_UUID"
+sudo -n mkdir -p "/usr/share/gnome-shell/extensions/$EXTENSION_UUID"
+sudo -n cp "$EXTENSION_SRC"/metadata.json "$EXTENSION_SRC"/extension.js "/usr/share/gnome-shell/extensions/$EXTENSION_UUID/"
+rm -rf "$EXTENSION_SRC"
 
-say "input: ydotool's daemon for Wayland input, with /dev/uinput (group input) for $USER_NAME"
-sudo -n usermod -aG input "$USER_NAME"
-sudo -n systemctl --global enable ydotool.service >/dev/null 2>&1
+say "session environment: Qt apps join the accessibility bus; WebKitGTK draws without DMA-BUF"
+# WebKitGTK's DMA-BUF renderer paints a window once and then never again on the Guest's
+# software GL (Fusion passes no 3D to arm64 Linux): screenshots would freeze on the first frame.
+sudo -n mkdir -p /etc/environment.d
+printf 'QT_ACCESSIBILITY=1\nQT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\nWEBKIT_DISABLE_DMABUF_RENDERER=1\n' | sudo -n tee /etc/environment.d/90-vmlab-a11y.conf >/dev/null
+
+say "X11: no screen blanking"
+sudo -n mkdir -p /etc/X11/xorg.conf.d
+sudo -n tee /etc/X11/xorg.conf.d/10-vmlab-no-blanking.conf >/dev/null <<'EOF'
+# Written by vmlab: a blank screen hides the app under test from screenshots.
+Section "ServerFlags"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+EOF
 
 say "SSH: key logins only"
 sudo -n systemctl enable ssh >/dev/null 2>&1 || true
