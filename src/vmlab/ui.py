@@ -25,7 +25,7 @@ from vmlab.providers.base import GuestError, GuestTimeout
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
 POLL_SECONDS = 0.25  # between checks of a wait_for condition; the condition and timeout decide when it ends
 EXTRA_KEYS = ("native_subrole", "bundle_id")
-STAGE_MARGIN = 5  # s the stage-text helper gives up before its call would be killed
+STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text) gives up before its call would be killed
 # sh: $1 with a leading ~ expanded to the Guest user's home, as $p
 EXPAND_TILDE = 'p=$1; case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; '
 
@@ -173,6 +173,11 @@ class UI:
     def _call(self, command, params):
         return self.provider.ui_call(command, params, self.call_timeout("ui %s" % command))
 
+    def _call_with_deadline(self, command, params):
+        """For commands that wait inside the helper: it gets a deadline short of the call's timeout."""
+        timeout = self.call_timeout("ui %s" % command)
+        return self.provider.ui_call(command, dict(params, timeout=max(timeout - STAGE_MARGIN, timeout / 2)), timeout)
+
     def tree(self, app=None):
         params = {"app": app} if app else {}
         return normalize(self._call("tree", params), self.os)
@@ -212,15 +217,20 @@ class UI:
     def clipboard(self, set=None):
         return {"text": self._call("clipboard", {} if set is None else {"set": set})["text"]}
 
+    def focus(self, app, window=None):
+        """Bring a running app to the front, raising its first window whose title contains window."""
+        params = {"app": app}
+        if window is not None:
+            params["window"] = window
+        return self._call_with_deadline("focus", params)
+
     def stage_text(self, text, app=None, then=None):
         """Open text in a third-party app, select it all and press the chord then, in one Guest call."""
         params = {"text": text, "app": app or STAGE_APPS.get(self.os, "TextEdit")}
         if then:
             key, modifiers = parse_chord(then)
             params["then"] = {"key": key, "modifiers": modifiers}
-        timeout = self.call_timeout("ui stage-text")
-        params["timeout"] = max(timeout - STAGE_MARGIN, timeout / 2)
-        result = self.provider.ui_call("stage-text", params, timeout)
+        result = self._call_with_deadline("stage-text", params)
         pressed = result.get("pressed")
         result["pressed"] = chord_text(pressed["key"], pressed["modifiers"]) if pressed else None
         return result

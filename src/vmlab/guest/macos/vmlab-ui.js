@@ -160,6 +160,28 @@ function selectedText(proc) {
   }
 }
 
+function focus(params) {
+  const deadline = Date.now() + (params.timeout || 30) * 1000;
+  const app = nsApps(params.app)[0];
+  if (!app) fail(params.app + " is not running");
+  const pid = app.processIdentifier;
+  const proc = events.processes.whose({ unixId: pid })()[0];
+  let raised = null;
+  if (params.window !== undefined) {
+    const windows = proc.windows();
+    const titles = windows.map((w) => str(w.name()) || "");
+    const i = titles.findIndex((t) => t.includes(params.window));
+    if (i < 0) fail(params.app + ' has no window titled like "' + params.window + '"; its windows: ' + JSON.stringify(titles));
+    windows[i].actions.byName("AXRaise").perform();
+    raised = titles[i];
+  }
+  if (!waitFor(deadline, () => { if (frontmostPid() === pid) return true; proc.frontmost = true; return false; })) {
+    fail(params.app + " did not come to the front in time");
+  }
+  const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
+  return { app: ObjC.unwrap(app.localizedName) || params.app, window: raised, frontmost: front.isNil() ? "" : ObjC.unwrap(front.localizedName) };
+}
+
 function stageText(params) {
   const deadline = Date.now() + (params.timeout || 30) * 1000;
   const stem = "vmlab-stage-" + Math.random().toString(16).slice(2, 10);
@@ -216,6 +238,7 @@ function run(argv) {
     case "type": events.keystroke(params.text); result = { typed: Array.from(params.text).length }; break;
     case "clipboard": result = clipboard(params); break;
     case "stage-text": result = stageText(params); break;
+    case "focus": result = focus(params); break;
     default: fail("unknown command " + command);
   }
   return JSON.stringify(result);

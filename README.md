@@ -90,6 +90,7 @@ channels = ["ssh", "exec"]   # SSH (multiplexed), then `tart exec` (the Tart gue
 - Clean state = delete the clone and clone the Base guest again.
 - SSH uses vmlab's own key and known_hosts in `$VMLAB_HOME/ssh/`. The Guest's host key is pinned at provisioning under the Base guest's name, never its IP, so reused DHCP addresses can't break or confuse it. Your `~/.ssh` is never read or written.
 - Screenshots are taken in the Guest with `screencapture`, because Tart has no Host-side screenshot.
+- The screen is `display` in points (Retina, 2x pixels). macOS would otherwise keep the display mode it last used whenever the display still offers it (the image pins 1024x768), so vmlab clears the saved mode each time it stops a Guest, and every boot fits the Lab's `display`.
 - macOS runs at most two macOS VMs at once, so `--parallel` can't run a third.
 - `VMLAB_TART` overrides the `tart` binary.
 
@@ -129,6 +130,7 @@ Scenarios and the agent read and drive the Guest's UI with the same commands and
 | `ui click [--text/--role/--app] [--index N]`, `ui click --at X Y` | `g.click(..., index=0)`, `g.click(at=(x, y))` | `{"x", "y", "element", "under"}` |
 | `ui press CHORD` | `g.press("cmd+shift+space")` | `{"chord": "shift+cmd+space"}` |
 | `ui type TEXT` | `g.type(text)` | `{"typed": n}` |
+| `ui focus --app APP [--window TITLE]` | `g.focus(app, window=None)` | `{"app", "window", "frontmost"}` |
 | `ui clipboard [--set TEXT]` | `g.clipboard()`, `g.set_clipboard(text)` | `{"text"}` |
 | `ui stage-text TEXT [--app APP] [--then CHORD]` | `g.stage_text(text, app=None, then=None)` | `{"app", "file", "frontmost", "selected", "pressed"}` |
 | `ui wait-for CONDITION [--timeout S]` | `g.wait_for(..., timeout=None)` | `{"met", "waited_s", "condition"[, "matches"]}` |
@@ -139,6 +141,7 @@ Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`,
 - `find` matches `--text` against name, value and description: exact matches win, otherwise substrings. `--role` takes the cross-OS or the native role.
 - `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point.
 - Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key: `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`, `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...). An unknown key is a usage error (exit 2).
+- `focus` brings a running app to the front and waits until it is frontmost; `--window` first raises its first window whose title contains TITLE. An app that is not running, or a window that is not there, is an error naming what is.
 - `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or gedit), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.
 - `wait-for` takes exactly one condition: an element (`--text`/`--role`/`--app`, or `--gone` for its disappearance), `--process NAME`, `--file PATH` or `--log PATH --pattern REGEX`. It polls until the condition holds or the timeout (default: the Lab's `step_timeout`) passes, never with fixed sleeps. Unmet, the CLI exits 1 and a Scenario gets `"met": false` to check.
 - UI commands need a running Guest (`vmlab up` or `vmlab deploy`). In a Scenario they count against its timeout like `g.exec`.
@@ -179,7 +182,7 @@ vmlab deploy [LAB...]                    # build if stale, install, launch; Gues
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
 vmlab doctor [LAB...] [--json]           # Provider, Guest, per-Channel and UI helper checks with fixes; exit 1 on FAIL
-vmlab ui tree|find|click|press|type|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
+vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab version
 ```
 

@@ -236,6 +236,9 @@ def scenario(g):
     g.check("wait-for gone", g.wait_for(text="no such element " + tag, gone=True, timeout=1)["met"])
     g.exec(cmd(g, "touch ~/contract-ui-" + tag, "New-Item -Force (Join-Path $HOME contract-ui-" + tag + ")"))
     g.check("wait-for a file", g.wait_for(file="~/contract-ui-" + tag, timeout=10)["met"])
+    title = os.path.basename(staged["file"])
+    focused = g.focus(app, window=title)
+    g.check("focus raises the window and fronts the app", (focused["app"], focused["window"], focused["frontmost"]) == (app, title, app), detail=focused)
 """))
 
     def test_09_ui_cli_prints_the_same_json(self):

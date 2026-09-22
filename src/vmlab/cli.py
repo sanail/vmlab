@@ -153,6 +153,9 @@ def _ui_parser(sub):
     p.add_argument("--log", help="this Guest file has a line matching --pattern")
     p.add_argument("--pattern", help="a Python regular expression")
     p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
+    p = ui_sub.add_parser("focus", parents=[common], help="bring a running app (and one of its windows) to the front")
+    p.add_argument("--app", required=True)
+    p.add_argument("--window", help="raise the first window whose title contains this")
     p = ui_sub.add_parser("clipboard", parents=[common], help="read the clipboard (or --set it)")
     p.add_argument("--set", metavar="TEXT")
     p = ui_sub.add_parser("stage-text", parents=[common], help="open text in a third-party editor, select it all, then press --then; one Guest call")
@@ -193,6 +196,8 @@ def _ui(project, args):
         )
     elif c == "clipboard":
         result = contract.clipboard(set=args.set)
+    elif c == "focus":
+        result = contract.focus(args.app, window=args.window)
     elif c == "stage-text":
         result = contract.stage_text(args.text, app=args.app, then=args.then)
     else:

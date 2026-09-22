@@ -14,6 +14,7 @@
 //   press       {"key": name, "modifiers": [cmd|ctrl|alt|shift]}
 //   type        {"text": s}
 //   clipboard   {"set": s?}
+//   focus       {"app": name, "window": title substring?, "timeout": seconds}
 //   stage-text  {"text": s, "app": name, "then": {"key", "modifiers"}?, "timeout": seconds}
 //
 // Traps (README: "macOS Guests with Tart"):
@@ -361,6 +362,36 @@ func focusedSelection(_ app: NSRunningApplication) -> String? {
     return text(focused as! AXUIElement, kAXSelectedTextAttribute as String)
 }
 
+func bringToFront(_ app: NSRunningApplication, _ appName: String, _ deadline: Date) {
+    guard waitFor(deadline, { () -> Bool? in
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return true }
+        app.activate()
+        return nil
+    }) != nil else { fail("\(appName) did not come to the front in time; frontmost is \(frontmostName())") }
+}
+
+/// Bring a running app to the front, first raising its window whose title contains "window".
+func focus(_ params: [String: Any]) {
+    guard let appName = params["app"] as? String else { fail("focus needs an app") }
+    let deadline = Date().addingTimeInterval(params["timeout"] as? Double ?? 30)
+    guard let app = appsFor(appName).first else { fail("\(appName) is not running") }
+    var raised: Any = NSNull()
+    if let wanted = params["window"] as? String {
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 3)
+        let windows = attribute(ax, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+        let titles = windows.map { text($0, kAXTitleAttribute as String) ?? "" }
+        guard let i = titles.firstIndex(where: { $0.contains(wanted) }) else {
+            fail("\(appName) has no window titled like \"\(wanted)\"; its windows: \(titles)")
+        }
+        AXUIElementPerformAction(windows[i], kAXRaiseAction as CFString)
+        AXUIElementSetAttributeValue(windows[i], kAXMainAttribute as CFString, kCFBooleanTrue)
+        raised = titles[i]
+    }
+    bringToFront(app, appName, deadline)
+    emit(["app": app.localizedName ?? appName, "window": raised, "frontmost": frontmostName()])
+}
+
 /// Open text in app, select it all and, in the same call, press the trigger chord,
 /// so nothing can take focus in between.
 func stageText(_ params: [String: Any]) {
@@ -386,11 +417,7 @@ func stageText(_ params: [String: Any]) {
         return titles.contains { $0.contains(stem) } ? a : nil
     }) else { fail("\(appName) showed no window for \(file.lastPathComponent) in time; its windows: \(titles)") }
 
-    guard waitFor(deadline, { () -> Bool? in
-        if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return true }
-        app.activate()
-        return nil
-    }) != nil else { fail("\(appName) did not come to the front in time; frontmost is \(frontmostName())") }
+    bringToFront(app, appName, deadline)
 
     press("a", ["cmd"])
     let selected = waitFor(deadline) { () -> String? in
@@ -428,5 +455,6 @@ case "press": pressCommand(params)
 case "type": typeCommand(params)
 case "clipboard": clipboard(params)
 case "stage-text": stageText(params)
+case "focus": focus(params)
 default: fail("unknown command \(args[1])")
 }

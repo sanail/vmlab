@@ -125,6 +125,10 @@ class Guest:
         """Put text on the Guest's clipboard."""
         return self._ui_call(lambda contract: contract.clipboard(set=text))
 
+    def focus(self, app, window=None):
+        """Bring a running app to the front, raising its first window whose title contains window."""
+        return self._ui_call(lambda contract: contract.focus(app, window=window))
+
     def stage_text(self, text, app=None, then=None):
         """Open text in a third-party editor, select it all and press the chord then, all in one Guest call."""
         return self._ui_call(lambda contract: contract.stage_text(text, app=app, then=then))

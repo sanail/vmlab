@@ -48,13 +48,14 @@ STOP_GRACE = 30  # s a Guest gets to shut down before tart forces it off
 CLONE_TIMEOUT = 4 * 3600  # s for a first clone, which downloads the image
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 900
-PROVISION_VERSION = 4  # bump when provision.sh or the UI helper changes; `base create` then re-provisions
+PROVISION_VERSION = 5  # bump when provision.sh or the UI helper changes; `base create` then re-provisions
 DESKTOP_PROBE = ["/usr/bin/pgrep", "-qx", "Dock"]  # the GUI session is up
 SYSTEM_EVENTS_PROBE = ["/usr/bin/osascript", "-e", 'tell application "System Events" to count processes']
 SYSTEM_EVENTS_TIMEOUT = 30  # s; longer means a TCC consent dialog is waiting for a click
 # `tart exec` passes the command's exit code and stderr through, so only Tart's
 # own phrasing (naming the VM, or its agent connection) marks a Channel failure.
 TART_EXEC_FAILURE = r'^(the specified VM "{vm}" does not exist|VM "{vm}" is not running|.*(guest agent|gRPC|UNAVAILABLE|vsock))'
+DISPLAY_PREFS = "/Library/Preferences/com.apple.windowserver.displays.plist"
 CLONE_STATE = "base-provisioned"  # which provisioning version of its Base guest a Lab clone was made from
 
 
@@ -133,10 +134,13 @@ class TartVM:
         )
 
     def stop(self, timeout):
-        # `tart stop` powers a macOS Guest off at once: writes still in its page
-        # cache are lost. Flush them first, best effort.
+        # macOS keeps its display mode in DISPLAY_PREFS and reuses it whenever the
+        # display still offers it (the image pins 1024x768), whatever `tart set
+        # --display` says. Forget it, so the next boot fits the Lab's display.
+        # Then flush: `tart stop` powers a macOS Guest off at once, and writes still
+        # in its page cache are lost. Both best effort.
         try:
-            tart(["exec", self.name, "/bin/sync"], CALL_TIMEOUT)
+            tart(["exec", self.name, "/bin/sh", "-c", 'sudo -n rm -f "$1"; /bin/sync', "sh", DISPLAY_PREFS], CALL_TIMEOUT)
         except GuestError:
             pass
         tart(["stop", self.name, "--timeout", STOP_GRACE], timeout)

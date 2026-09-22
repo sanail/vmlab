@@ -128,6 +128,20 @@ class UiCliTest(UiTestCase):
         [area] = self.ui("find", "--role", "textarea", "--app", staged["app"])["matches"]
         self.assertEqual(area["value"], "new ü")
 
+    def test_focus_brings_an_app_and_its_window_to_the_front(self):
+        focused = self.ui("focus", "--app", "myapp", "--window", "Pal")
+        self.assertEqual(focused, {"app": "MyApp", "window": "Palette", "frontmost": "MyApp"})
+        tree = self.ui("tree")
+        self.assertEqual([a["name"] for a in tree["children"] if a["focused"]], ["MyApp"])
+
+    def test_focus_on_an_app_that_is_not_running_fails(self):
+        r = self.ui("focus", "--app", "Nope", code=1)
+        self.assertIn("Nope", r.err)
+
+    def test_focus_on_a_missing_window_fails_naming_the_windows(self):
+        r = self.ui("focus", "--app", "MyApp", "--window", "Nope", code=1)
+        self.assertIn("Palette", r.err)
+
     def test_wait_for_an_element_that_is_there(self):
         waited = self.ui("wait-for", "--text", "Palette", "--timeout", "5")
         self.assertTrue(waited["met"])
@@ -181,6 +195,7 @@ class UiScenarioTest(UiTestCase):
                 g.check("find", g.find(text="Run", app="MyApp")["matches"][0]["name"] == "Run")
                 g.check("click", g.click(text="Run", app="MyApp")["x"] == 250)
                 g.check("press", g.press("cmd+shift+space")["chord"] == "shift+cmd+space")
+                g.check("focus", g.focus("MyApp")["frontmost"] == "MyApp")
                 staged = g.stage_text("hello", then="cmd+c")
                 g.check("staged", staged["selected"] == "hello")
                 g.check("clipboard", g.clipboard()["text"] == "hello")

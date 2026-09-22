@@ -157,6 +157,8 @@ class FakeProvider(Provider):
         if command == "tree":
             tree = self._scripted_tree()
             apps = tree.get("children", []) + ([editor] if editor else [])
+            if state.get("frontmost"):
+                apps = [dict(a, focused=a.get("name") == state["frontmost"]) for a in apps]
             if params.get("app"):
                 apps = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()]
             return dict(tree, children=apps)
@@ -186,13 +188,27 @@ class FakeProvider(Provider):
                 state["clipboard"] = params["set"]
                 self._save_ui_state(state)
             return {"text": state.get("clipboard")}
+        if command == "focus":
+            apps = self._scripted_tree().get("children", []) + ([editor] if editor else [])
+            [app] = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()] or [None]
+            if app is None:
+                raise GuestError("%s is not running" % params["app"])
+            window = None
+            if "window" in params:
+                titles = [w.get("name", "") for w in app.get("children", []) if w.get("role") == "window"]
+                window = next((t for t in titles if params["window"] in t), None)
+                if window is None:
+                    raise GuestError("%s has no window titled like %r; its windows: %s" % (app["name"], params["window"], titles))
+            state["frontmost"] = app["name"]
+            self._save_ui_state(state)
+            return {"app": app["name"], "window": window, "frontmost": app["name"]}
         if command == "stage-text":
             path = "/tmp/vmlab-stage.txt"
             window = {"role": "window", "name": "vmlab-stage.txt", "bounds": {"x": 100, "y": 100, "w": 600, "h": 400}, "children": [
                 {"role": "textarea", "value": params["text"], "focused": True, "bounds": {"x": 100, "y": 130, "w": 600, "h": 370}},
             ]}  # fmt: skip
             state["editor"] = {"role": "application", "name": params["app"], "pid": 0, "focused": True, "children": [window]}
-            state["selected"] = True
+            state["selected"], state["frontmost"] = True, params["app"]
             pressed = params.get("then")
             if pressed and _shortcut(pressed) == "c":
                 state["clipboard"] = params["text"]
