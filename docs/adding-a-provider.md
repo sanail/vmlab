@@ -2,7 +2,7 @@
 
 A **Provider** adapts one hypervisor to vmlab. Scenarios never see it. They talk to the Scenario API, which reaches the Provider through the Runner and Deploy. So a new Provider needs no changes to Scenarios, reports or the CLI. Vocabulary: `CONTEXT.md`. Channel design: ADR 0003.
 
-UTM and Parallels are registered as stubs. Selecting one fails at config load and points here. Replacing a stub with a real Provider is the intended path.
+The Tart Provider (`src/vmlab/providers/tart.py`) is a complete example: Base guest creation and provisioning, clones for Clean state, and SSH with a `tart exec` fallback. UTM and Parallels are registered as stubs. Selecting one fails at config load and points here. Replacing a stub with a real Provider is the intended path.
 
 ## 1. Implement the interface
 
@@ -11,6 +11,7 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | Method | Contract |
 | --- | --- |
 | `validate_options(config_path, key, options)` (classmethod) | Check the Lab's `[labs.<lab>.<name>]` table. Raise `ConfigError(config_path, "<key>.<option>", problem, fix)` for anything wrong, including unknown keys. |
+| `SUPPORTED_OS` (class attribute) | The Lab OSes it runs, e.g. `("macos",)`, or `None` for all. Config load rejects other Labs. |
 | `detect()` | `(ok, detail, fix)`: is the hypervisor installed and usable? `doctor` shows this first. |
 | `is_running()` | Is this Lab's Guest powered on? Must be cheap; the Runner calls it often. |
 | `start()` | Power the Guest on and return **without** waiting for boot. |
@@ -37,7 +38,7 @@ Keep anything machine-specific or secret out of the project: keys, known_hosts, 
 
 ## 2. Implement its Channels
 
-Subclass `vmlab.providers.base.Channel`. Set a short `name` (it appears in reports and in `doctor`) and implement `exec(argv, timeout, env)`:
+Subclass `vmlab.providers.base.Channel`. Set a short `name` (it appears in reports and in `doctor`) and implement `exec(argv, timeout, env, stdin=None)`:
 
 - Return an `ExecResult(argv, code, stdout, stderr)` whenever the command ran, **whatever its exit code**.
 - Raise `ChannelError(message, fix)` when the Channel itself failed: it could not connect, lost the session, or its helper is missing. Only this makes vmlab try the next Channel.
@@ -46,7 +47,7 @@ Subclass `vmlab.providers.base.Channel`. Set a short `name` (it appears in repor
 - Apply `env` to the command only, never to the Guest's global environment.
 - Use a unique output file per call if the Channel captures output through files. Never use a shared one: concurrent calls would race.
 
-Typical Channels: SSH with vmlab's own key and known_hosts (multiplexed), the hypervisor's guest-exec (`tart exec`, `vmrun runProgramInGuest`), and SSH plus an interactive Scheduled Task on Windows. ADR 0003 has the defaults per OS.
+Typical Channels: SSH with vmlab's own key and known_hosts (multiplexed; reuse `vmlab.providers.ssh.SshChannel`), the hypervisor's guest-exec (`tart exec`, `vmrun runProgramInGuest`), and SSH plus an interactive Scheduled Task on Windows. ADR 0003 has the defaults per OS.
 
 ## 3. Register it
 

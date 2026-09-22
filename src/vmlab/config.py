@@ -152,6 +152,14 @@ def load(start):
         if PROVIDERS[provider].NOT_IMPLEMENTED:
             raise ConfigError(path, key + ".provider", "Provider %r is not implemented yet" % provider, PROVIDERS[provider].NOT_IMPLEMENTED)
         os_name = _required_choice(path, table, key, "os", OSES)
+        supported = PROVIDERS[provider].SUPPORTED_OS
+        if supported and os_name not in supported:
+            raise ConfigError(
+                path,
+                key + ".os",
+                "Provider %s runs os = %s only" % (provider, " or ".join(supported)),
+                'Linux and Windows Labs will use provider = "fusion" (planned); use provider = "fake" to try vmlab without a hypervisor',
+            )
         arch = table.get("arch", host_arch())
         if arch not in ARCHES:
             raise ConfigError(path, key + ".arch", "unknown arch %r" % arch, "use one of: %s" % ", ".join(ARCHES))

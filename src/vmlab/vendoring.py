@@ -27,7 +27,7 @@ TEMPLATE = """\
 # Declare one table per Lab. Uncomment and adapt, e.g.:
 #
 # [labs.mac]
-# provider = "fake"        # fake (tart, fusion: planned; utm, parallels: stubs)
+# provider = "tart"        # tart: macOS on Apple Silicon; fake: no hypervisor (fusion: planned; utm, parallels: stubs)
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 # memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs that don't fit
@@ -45,8 +45,10 @@ TEMPLATE = """\
 # env = { RUST_LOG = "debug" }         # extra environment for install, quit and launch
 # state = ["~/Library/Application Support/MyApp"]  # Guest paths removed before every Run
 #
-# [labs.mac.fake]          # options of the Lab's Provider
-# ui_tree = "tree.json"    # scripted UI tree, relative to this file
+# [labs.mac.tart]          # options of the Lab's Provider
+# base = "macos-tahoe"     # Base guest to clone; create it once with `vmlab base create macos-tahoe`
+# cpu = 4
+# display = "1920x1080"
 """
 
 

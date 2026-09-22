@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: CLI core. Only the Fake Provider exists; UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
+Status: CLI core, the Fake Provider and the Tart Provider (macOS Guests). VMware Fusion is planned; UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -32,7 +32,7 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 
 ```toml
 [labs.mac]
-provider = "fake"        # fake (tart, fusion: planned; utm, parallels: stubs)
+provider = "fake"        # fake | tart (macOS) (fusion: planned; utm, parallels: stubs)
 os = "macos"             # macos | windows | linux
 arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 memory_gb = 4            # Host RAM the Guest takes; used by --parallel
@@ -59,6 +59,39 @@ broken_channels = []         # fault injection: these Channels fail every call
 hung_channels = []           # fault injection: these Channels hang until the call times out
 boot_seconds = 0             # fault injection: a slow boot
 ```
+
+## macOS Guests with Tart
+
+Needs an Apple Silicon Mac with [Tart](https://tart.run) (`brew install cirruslabs/cli/tart`). A **Base guest** is created once per Host and shared by all projects; each Lab runs in its own APFS clone of it, which costs almost no disk:
+
+```sh
+vmlab base create macos-tahoe   # asks before downloading the image (tens of GB); --yes to allow it; idempotent
+vmlab base list
+```
+
+`base create` clones a cirruslabs `*-base` image and provisions it: vmlab's SSH key, Remote Login, no sleep or screen saver, window restore off, and TCC grants (Accessibility, Screen Recording, Input Monitoring, Apple Events to System Events and Finder) for both Channels. It then reboots the Guest from outside, checks `kern.boottime` changed, and proves each Channel reaches System Events. `--reprovision` runs it again; so does a newer vmlab whose provisioning changed.
+
+**Guest-only security trade-off.** Granting automation permissions without MDM means writing TCC.db directly, which needs SIP off. The cirruslabs `*-base` images ship with SIP off. This affects only the throwaway Guest, never the Host.
+
+```toml
+[labs.mac]
+provider = "tart"
+os = "macos"
+memory_gb = 4
+
+[labs.mac.tart]
+base = "macos-tahoe"         # the Base guest to clone
+cpu = 4
+display = "1920x1080"        # fixed, so coordinates stay stable between Runs
+channels = ["ssh", "exec"]   # SSH (multiplexed), then `tart exec` (the Tart guest agent)
+```
+
+- Guests run headless, with no shared clipboard (it would overwrite what you copied) and no audio (a Guest's audio device can grab your Bluetooth headset).
+- Clean state = delete the clone and clone the Base guest again.
+- SSH uses vmlab's own key and known_hosts in `$VMLAB_HOME/ssh/`. The Guest's host key is pinned at provisioning under the Base guest's name, never its IP, so reused DHCP addresses can't break or confuse it. Your `~/.ssh` is never read or written.
+- Screenshots are taken in the Guest with `screencapture`, because Tart has no Host-side screenshot.
+- macOS runs at most two macOS VMs at once, so `--parallel` can't run a third.
+- `VMLAB_TART` overrides the `tart` binary.
 
 A Scenario is a Python file defining `scenario(g)`:
 
@@ -95,6 +128,7 @@ Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VM
 
 ```
 vmlab init | vmlab self-update [--from PYZ]
+vmlab base create NAME [--image IMAGE] [--yes] [--reprovision] | vmlab base list
 vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
                                          # exit 0 all passed, 1 a Check failed or a Run errored, 2 usage/config error
 vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
@@ -104,4 +138,4 @@ vmlab doctor [LAB...] [--json]           # Provider, Guest and per-Channel check
 vmlab version
 ```
 
-`VMLAB_HOME` (default `~/.vmlab`) holds host state; the Fake Provider keeps its Guests under `$VMLAB_HOME/fake/`, with the Guest user's home at `fs/home`.
+`VMLAB_HOME` (default `~/.vmlab`) holds host state: the Base guest registry (`bases.json`), vmlab's SSH key and known_hosts (`ssh/`), `tart run` logs (`tart/`), and the Fake Provider's Guests (`fake/`, with the Guest user's home at `fs/home`).

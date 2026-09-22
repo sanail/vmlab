@@ -153,7 +153,7 @@ class FakeChannel(Channel):
         self.provider = provider
         self.name = name
 
-    def exec(self, argv, timeout, env):
+    def exec(self, argv, timeout, env, stdin=None):
         p = self.provider
         options = p.lab.options
         if self.name in options.get("broken_channels", []):
@@ -171,7 +171,7 @@ class FakeChannel(Channel):
             raise _timeout(argv, timeout, self.name)
         try:
             env = dict(os.environ, HOME=str(p.fs / "home"), **env)
-            code, out, err = hostproc.run(argv, timeout, cwd=str(p.fs), env=env)
+            code, out, err = hostproc.run(argv, timeout, cwd=str(p.fs), env=env, stdin=stdin)
         except subprocess.TimeoutExpired:
             raise _timeout(argv, timeout, self.name)
         except FileNotFoundError:

@@ -48,10 +48,11 @@ class Channel:
 
     name = None
 
-    def exec(self, argv, timeout, env):
+    def exec(self, argv, timeout, env, stdin=None):
         """Run argv; return ExecResult whatever its exit code.
 
-        Raise ChannelError when the Channel itself fails, GuestTimeout (after
+        stdin is an open binary file fed to the command (e.g. an archive for
+        copy_in), or None. Raise ChannelError when the Channel itself fails, GuestTimeout (after
         killing the call) when it does not finish within timeout seconds.
         """
         raise NotImplementedError
@@ -66,6 +67,7 @@ class Provider:
     """
 
     NOT_IMPLEMENTED = None  # set by stubs: the fix shown when a Lab selects this Provider
+    SUPPORTED_OS = None  # the Lab OSes this Provider can run, or None for all
 
     def __init__(self, project, lab):
         self.project = project
@@ -172,12 +174,14 @@ class Provider:
         if self.is_running():
             self.stop()
 
-    def exec(self, argv, timeout, env=None):
-        """Run argv in the Guest over the first Channel that works."""
+    def exec(self, argv, timeout, env=None, stdin=None):
+        """Run argv in the Guest over the first Channel that works; stdin is an optional binary file."""
         failures = []
         for channel in self.channels():
+            if stdin is not None:
+                stdin.seek(0)  # a failed Channel may have read some of it
             try:
-                result = channel.exec(list(argv), timeout, dict(env or {}))
+                result = channel.exec(list(argv), timeout, dict(env or {}), stdin=stdin)
             except ChannelError as exc:
                 failures.append((channel.name, exc))
                 continue

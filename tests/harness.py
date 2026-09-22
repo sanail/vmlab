@@ -72,6 +72,7 @@ class Project:
             [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),
             env=env,
+            stdin=subprocess.DEVNULL,  # never a terminal: vmlab must not wait for an answer
             capture_output=True,
             text=True,
             timeout=timeout,
