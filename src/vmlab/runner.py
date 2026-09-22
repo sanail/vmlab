@@ -18,7 +18,7 @@ from pathlib import Path
 from vmlab import __version__, report
 from vmlab.config import ConfigError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run
-from vmlab.home import StartedGuests
+from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
@@ -137,13 +137,17 @@ def deploy(project, lab_names, out, stop_command="vmlab down"):
     for lab in project.select_labs(lab_names):
         provider = provider_for(project, lab)
         built = build_if_stale(project, lab)
-        if not provider.is_running():
-            started_guests.add(guest_key(provider))
-        if guest_key(provider) in started_guests:
-            kept.append(lab.name)
-        provider.up()
-        guest_artifact = install(provider, lab, built["artifact"]) if built else None
-        prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
+        lock = guest_lock(provider)
+        try:
+            if not provider.is_running():
+                started_guests.add(guest_key(provider))
+            if guest_key(provider) in started_guests:
+                kept.append(lab.name)
+            provider.up()
+            guest_artifact = install(provider, lab, built["artifact"]) if built else None
+            prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
+        finally:
+            lock.release()
         out("%s: deployed %s%s" % (lab.name, guest_artifact or "(no artifact)", " (rebuilt)" if built and built["built"] else ""))
     if kept:
         out("Kept running: %s. Stop with: %s %s" % (", ".join(kept), stop_command, " ".join(kept)))
@@ -151,6 +155,19 @@ def deploy(project, lab_names, out, stop_command="vmlab down"):
 
 def guest_key(provider):
     return "%s:%s" % (provider.lab.provider, provider.guest_id)
+
+
+def guest_lock(provider):
+    """The acquired GuestLock of provider's Guest; GuestError while another vmlab process holds it."""
+    lock = GuestLock(guest_key(provider))
+    try:
+        lock.acquire()
+    except GuestInUse as exc:
+        raise GuestError(
+            "Guest %s of Lab %s is in use by another vmlab (%s)" % (provider.guest_id, provider.lab.name, exc),
+            "wait for that one to finish, or stop it",
+        )
+    return lock
 
 
 class _LabRun:
@@ -177,10 +194,16 @@ class _LabRun:
         provider = provider_for(self.project, lab)
         started_guests = StartedGuests()
         key = guest_key(provider)
-        ours = key in started_guests or not provider.is_running()
         results = []
         lab_calls = ChannelUse()  # calls outside any Run: suite restore and install
+        lock = None
         if not self.error:
+            try:
+                lock = guest_lock(provider)
+            except GuestError as exc:
+                self.error = str(exc)
+        ours = lock is not None and (key in started_guests or not provider.is_running())
+        if lock:
             try:
                 if not provider.is_running():
                     started_guests.add(key)
@@ -192,6 +215,7 @@ class _LabRun:
                 if ours and not keep:
                     provider.down()
                     started_guests.discard(key)
+                lock.release()
 
         data = {
             "vmlab_version": __version__,

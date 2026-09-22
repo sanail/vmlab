@@ -67,17 +67,27 @@ class Project:
         return path
 
     def vmlab(self, *args, cwd=None, timeout=60, pyz=None, env=None):
+        proc = self.vmlab_background(*args, cwd=cwd, pyz=pyz, env=env)
+        try:
+            proc.stdout, proc.stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise
+        return Result(proc)
+
+    def vmlab_background(self, *args, cwd=None, pyz=None, env=None):
+        """Start vmlab without waiting for it; the caller collects it with communicate()."""
         env = dict(os.environ, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **(env or {}))
-        proc = subprocess.run(
+        return subprocess.Popen(
             [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),
             env=env,
             stdin=subprocess.DEVNULL,  # never a terminal: vmlab must not wait for an answer
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
         )
-        return Result(proc)
 
     def vmlab_vendored(self, *args, **kwargs):
         """Run the project's own copy, .vmlab/vmlab.pyz, as CI would."""

@@ -27,7 +27,6 @@ import platform
 import re
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import time
 import uuid
@@ -311,17 +310,7 @@ class TartProvider(Provider):
         self.up()
 
     def copy_in(self, src, guest_dir):
-        # A tar stream keeps bundles intact (symlinks, modes); the Guest-side
-        # script expands ~ and prints the absolute folder.
-        script = 'd=$1; case $d in "~"|"~/"*) d="$HOME${d#"~"}";; esac; mkdir -p "$d" && tar -xf - -C "$d" && cd "$d" && pwd'
-        argv = ["/bin/sh", "-c", script, "sh", guest_dir]
-        with tempfile.TemporaryFile() as archive:
-            with tarfile.open(fileobj=archive, mode="w") as tar_file:
-                tar_file.add(str(src), arcname=src.name)
-            result = self.exec(argv, self.lab.app.install_timeout, stdin=archive)
-        if not result.ok:
-            raise GuestError("copying %s into the Guest failed: %s" % (src, _tail(result.stderr)), "check free disk space in the Guest")
-        return "%s/%s" % (result.stdout.strip(), src.name)
+        return self.copy_in_by_tar(src, guest_dir)
 
     def screenshot(self, dest):
         shot = "/tmp/vmlab-shot-%s.png" % uuid.uuid4().hex

@@ -1,6 +1,7 @@
 """Runner lifecycle policies: restore, app state reset, who stops Guests, timeouts, visual Checks."""
 
 import json
+import time
 import xml.etree.ElementTree as ET
 
 from harness import FAKE_LAB, VmlabTestCase
@@ -207,3 +208,69 @@ class ScenarioOverrunTest(VmlabTestCase):
         """)
         self.assertExit(self.project.vmlab("run"), 1)
         self.assertIn("exceeded its 1s timeout", self.project.report()["scenarios"][0]["error"])
+
+
+# Holds the Guest until the test lets it go, so a second vmlab can try to use it meanwhile.
+HOLD = """
+import os, time
+
+def scenario(g):
+    open(%(started)r, "w").close()
+    deadline = time.time() + 30
+    while not os.path.exists(%(release)r) and time.time() < deadline:
+        time.sleep(0.05)
+    g.check("released", os.path.exists(%(release)r))
+"""
+
+
+class GuestLockTest(VmlabTestCase):
+    """Two vmlab processes never use one Guest at the same time."""
+
+    def setUp(self):
+        super().setUp()
+        self.project.config(FAKE_LAB)
+        self.started = self.project.root / "started"
+        self.release = self.project.root / "release"
+        self.project.scenario("hold.py", HOLD % {"started": str(self.started), "release": str(self.release)})
+        self.project.scenario("quick.py", PASS)
+
+    def hold_guest(self):
+        holder = self.project.vmlab_background("run", "hold")
+        self.addCleanup(lambda: holder.poll() is None and holder.kill())
+        for _ in range(600):
+            if self.started.exists():
+                return holder
+            if holder.poll() is not None:
+                self.fail("the holding run ended early: %s" % (holder.communicate(),))
+            time.sleep(0.05)
+        self.fail("the holding run never started its Scenario")
+
+    def finish(self, holder):
+        self.release.touch()
+        out, err = holder.communicate(timeout=60)
+        self.assertEqual(holder.returncode, 0, out + err)
+
+    def test_a_run_on_a_guest_in_use_fails_and_names_the_holder(self):
+        holder = self.hold_guest()
+
+        r = self.project.vmlab("run", "quick")
+
+        self.assertExit(r, 1)
+        self.assertIn("in use by another vmlab", r.out)
+        self.assertIn("pid %d" % holder.pid, r.out)
+        self.assertEqual(self.project.report(sorted(self.project.run_dirs())[-1])["status"], "error")
+        self.finish(holder)
+
+    def test_deploy_on_a_guest_in_use_fails(self):
+        holder = self.hold_guest()
+
+        r = self.project.vmlab("deploy")
+
+        self.assertExit(r, 1)
+        self.assertIn("in use by another vmlab", r.err)
+        self.finish(holder)
+
+    def test_the_guest_is_free_again_once_the_run_ends(self):
+        self.finish(self.hold_guest())
+
+        self.assertExit(self.project.vmlab("run", "quick"), 0)

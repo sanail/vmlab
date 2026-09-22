@@ -162,7 +162,7 @@ def load(start):
                 path,
                 key + ".os",
                 "Provider %s runs os = %s only" % (provider, " or ".join(supported)),
-                'Linux and Windows Labs will use provider = "fusion" (planned); use provider = "fake" to try vmlab without a hypervisor',
+                'macOS Labs use provider = "tart", Linux Labs provider = "fusion" (Windows: planned); provider = "fake" tries vmlab without a hypervisor',
             )
         arch = table.get("arch", host_arch())
         if arch not in ARCHES:

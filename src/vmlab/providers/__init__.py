@@ -1,11 +1,13 @@
 """Providers: one adapter per hypervisor. See base.Provider for the interface."""
 
 from vmlab.providers.fake import FakeProvider
+from vmlab.providers.fusion import FusionProvider
 from vmlab.providers.stubs import stub
 from vmlab.providers.tart import TartProvider
 
 PROVIDERS = {
     "fake": FakeProvider,
+    "fusion": FusionProvider,
     "parallels": stub("parallels", "Parallels Desktop"),
     "tart": TartProvider,
     "utm": stub("utm", "UTM"),

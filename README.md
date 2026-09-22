@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests) and the UI contract on macOS. VMware Fusion is planned; UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
+Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux Guests; Windows planned) and the UI contract on macOS. UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -32,7 +32,7 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 
 ```toml
 [labs.mac]
-provider = "fake"        # fake | tart (macOS) (fusion: planned; utm, parallels: stubs)
+provider = "fake"        # fake | tart (macOS) | fusion (Linux) (utm, parallels: stubs)
 os = "macos"             # macos | windows | linux
 arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 memory_gb = 4            # Host RAM the Guest takes; used by --parallel
@@ -106,6 +106,45 @@ macOS traps the helper handles, so Scenarios don't have to:
 - **Focus stealing**: staging text in another app and pressing the app's hotkey happen in one Guest call (`stage-text --then`), and the result records which app was frontmost when the chord went out.
 - **Screen Recording consent**: even with the TCC grant, macOS 15+ asks again every 30 days ("... is requesting to bypass the system private window picker") when a client captures the screen without the picker, and the alert covers the app under test. Provisioning dates the next alert for vmlab's Channel clients to 2100 (`ScreenCaptureApprovals.plist` in the Guest), part of the same Guest-only trade-off as the TCC grants.
 - **Covered elements**: an element under the Dock, another window or scrolled out of view still has bounds. `click` asks Accessibility what lies under the point first and refuses with what it found there.
+
+## Linux Guests with VMware Fusion
+
+Needs a Mac with [VMware Fusion](https://www.vmware.com/products/desktop-hypervisor/workstation-and-fusion) (free; `brew install --cask vmware-fusion`). As with Tart, a **Base guest** is created once per Host and each Lab runs in its own linked clone of it:
+
+```sh
+vmlab base create ubuntu-26.04   # asks before downloading the Ubuntu desktop ISO (about 4 GB); --yes to allow it; idempotent
+vmlab base create ubuntu-26.04 --image ~/Downloads/ubuntu-26.04.1-desktop-arm64.iso   # or use an ISO you have
+```
+
+`base create` downloads the ISO for the Host's architecture into `$VMLAB_HOME/images/` (checked against Ubuntu's published SHA-256), builds a VM in `$VMLAB_HOME/fusion/` and installs Ubuntu without a single click (about 10 minutes, most of it installing updates). Then it provisions the Guest over SSH, reboots it into the desktop, proves both Channels reach the desktop session and takes the snapshot that Lab clones link to. Each stage is skipped when it already finished, so re-running after a failure resumes; `--reprovision` provisions again.
+
+How the unattended install works, for when it needs debugging:
+
+- A small `CIDATA` disc next to the ISO carries cloud-init user-data: the autoinstall answers (user `vmlab` with a random password, vmlab's SSH key, a host key vmlab generated and pinned beforehand, passwordless sudo) and a job for the installer's live session.
+- The Ubuntu installer wants a click before it writes the disk unless `autoinstall` is on the kernel command line, and editing that means typing into GRUB. Instead, the job waits for the installer to ask and confirms over the installer's own local API, as the Install button does.
+- The job reports the installer's state on the VM's serial port, which Fusion writes to `install-serial.log` in the VM's folder; `base create` prints the state as it changes. The installer powers the VM off when it is done.
+
+Provisioning (`src/vmlab/guest/linux/provision.sh`, idempotent, under a minute) prepares a desktop session that automation can drive: GDM logs the user in automatically; screen lock, blanking and suspend are off (an idle GNOME suspends the Guest, VMware Tools included, even at the login screen); the accessibility bus is on (for Qt apps too); the welcome wizard (which also returns as a "what's new" tour after release upgrades), the update notifier, the crash reporter and background apt updates are off, since they pop up over the app under test or hold the package lock during Runs; and it installs AT-SPI (`python3-pyatspi`), `xdotool` for X11, `ydotool` with its daemon and `/dev/uinput` access for Wayland, `wl-clipboard` and `xclip`. The session is GNOME on Wayland. The UI contract on Linux comes next; until then `g.exec()` and `g.screenshot()` work on these Labs.
+
+```toml
+[labs.linux]
+provider = "fusion"
+os = "linux"
+memory_gb = 4
+
+[labs.linux.fusion]
+base = "ubuntu-26.04"          # the Base guest to clone
+cpu = 4
+channels = ["ssh", "vmrun"]    # SSH (multiplexed), then vmrun guest operations through VMware Tools
+```
+
+- Clean state is the clone's `vmlab-clean` snapshot, taken when the clone is made: restoring reverts to it. A clone is made again on the next start after its Base guest is provisioned again.
+- Two vmlab processes never share a Guest: `run` and `deploy` hold a lock on it (any Provider), and a second one fails at once, naming the process that holds it.
+- The Guest's IP is looked up at every boot, never hardcoded: from what VMware Tools publish (`guestinfo.ip`), else `vmrun getGuestIPAddress` (which can claim for minutes that Tools are not running when they are), else Fusion's DHCP lease for the VM's MAC. SSH works as with Tart: vmlab's key and known_hosts, the host key pinned under the Base guest's name.
+- The vmrun Channel needs no network and no sshd, but it takes several vmrun calls per command (about 3 s, against about 12 ms over SSH). Each call writes its output to files named for that call alone, so concurrent calls never mix, and a call that times out is killed in the Guest too. vmrun takes the Guest password on its command line, so it is visible in the Host's process list while a call runs; the password is random, stored in `$VMLAB_HOME/fusion/` (mode 0600), and guards a throwaway Guest on Fusion's private NAT network. Nothing in the Guest ever needs it: sudo is passwordless.
+- Screenshots are Host-side (`vmcli MKS captureScreenshot`): no Guest credentials, and no Wayland consent dialog.
+- Guests run without a window and without sound. `VMLAB_VMRUN` and `VMLAB_VMCLI` override the Fusion binaries.
+- `vmlab clean` does not know Fusion clones yet: delete a gone project's clone with `vmrun deleteVM $VMLAB_HOME/fusion/<clone>.vmwarevm/<clone>.vmx`.
 
 A Scenario is a Python file defining `scenario(g)`:
 
@@ -189,4 +228,4 @@ vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screensh
 vmlab version
 ```
 
-`VMLAB_HOME` (default `~/.vmlab`) holds host state: the Base guest registry (`bases.json`), vmlab's SSH key and known_hosts (`ssh/`), `tart run` logs (`tart/`), and the Fake Provider's Guests (`fake/`, with the Guest user's home at `fs/home`).
+`VMLAB_HOME` (default `~/.vmlab`) holds host state: the Base guest registry (`bases.json`), vmlab's SSH key and known_hosts (`ssh/`), `tart run` logs (`tart/`), Fusion VMs, their clone records and Guest credentials (`fusion/`), downloaded installer ISOs (`images/`), Guest locks (`locks/`), and the Fake Provider's Guests (`fake/`, with the Guest user's home at `fs/home`).

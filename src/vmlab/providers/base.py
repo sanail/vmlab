@@ -8,6 +8,8 @@ command that exits non-zero, or a call that times out, does not (ADR 0003).
 
 import hashlib
 import re
+import tarfile
+import tempfile
 import time
 
 BOOT_POLL_SECONDS = 0.2
@@ -118,6 +120,20 @@ class Provider:
         Returns the absolute Guest path of the copy.
         """
         raise NotImplementedError
+
+    def copy_in_by_tar(self, src, guest_dir):
+        """copy_in for POSIX Guests: a tar stream over exec's stdin keeps bundles intact
+        (symlinks, modes); the Guest-side script expands ~ and prints the absolute folder."""
+        script = 'd=$1; case $d in "~"|"~/"*) d="$HOME${d#"~"}";; esac; mkdir -p "$d" && tar -xf - -C "$d" && cd "$d" && pwd'
+        argv = ["/bin/sh", "-c", script, "sh", guest_dir]
+        with tempfile.TemporaryFile() as archive:
+            with tarfile.open(fileobj=archive, mode="w") as tar_file:
+                tar_file.add(str(src), arcname=src.name)
+            result = self.exec(argv, self.lab.app.install_timeout, stdin=archive)
+        if not result.ok:
+            detail = "\n".join(result.stderr.strip().splitlines()[-15:]) or "(no output)"
+            raise GuestError("copying %s into the Guest failed: %s" % (src, detail), "check free disk space in the Guest")
+        return "%s/%s" % (result.stdout.strip(), src.name)
 
     def shell_argv(self, command):
         """argv that runs a command line in the Guest's shell: sh, or PowerShell on Windows."""

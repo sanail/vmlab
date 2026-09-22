@@ -10,7 +10,8 @@ table (the suite adds its own), and point the suite at it:
 A real Lab runs in a project of its own under $VMLAB_HOME/contract/<lab>, so
 its Guest is reused between runs and never touches your projects. Tests run
 in order: up, Channels, exec, timeouts, deploy, screenshot, the UI contract
-(in the OS's stock text editor), restore, down.
+(in the OS's stock text editor; skipped on OSes that have no UI helper yet),
+restore, down.
 
 VMLAB_UI_HELPER=jxa runs the macOS UI part through the JXA fallback.
 """
@@ -27,6 +28,8 @@ import unittest
 from pathlib import Path
 
 from harness import zipapp_path
+
+UI_OSES = ("macos",)  # Guest OSes with a UI helper (vmlab.uihelpers)
 
 FAKE_LAB = """
 [labs.contract]
@@ -56,7 +59,10 @@ class Target:
         self.scenarios.mkdir(exist_ok=True)
         config = self.root / ".vmlab" / "vmlab.toml"
         config.write_text(lab_toml, encoding="utf-8")
-        self.os = self.status()["os"]
+        status = self.status()
+        self.os = status["os"]
+        # The Fake Provider emulates the UI contract on every OS; real Guests have helpers per OS.
+        self.has_ui = status["provider"] == "fake" or self.os in UI_OSES
         (self.root / "contract-artifact.txt").write_text("contract-bytes", encoding="utf-8")
         install = (
             'Copy-Item -LiteralPath $env:VMLAB_ARTIFACT -Destination (Join-Path $HOME "contract-installed.txt")'
@@ -122,6 +128,18 @@ def walk(node):
     for child in node["children"]:
         yield from walk(child)
 """
+
+
+def ui(test):
+    """A UI contract test: skipped on Guest OSes that have no UI helper yet."""
+
+    def wrapper(self):
+        if not self.target.has_ui:
+            self.skipTest("the UI contract is not implemented for %s Guests yet" % self.target.os)
+        test(self)
+
+    wrapper.__name__ = test.__name__
+    return wrapper
 
 
 class ContractTest(unittest.TestCase):
@@ -194,6 +212,7 @@ def scenario(g):
         [shot] = report["scenarios"][0]["screenshots"]
         self.assertTrue((Path(report["run_dir"]) / shot).read_bytes().startswith(b"\x89PNG"))
 
+    @ui
     def test_07_ui_tree_and_find_share_one_shape(self):
         self.assertPassed(*self.target.scenario("ui_tree.py", UI + """
 def scenario(g):
@@ -211,6 +230,7 @@ def scenario(g):
     g.check("a match has no children", found and "children" not in found[0])
 """))
 
+    @ui
     def test_08_ui_input_clipboard_click_and_wait(self):
         self.assertPassed(*self.target.scenario("ui_input.py", UI + """
 def scenario(g):
@@ -241,6 +261,7 @@ def scenario(g):
     g.check("focus raises the window and fronts the app", (focused["app"], focused["window"], focused["frontmost"]) == (app, title, app), detail=focused)
 """))
 
+    @ui
     def test_09_ui_a_cold_webkit_page_is_read_on_the_first_try(self):
         # WebKit builds its accessibility tree lazily and hands it to the next client
         # to connect. Safari is started afresh and waited for through the window
@@ -274,6 +295,7 @@ def scenario(g):
     g.exec(["pkill", "-x", "Safari"])
 """))
 
+    @ui
     def test_10_ui_cli_prints_the_same_json(self):
         proc = self.target.vmlab("ui", "clipboard", "--set", "from the CLI", "--lab", self.target.lab)
         self.assertEqual(proc.returncode, 0, proc.stderr)

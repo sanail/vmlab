@@ -2,7 +2,7 @@
 
 A **Provider** adapts one hypervisor to vmlab. Scenarios never see it. They talk to the Scenario API, which reaches the Provider through the Runner and Deploy. So a new Provider needs no changes to Scenarios, reports or the CLI. Vocabulary: `CONTEXT.md`. Channel design: ADR 0003.
 
-The Tart Provider (`src/vmlab/providers/tart.py`) is a complete example: Base guest creation and provisioning, clones for Clean state, and SSH with a `tart exec` fallback. UTM and Parallels are registered as stubs. Selecting one fails at config load and points here. Replacing a stub with a real Provider is the intended path.
+The Tart Provider (`src/vmlab/providers/tart.py`) is a complete example: Base guest creation and provisioning, clones for Clean state, and SSH with a `tart exec` fallback. The Fusion Provider (`src/vmlab/providers/fusion.py`) shows the other shapes: a Base guest installed unattended from an ISO, linked clones restored by snapshot, and a guest-exec Channel (`vmrun`) that returns no output and so captures it in files named per call. UTM and Parallels are registered as stubs. Selecting one fails at config load and points here. Replacing a stub with a real Provider is the intended path.
 
 ## 1. Implement the interface
 

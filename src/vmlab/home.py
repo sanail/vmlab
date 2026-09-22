@@ -1,7 +1,9 @@
 """vmlab's per-user home directory (keys, credentials, registries, Fake Guests)."""
 
+import hashlib
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -47,3 +49,44 @@ class StartedGuests:
 
     def __contains__(self, key):
         return self._update(lambda keys: key in keys)
+
+
+class GuestInUse(Exception):
+    """Another vmlab process holds the Guest's lock."""
+
+
+class GuestLock:
+    """Held while one vmlab process uses a Guest, so two Runs never share it.
+
+    An flock, so it dies with its process. The lock file names the holder for
+    the error the next process shows.
+    """
+
+    def __init__(self, key):
+        self.key = key
+        digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
+        self.path = vmlab_home() / "locks" / ("%s.lock" % digest)
+        self._file = None
+
+    def acquire(self):
+        """Take the lock or raise GuestInUse naming the holder."""
+        self.path.parent.mkdir(mode=0o700, exist_ok=True)
+        lock_file = self.path.open("a+")
+        if fcntl:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                lock_file.seek(0)
+                holder = lock_file.read().strip() or "unknown"
+                lock_file.close()
+                raise GuestInUse(holder)
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write("pid %d: %s" % (os.getpid(), " ".join(["vmlab"] + sys.argv[1:])))
+        lock_file.flush()
+        self._file = lock_file
+
+    def release(self):
+        if self._file:
+            self._file.close()  # closing drops the flock
+            self._file = None
