@@ -16,12 +16,18 @@ import os
 import pkgutil
 import tempfile
 
-from vmlab.providers.base import GuestError
+from vmlab.providers.base import ChannelError, GuestError
 
 MACOS_HELPER = "/usr/local/vmlab/bin/vmlab-ui"
 MISSING = 127
 # exit 127 when the helper is not installed, whatever the Channel does with a missing program
 MACOS_GUARD = 'h=%s; [ -x "$h" ] || exit %d; exec "$h" "$@"' % (MACOS_HELPER, MISSING)
+
+
+def macos_helper_info(channel, timeout):
+    """vmlab-ui's version info over one Channel ({"version", "trusted", ...}), or None if it is not installed."""
+    result = channel.exec(["/bin/sh", "-c", MACOS_GUARD, "sh", "version"], timeout, {})
+    return None if result.code == MISSING else _result(result, "version", "vmlab-ui")
 
 
 def for_provider(provider):
@@ -64,12 +70,11 @@ class MacHelper:
         trusted, untrusted, version = [], [], None
         for channel in self.provider.channels():
             try:
-                result = channel.exec(["/bin/sh", "-c", MACOS_GUARD, "sh", "version"], timeout, {})
-            except GuestError:
+                info = macos_helper_info(channel, timeout)
+            except ChannelError:
                 continue  # doctor reports the Channel itself
-            if result.code == MISSING:
+            if info is None:
                 return False, "vmlab-ui is not installed; UI commands use the slower JXA fallback"
-            info = _result(result, "version", "vmlab-ui")
             version = info.get("version")
             (trusted if info.get("trusted") else untrusted).append(channel.name)
         if untrusted:

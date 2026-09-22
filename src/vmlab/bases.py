@@ -2,13 +2,16 @@
 every project on the Host. Labs clone them; projects never run in them.
 
 The registry, $VMLAB_HOME/bases.json, records each Base guest's Provider, VM,
-image, Guest user and provisioning version (None until provisioning succeeds).
+image, Guest user, provisioning version (None until provisioning succeeds) and
+provisioned_id, new with every successful provisioning, so Lab clones made
+before it can tell they are stale even when the version did not change.
 Its SSH host key is pinned in vmlab's known_hosts (vmlab.providers.ssh).
 """
 
 import json
 import re
 
+from vmlab.config import UsageError
 from vmlab.home import vmlab_home
 from vmlab.providers.base import GuestError
 
@@ -20,8 +23,9 @@ CATALOG = {
 NAME = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 
 
-class UsageError(Exception):
-    """The command line asked for something that cannot be done."""
+def provisioning(record):
+    """Identifies one provisioning of a Base guest (records from before provisioned_id: its version)."""
+    return record.get("provisioned_id") or str(record["provisioned"])
 
 
 def vm_name(name):

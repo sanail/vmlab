@@ -35,6 +35,13 @@ FAKE_TART = textwrap.dedent(
     elif args[:1] == ["clone"]:
         state["local"].append(args[2])
         json.dump(state, open(state_path, "w"))
+    elif args[:1] == ["delete"]:
+        state["local"].remove(args[1])
+        json.dump(state, open(state_path, "w"))
+    elif args[:1] == ["set"]:
+        pass
+    elif args[:1] == ["run"]:
+        sys.exit("fake tart: no VMs really run here")
     else:
         sys.exit("fake tart: unsupported %r" % args)
     """
@@ -158,3 +165,35 @@ class TartDoctorTest(TartTestCase):
         self.assertExit(r, 1)
         self.assertIn("vmlab base create macos-tahoe", r.err)
         self.assertNotIn("clone", [c[0] for c in self.tart_calls()])
+
+
+class TartCloneTest(TartTestCase):
+    """A Lab's clone is made again whenever its Base guest has been provisioned since."""
+
+    def base_record(self, provisioned_id):
+        record = {
+            "provider": "tart", "os": "macos", "arch": "arm64", "vm": "vmlab-base-macos-tahoe",
+            "image": "ghcr.io/cirruslabs/macos-tahoe-base:latest", "user": "admin",
+            "provisioned": 5, "provisioned_id": provisioned_id,
+        }  # fmt: skip
+        self.project.home.mkdir(exist_ok=True)
+        (self.project.home / "bases.json").write_text(json.dumps({"macos-tahoe": record}))
+
+    def clone_calls(self):
+        calls = [c[0] for c in self.tart_calls() if c[0] in ("clone", "delete")]
+        self.log_path.unlink()
+        return calls
+
+    def test_reprovisioning_the_base_recreates_the_clone_even_at_the_same_version(self):
+        self.project.config(TART_LAB)
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])
+        self.base_record("first")
+        self.vmlab("up")  # the fake tart never boots a VM; only the clone matters here
+        self.assertEqual(self.clone_calls(), ["clone"])
+
+        self.vmlab("up")
+        self.assertEqual(self.clone_calls(), [], "same provisioning: the clone is reused")
+
+        self.base_record("second")  # `vmlab base create --reprovision`, same PROVISION_VERSION
+        self.vmlab("up")
+        self.assertEqual(self.clone_calls(), ["delete", "clone"])

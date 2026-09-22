@@ -87,7 +87,7 @@ channels = ["ssh", "exec"]   # SSH (multiplexed), then `tart exec` (the Tart gue
 ```
 
 - Guests run headless, with no shared clipboard (it would overwrite what you copied) and no audio (a Guest's audio device can grab your Bluetooth headset).
-- Clean state = delete the clone and clone the Base guest again.
+- Clean state = delete the clone and clone the Base guest again. A clone is also made again on the next start after its Base guest is provisioned again (`--reprovision`, or a newer vmlab), so no Lab keeps running without what changed.
 - SSH uses vmlab's own key and known_hosts in `$VMLAB_HOME/ssh/`. The Guest's host key is pinned at provisioning under the Base guest's name, never its IP, so reused DHCP addresses can't break or confuse it. Your `~/.ssh` is never read or written.
 - Screenshots are taken in the Guest with `screencapture`, because Tart has no Host-side screenshot.
 - The screen is `display` in points (Retina, 2x pixels). macOS would otherwise keep the display mode it last used whenever the display still offers it (the image pins 1024x768), so vmlab clears the saved mode each time it stops a Guest, and every boot fits the Lab's `display`.

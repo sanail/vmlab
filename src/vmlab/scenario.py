@@ -21,7 +21,7 @@ import time
 import traceback
 
 from vmlab import ui
-from vmlab.config import ConfigError
+from vmlab.config import ConfigError, UsageError
 from vmlab.providers.base import GuestError, GuestTimeout
 
 DETERMINISTIC, VISUAL = "deterministic", "visual, unverified"
@@ -103,11 +103,11 @@ class Guest:
 
     def find(self, text=None, role=None, app=None):
         """{"matches": [...]}: elements by text (exact beats substring) and/or role, optionally in one app."""
-        return self._ui_call(lambda contract: contract.find(text=text, role=role, app=app))
+        return self._ui_call(lambda contract: contract.find(ui.Query(text, role, app)))
 
     def click(self, text=None, role=None, app=None, index=0, at=None):
         """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing matches."""
-        return self._ui_call(lambda contract: contract.click(text=text, role=role, app=app, index=index, at=at))
+        return self._ui_call(lambda contract: contract.click(ui.Query(text, role, app), index=index, at=at))
 
     def press(self, chord):
         """Press a key chord such as "cmd+shift+space", by physical key (any keyboard layout)."""
@@ -137,10 +137,8 @@ class Guest:
         """Wait until one condition holds: an element appears (or is gone), a process runs, a file
         exists, or a log file has a line matching pattern. Returns {"met": bool, ...}; never raises
         for an unmet condition. timeout defaults to the Lab's step_timeout."""
-        timeout = self._step_timeout if timeout is None else timeout
-        return self._ui_call(
-            lambda contract: contract.wait_for(timeout, text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern)
-        )
+        condition = ui.condition(text, role, app, gone, process, file, log, pattern)
+        return self._ui_call(lambda contract: contract.wait_for(condition, timeout=timeout))
 
     def _ui_call(self, fn):
         self._remaining("a UI command")
@@ -196,7 +194,7 @@ def run_scenario(path, guest, prepare):
         raise
     except ScenarioError as exc:
         error = str(exc)
-    except (GuestError, ui.UsageError) as exc:
+    except (GuestError, UsageError) as exc:
         error = "%s: %s" % (_scenario_line(path, sys.exc_info()[2]), exc)
     except Exception:
         error = traceback.format_exc(limit=-3).strip()

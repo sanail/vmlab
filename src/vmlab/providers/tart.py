@@ -56,7 +56,7 @@ SYSTEM_EVENTS_TIMEOUT = 30  # s; longer means a TCC consent dialog is waiting fo
 # own phrasing (naming the VM, or its agent connection) marks a Channel failure.
 TART_EXEC_FAILURE = r'^(the specified VM "{vm}" does not exist|VM "{vm}" is not running|.*(guest agent|gRPC|UNAVAILABLE|vsock))'
 DISPLAY_PREFS = "/Library/Preferences/com.apple.windowserver.displays.plist"
-CLONE_STATE = "base-provisioned"  # which provisioning version of its Base guest a Lab clone was made from
+CLONE_STATE = "base-provisioned"  # which provisioning of its Base guest a Lab clone was made from
 
 
 def tart_binary():
@@ -249,8 +249,8 @@ class TartProvider(Provider):
         vms = list_vms("local")
         base_vm = bases.vm_name(self.base_name)
         made_from = self._clone_state.read_text().strip() if self._clone_state.exists() else None
-        if self.guest_id in vms and made_from != str(record["provisioned"]):
-            # The Base guest was provisioned again since: the clone lacks its grants.
+        if self.guest_id in vms and made_from != bases.provisioning(record):
+            # The Base guest was provisioned again since, even at the same version: the clone lacks what changed.
             tart_ok(["delete", self.guest_id], CALL_TIMEOUT)
             del vms[self.guest_id]
         if self.guest_id not in vms:
@@ -261,7 +261,7 @@ class TartProvider(Provider):
             tart_ok(["clone", base_vm, self.guest_id], self.lab.boot_timeout)
             tart_ok(["set", self.guest_id, "--random-mac"], CALL_TIMEOUT)  # clones of one Base guest run side by side
             self._clone_state.parent.mkdir(parents=True, exist_ok=True)
-            self._clone_state.write_text(str(record["provisioned"]))
+            self._clone_state.write_text(bases.provisioning(record))
         memory_mb = int(self.lab.memory_gb * 1024)
         tart_ok(["set", self.guest_id, "--cpu", self.options["cpu"], "--memory", memory_mb, "--display", self.options["display"]], CALL_TIMEOUT)
         self.vm.start()
@@ -415,9 +415,8 @@ def create_base(name, image, confirm, reprovision, out):
                 )
             _checked(result, "System Events over Channel %s" % channel.name, "re-run `vmlab base create %s --reprovision`" % name)
             out("  Channel %s reaches System Events" % channel.name)
-            result = channel.exec(["/bin/sh", "-c", uihelpers.MACOS_GUARD, "sh", "version"], CALL_TIMEOUT, {})
-            if result.code != uihelpers.MISSING:
-                info = json.loads(_checked(result, "vmlab-ui over Channel %s" % channel.name).stdout)
+            info = uihelpers.macos_helper_info(channel, CALL_TIMEOUT)
+            if info is not None:
                 if not info.get("trusted"):
                     raise GuestError(
                         "vmlab-ui has no Accessibility grant over Channel %s" % channel.name,
@@ -429,7 +428,10 @@ def create_base(name, image, confirm, reprovision, out):
     vm.stop(BASE_BOOT_TIMEOUT)
     registry.put(
         name,
-        {"provider": "tart", "os": "macos", "arch": "arm64", "vm": vm.name, "image": image, "user": user, "provisioned": PROVISION_VERSION},
+        {
+            "provider": "tart", "os": "macos", "arch": "arm64", "vm": vm.name, "image": image, "user": user,
+            "provisioned": PROVISION_VERSION, "provisioned_id": uuid.uuid4().hex,
+        },  # fmt: skip
     )
     out("Base guest %s is ready (Tart VM %s). Labs use it with: [labs.<name>.tart] base = \"%s\"" % (name, vm.name, name))
 

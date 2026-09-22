@@ -28,6 +28,10 @@ DEFAULT_STEP_TIMEOUT = 60
 DEFAULT_SCENARIO_TIMEOUT = 600
 
 
+class UsageError(Exception):
+    """The command line (or a Scenario's call) asked for something malformed or impossible. Exit 2."""
+
+
 class ConfigError(Exception):
     def __init__(self, path, key, problem, fix):
         self.path, self.key, self.problem, self.fix = path, key, problem, fix

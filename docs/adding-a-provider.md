@@ -60,7 +60,7 @@ Add it to `PROVIDERS` in `src/vmlab/providers/__init__.py`, replacing the stub i
 vmlab has two seams (spec 0001, *Testing Decisions*):
 
 - **Seam 1** (every commit): `python3 -m unittest discover -s tests` drives the built zipapp against the **Fake Provider**. It covers everything that does not depend on a real hypervisor: config, lifecycle, fallback, timeouts, deploy and reports. A new Provider rarely needs Seam 1 tests, except for its own config validation.
-- **Seam 2** (manual or scheduled): `tests/contract/test_contract.py` checks the Provider/Channel contract against a **real** Lab through the CLI. It covers up, every Channel healthy, exec (stdout, stderr, exit code, env, quoting), timeouts, deploy (copy in and install), screenshots, every UI contract command (in the OS's stock text editor), restore and down. On macOS, run it a second time with `VMLAB_UI_HELPER=jxa` to cover the JXA fallback. With no settings it runs against a Fake Lab, so it stays green in Seam 1 too.
+- **Seam 2** (manual or scheduled): `tests/contract/test_contract.py` checks the Provider/Channel contract against a **real** Lab through the CLI. It covers up, every Channel healthy, exec (stdout, stderr, exit code, env, quoting), timeouts, deploy (copy in and install), screenshots, every UI contract command (in the OS's stock text editor; on macOS also a cold WebKit page in Safari), restore and down. On macOS, run it a second time with `VMLAB_UI_HELPER=jxa` to cover the JXA fallback. With no settings it runs against a Fake Lab, so it stays green in Seam 1 too.
 
 To run Seam 2 against your Provider, describe one Lab in a TOML file **without** an `[labs.<lab>.app]` table (the suite adds its own):
 

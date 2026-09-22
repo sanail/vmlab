@@ -20,6 +20,7 @@ their windows and tray (status) items.
 import re
 import time
 
+from vmlab.config import UsageError
 from vmlab.providers.base import GuestError, GuestTimeout
 
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
@@ -85,10 +86,6 @@ KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789") | {"f%d" % n for n in range(1
 KEY_ALIASES = {"return": "enter", "esc": "escape", "del": "delete", "pgup": "pageup", "pgdn": "pagedown"}
 
 
-class UsageError(Exception):
-    """A UI command was asked for something malformed (a bad chord, no condition)."""
-
-
 def parse_chord(chord):
     """'Shift+Command+Space' -> ('space', ['shift', 'cmd']); UsageError naming what is wrong."""
     parts = [p.strip().lower() for p in str(chord).split("+")]
@@ -131,31 +128,137 @@ def label(node):
     return found[0].strip() if found else ""
 
 
-def find(tree, text=None, role=None, app=None):
-    """Elements matching every given criterion, in tree order, without their children.
+class Query:
+    """Which elements: by text (name, value or description; exact matches win,
+    otherwise substrings), by role (cross-OS or native), inside app (by name,
+    case-insensitive). Any may be None."""
 
-    text matches name, value or description: exact matches win; if there are
-    none, substring matches. role matches the cross-OS or the native role. app
-    limits the search to applications of that name (case-insensitive).
-    """
-    candidates = []
+    def __init__(self, text=None, role=None, app=None):
+        self.text, self.role, self.app = text, role, app
 
-    def visit(node, app_name):
-        if node["role"] == "application":
-            app_name = node["name"]
-        if node["role"] != "desktop":
-            if app and (app_name or "").lower() != app.lower():
-                return
-            if role is None or role in (node["role"], node["native_role"]):
-                candidates.append((node, app_name))
-        for child in node["children"]:
-            visit(child, app_name)
+    def require(self, command):
+        if self.text is None and self.role is None:
+            raise UsageError("%s needs --text or --role (or both)" % command)
+        return self
 
-    visit(tree, None)
-    if text is not None:
-        exact = [(n, a) for n, a in candidates if text in texts(n)]
-        candidates = exact or [(n, a) for n, a in candidates if any(text in t for t in texts(n))]
-    return [dict({k: v for k, v in n.items() if k != "children"}, app=a) for n, a in candidates]
+    def __str__(self):
+        return ", ".join("%s=%r" % kv for kv in (("text", self.text), ("role", self.role), ("app", self.app)) if kv[1] is not None)
+
+    def matches(self, tree):
+        """Matching elements in tree order, without their children, each with its "app"."""
+        candidates = []
+
+        def visit(node, app_name):
+            if node["role"] == "application":
+                app_name = node["name"]
+            if node["role"] != "desktop":
+                if self.app and (app_name or "").lower() != self.app.lower():
+                    return
+                if self.role is None or self.role in (node["role"], node["native_role"]):
+                    candidates.append((node, app_name))
+            for child in node["children"]:
+                visit(child, app_name)
+
+        visit(tree, None)
+        if self.text is not None:
+            exact = [(n, a) for n, a in candidates if self.text in texts(n)]
+            candidates = exact or [(n, a) for n, a in candidates if any(self.text in t for t in texts(n))]
+        return [dict({k: v for k, v in n.items() if k != "children"}, app=a) for n, a in candidates]
+
+
+# Conditions for wait_for. poll(ui, timeout) returns (met, extra result fields).
+
+
+class ElementCondition:
+    def __init__(self, query, gone):
+        self.query, self.gone = query, gone
+
+    def describe(self):
+        return {k: v for k, v in (("text", self.query.text), ("role", self.query.role), ("app", self.query.app), ("gone", self.gone or None)) if v is not None}
+
+    def poll(self, ui, timeout):
+        matches = self.query.matches(ui.tree(self.query.app, timeout=timeout))
+        return (not matches if self.gone else bool(matches)), {"matches": matches}
+
+
+class ProcessCondition:
+    def __init__(self, name):
+        self.name = name
+
+    def describe(self):
+        return {"process": self.name}
+
+    def poll(self, ui, timeout):
+        return ui.provider.exec(ui.probes.process_argv(ui.provider, self.name), timeout).ok, {}
+
+
+class FileCondition:
+    def __init__(self, path):
+        self.path = path
+
+    def describe(self):
+        return {"file": self.path}
+
+    def poll(self, ui, timeout):
+        return ui.provider.exec(ui.probes.exists_argv(ui.provider, self.path), timeout).ok, {}
+
+
+class LogCondition:
+    def __init__(self, path, pattern):
+        self.path, self.pattern = path, pattern
+        try:
+            self.regex = re.compile(pattern, re.M)
+        except re.error as exc:
+            raise UsageError("--pattern %r is not a valid regular expression: %s" % (pattern, exc))
+
+    def describe(self):
+        return {"log": self.path, "pattern": self.pattern}
+
+    def poll(self, ui, timeout):
+        result = ui.provider.exec(ui.probes.read_argv(ui.provider, self.path), timeout)
+        return result.ok and self.regex.search(result.stdout) is not None, {}
+
+
+def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None):
+    """The one wait_for condition these arguments describe; UsageError unless there is exactly one."""
+    element = text is not None or role is not None
+    if sum([element, process is not None, file is not None, log is not None]) != 1:
+        raise UsageError("wait-for needs exactly one condition: an element (--text/--role), --process, --file or --log with --pattern")
+    if gone and not element:
+        raise UsageError("--gone applies to elements only")
+    if element:
+        return ElementCondition(Query(text, role, app), gone)
+    if process is not None:
+        return ProcessCondition(process)
+    if file is not None:
+        return FileCondition(file)
+    if pattern is None:
+        raise UsageError("wait-for --log needs --pattern")
+    return LogCondition(log, pattern)
+
+
+class PosixProbes:
+    """Commands that check the Guest from its shell, for process, file and log conditions."""
+
+    def process_argv(self, provider, name):
+        return ["pgrep", "-x", name]
+
+    def exists_argv(self, provider, path):
+        return ["sh", "-c", EXPAND_TILDE + 'test -e "$p"', "sh", path]
+
+    def read_argv(self, provider, path):
+        return ["sh", "-c", EXPAND_TILDE + 'cat -- "$p"', "sh", path]
+
+
+class PowerShellProbes:
+    def process_argv(self, provider, name):
+        return provider.shell_argv("if (Get-Process -Name '%s' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % name.replace("'", "''"))
+
+    def exists_argv(self, provider, path):
+        return provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % _ps_path(path))
+
+    def read_argv(self, provider, path):
+        return provider.shell_argv("Get-Content -Raw -LiteralPath %s" % _ps_path(path))
 
 
 class UI:
@@ -169,6 +272,7 @@ class UI:
         self.provider = provider
         self.os = provider.lab.os
         self.call_timeout = call_timeout
+        self.probes = PowerShellProbes() if self.os == "windows" else PosixProbes()
 
     def _call(self, command, params):
         return self.provider.ui_call(command, params, self.call_timeout("ui %s" % command))
@@ -178,30 +282,27 @@ class UI:
         timeout = self.call_timeout("ui %s" % command)
         return self.provider.ui_call(command, dict(params, timeout=max(timeout - STAGE_MARGIN, timeout / 2)), timeout)
 
-    def tree(self, app=None):
+    def tree(self, app=None, timeout=None):
         params = {"app": app} if app else {}
-        return normalize(self._call("tree", params), self.os)
+        timeout = self.call_timeout("ui tree") if timeout is None else timeout
+        return normalize(self.provider.ui_call("tree", params, timeout), self.os)
 
-    def find(self, text=None, role=None, app=None):
-        if text is None and role is None:
-            raise UsageError("find needs --text or --role (or both)")
-        tree = self.tree(app)
-        return {"matches": find(tree, text=text, role=role, app=app)}
+    def find(self, query):
+        return {"matches": query.require("find").matches(self.tree(query.app))}
 
-    def click(self, text=None, role=None, app=None, index=0, at=None):
-        """Click an element's middle, refusing if something else is on top of it; or click at (x, y)."""
+    def click(self, query=None, index=0, at=None):
+        """Click the index-th match's middle, refusing if something else is on top of it; or click at (x, y)."""
         if at is not None:
             x, y = at
             result = self._call("click", {"x": x, "y": y})
             return {"x": result["x"], "y": result["y"], "element": None, "under": result.get("under")}
-        matches = self.find(text=text, role=role, app=app)["matches"]
-        sought = ", ".join("%s=%r" % kv for kv in (("text", text), ("role", role), ("app", app)) if kv[1] is not None)
+        matches = self.find(query.require("click"))["matches"]
         if len(matches) <= index:
-            raise GuestError("no element to click matches %s (%d found)" % (sought, len(matches)), "look at `vmlab ui tree` for what is on screen")
+            raise GuestError("no element to click matches %s (%d found)" % (query, len(matches)), "look at `vmlab ui tree` for what is on screen")
         element = matches[index]
         b = element["bounds"]
         if not b or b["w"] <= 0 or b["h"] <= 0:
-            raise GuestError("the element matching %s has no bounds on screen" % sought, "it may be hidden; wait for it to appear, or click another element")
+            raise GuestError("the element matching %s has no bounds on screen" % query, "it may be hidden; wait for it to appear, or click another element")
         x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
         result = self._call("click", {"x": x, "y": y, "expect": {"label": label(element), "bounds": b}})
         return {"x": result["x"], "y": result["y"], "element": element, "under": result.get("under")}
@@ -235,42 +336,20 @@ class UI:
         result["pressed"] = chord_text(pressed["key"], pressed["modifiers"]) if pressed else None
         return result
 
-    def wait_for(self, timeout, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None):
-        """Poll a condition until it holds or timeout seconds pass: {"met", "waited_s", "condition", ...}."""
-        element = text is not None or role is not None
-        conditions = [element, process is not None, file is not None, log is not None]
-        if sum(conditions) != 1:
-            raise UsageError("wait-for needs exactly one condition: an element (--text/--role), --process, --file or --log with --pattern")
-        if log is not None and pattern is None:
-            raise UsageError("wait-for --log needs --pattern")
-        if gone and not element:
-            raise UsageError("--gone applies to elements only")
-        if pattern is not None:
-            try:
-                regex = re.compile(pattern, re.M)
-            except re.error as exc:
-                raise UsageError("--pattern %r is not a valid regular expression: %s" % (pattern, exc))
-        condition = {k: v for k, v in (("text", text), ("role", role), ("app", app), ("gone", gone or None), ("process", process), ("file", file), ("log", log), ("pattern", pattern)) if v is not None}
+    def wait_for(self, condition, timeout=None):
+        """Poll condition until it holds or timeout seconds (default: the Lab's step_timeout) pass.
 
+        Returns {"met", "waited_s", "condition", ...}; an unmet condition is not an error.
+        """
+        timeout = self.provider.lab.step_timeout if timeout is None else timeout
         started = time.time()
         deadline = started + timeout
-        # A poll may not outlive the wait by more than a moment: a hung Guest call ends the wait unmet.
-        poll_timeout = lambda: min(self.call_timeout("wait-for"), max(1, deadline - time.time() + 1))  # noqa: E731
         extra = {}
         while True:
+            # A poll may not outlive the wait by more than a moment.
+            poll_timeout = min(self.call_timeout("wait-for"), max(1, deadline - time.time() + 1))
             try:
-                if element:
-                    tree = normalize(self.provider.ui_call("tree", {"app": app} if app else {}, poll_timeout()), self.os)
-                    matches = find(tree, text=text, role=role, app=app)
-                    met = not matches if gone else bool(matches)
-                    extra = {"matches": matches}
-                elif process is not None:
-                    met = self.provider.exec(self._process_argv(process), poll_timeout()).ok
-                elif file is not None:
-                    met = self.provider.exec(self._file_argv(file), poll_timeout()).ok
-                else:
-                    result = self.provider.exec(self._read_argv(log), poll_timeout())
-                    met = result.ok and regex.search(result.stdout) is not None
+                met, extra = condition.poll(self, poll_timeout)
             except GuestTimeout as exc:
                 # A slow or hung poll just means "not met yet". A Scenario running out
                 # of time (a subclass) still ends the Scenario.
@@ -279,23 +358,8 @@ class UI:
                 met = False
             now = time.time()
             if met or now >= deadline:
-                return dict({"met": bool(met), "waited_s": round(now - started, 3), "condition": condition}, **extra)
+                return dict({"met": bool(met), "waited_s": round(now - started, 3), "condition": condition.describe()}, **extra)
             time.sleep(min(POLL_SECONDS, deadline - now))
-
-    def _process_argv(self, name):
-        if self.os == "windows":
-            return self.provider.shell_argv("if (Get-Process -Name '%s' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % name.replace("'", "''"))
-        return ["pgrep", "-x", name]
-
-    def _file_argv(self, path):
-        if self.os == "windows":
-            return self.provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % _ps_path(path))
-        return ["sh", "-c", EXPAND_TILDE + 'test -e "$p"', "sh", path]
-
-    def _read_argv(self, path):
-        if self.os == "windows":
-            return self.provider.shell_argv("Get-Content -Raw -LiteralPath %s" % _ps_path(path))
-        return ["sh", "-c", EXPAND_TILDE + 'cat -- "$p"', "sh", path]
 
 
 def _ps_path(path):

@@ -241,7 +241,40 @@ def scenario(g):
     g.check("focus raises the window and fronts the app", (focused["app"], focused["window"], focused["frontmost"]) == (app, title, app), detail=focused)
 """))
 
-    def test_09_ui_cli_prints_the_same_json(self):
+    def test_09_ui_a_cold_webkit_page_is_read_on_the_first_try(self):
+        # WebKit builds its accessibility tree lazily and hands it to the next client
+        # to connect. Safari is started afresh and waited for through the window
+        # server, not Accessibility, so the Scenario's first tree read is cold.
+        if self.target.os != "macos":
+            self.skipTest("WebKit apps are a macOS trap")
+        if os.environ.get("VMLAB_UI_HELPER") == "jxa":
+            self.skipTest("the JXA fallback does not wake lazy WebKit trees (documented)")
+        self.assertPassed(*self.target.scenario("ui_webkit.py", UI + """
+WINDOWS = (
+    'ObjC.import("CoreGraphics"); '
+    'const l = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0))); '
+    'l.filter(w => w.kCGWindowOwnerName == "Safari").map(w => w.kCGWindowName || "").join(",")'
+)
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:8]
+    page = "<html><head><title>vmlab webkit %s</title></head><body><h1>Hello from WebKit %s</h1><button>Press %s</button></body></html>" % (tag, tag, tag)
+    started = g.exec(["sh", "-c",
+        'pkill -x Safari; n=0; while pgrep -x Safari >/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n+1)); done; '
+        'printf %s "$1" > /tmp/vmlab-webkit.html && open -a Safari /tmp/vmlab-webkit.html', "sh", page])
+    g.check("Safari started with the page", started.ok, detail=started.stderr)
+    shown = g.exec(["sh", "-c",
+        'n=0; until osascript -l JavaScript -e "$1" | grep -q "$2"; do [ $n -ge 300 ] && exit 1; sleep 0.1; n=$((n+1)); done',
+        "sh", WINDOWS, "vmlab webkit " + tag])
+    g.check("the page's window is on screen", shown.ok, detail=shown.stderr[-500:])
+    found = g.find(text="Hello from WebKit " + tag, app="Safari")["matches"]
+    g.check("the first read sees the page's text", [m["role"] for m in found] == ["heading", "text"], detail=found)
+    button = g.find(role="button", text="Press " + tag, app="Safari")["matches"]
+    g.check("and its button, by role", len(button) == 1, detail=button)
+    g.exec(["pkill", "-x", "Safari"])
+"""))
+
+    def test_10_ui_cli_prints_the_same_json(self):
         proc = self.target.vmlab("ui", "clipboard", "--set", "from the CLI", "--lab", self.target.lab)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(json.loads(proc.stdout), {"text": "from the CLI"})
@@ -251,7 +284,7 @@ def scenario(g):
         proc = self.target.vmlab("ui", "press", "ctrl+nokey", "--lab", self.target.lab)
         self.assertEqual(proc.returncode, 2, proc.stderr)
 
-    def test_10_restore_returns_to_clean_state(self):
+    def test_11_restore_returns_to_clean_state(self):
         self.assertPassed(*self.target.scenario("dirty.py", COMMANDS + """
 def scenario(g):
     g.check("marker written", g.exec(cmd(g, "touch ~/contract-marker", "New-Item -Force (Join-Path $HOME contract-marker)")).ok)
@@ -262,7 +295,7 @@ def scenario(g):
     g.check("marker gone after restore", not r.ok)
 """, "--fresh"))
 
-    def test_11_down_stops_the_guest(self):
+    def test_12_down_stops_the_guest(self):
         proc = self.target.vmlab("down", self.target.lab)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertFalse(self.target.status()["running"])

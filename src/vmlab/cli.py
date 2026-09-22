@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vmlab import __version__, bases, config, doctor, runner, ui, vendoring
-from vmlab.config import ConfigError
+from vmlab.config import ConfigError, UsageError
 from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
@@ -93,7 +93,7 @@ def main(argv=None):
             return _doctor(project, args.labs, args.json)
         if args.command == "ui":
             return _ui(project, args)
-    except (ConfigError, bases.UsageError, ui.UsageError) as exc:
+    except (ConfigError, UsageError) as exc:
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
     except GuestError as exc:
@@ -172,7 +172,7 @@ def _ui(project, args):
     elif len(project.labs) == 1:
         [lab] = project.labs.values()
     else:
-        raise ui.UsageError("the project has several Labs; pick one with --lab (%s)" % ", ".join(project.labs))
+        raise UsageError("the project has several Labs; pick one with --lab (%s)" % ", ".join(project.labs))
     provider = provider_for(project, lab)
     if not provider.is_running():
         raise GuestError("Guest %s is not running" % lab.name, "vmlab up %s   (or vmlab deploy %s)" % (lab.name, lab.name))
@@ -181,19 +181,17 @@ def _ui(project, args):
     if c == "tree":
         result = contract.tree(args.app)
     elif c == "find":
-        result = contract.find(text=args.text, role=args.role, app=args.app)
+        result = contract.find(ui.Query(args.text, args.role, args.app))
     elif c == "click":
         at = tuple(args.at) if args.at else None
-        result = contract.click(text=args.text, role=args.role, app=args.app, index=args.index, at=at)
+        result = contract.click(ui.Query(args.text, args.role, args.app), index=args.index, at=at)
     elif c == "press":
         result = contract.press(args.chord)
     elif c == "type":
         result = contract.type(args.text)
     elif c == "wait-for":
-        timeout = lab.step_timeout if args.timeout is None else args.timeout
-        result = contract.wait_for(
-            timeout, text=args.text, role=args.role, app=args.app, gone=args.gone, process=args.process, file=args.file, log=args.log, pattern=args.pattern
-        )
+        condition = ui.condition(args.text, args.role, args.app, args.gone, args.process, args.file, args.log, args.pattern)
+        result = contract.wait_for(condition, timeout=args.timeout)
     elif c == "clipboard":
         result = contract.clipboard(set=args.set)
     elif c == "focus":
