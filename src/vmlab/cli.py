@@ -35,7 +35,7 @@ def main(argv=None):
     base_sub.add_parser("list", help="list this Host's Base guests")
     p = base_sub.add_parser("create", help="create and provision a Base guest (idempotent)")
     p.add_argument("name", metavar="NAME", help="e.g. %s" % ", ".join(sorted(bases.CATALOG)))
-    p.add_argument("--image", help="image to create it from (default: the known image for NAME)")
+    p.add_argument("--image", help="image to create it from (default: the known image for NAME); windows-*: the Fusion VM to copy")
     p.add_argument("--yes", action="store_true", help="allow downloading the image without asking")
     p.add_argument("--reprovision", action="store_true", help="provision again even if it is ready")
 
@@ -120,8 +120,33 @@ def _base(args):
         bases.render(print)
         return EXIT_OK
     progress = functools.partial(print, flush=True)  # it takes minutes: show each step as it happens
-    bases.create(args.name, args.image, confirm=lambda question: args.yes or _ask(question), reprovision=args.reprovision, out=progress)
+    bases.create(args.name, args.image, prompt=Terminal(args.yes), reprovision=args.reprovision, out=progress)
     return EXIT_OK
+
+
+class Terminal:
+    """Questions to the person at the terminal. Without one, every answer is no (or none)."""
+
+    def __init__(self, yes=False):
+        self.yes = yes  # --yes: confirmations are answered yes
+
+    def confirm(self, question):
+        return self.yes or _ask(question)
+
+    def text(self, question):
+        return input(question) if sys.stdin.isatty() else None
+
+    def secret(self, question):
+        import getpass
+
+        return getpass.getpass(question) if sys.stdin.isatty() else None
+
+    def pause(self, message):
+        """Wait for Enter; False when there is no terminal to wait at."""
+        if not sys.stdin.isatty():
+            return False
+        input("%s " % message)
+        return True
 
 
 def _clean(args):

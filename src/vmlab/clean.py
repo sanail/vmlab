@@ -37,7 +37,7 @@ def bases_in_use(project):
     """The Base guests project's Labs use, even before their first clone."""
     found = set()
     for inventory in inventories():
-        found |= {(inventory.provider, lab.options.get("base", inventory.default_base)) for lab in project.labs.values() if lab.provider == inventory.provider}
+        found |= {(inventory.provider, lab.options.get("base", inventory.default_base(lab))) for lab in project.labs.values() if lab.provider == inventory.provider}
     return found
 
 

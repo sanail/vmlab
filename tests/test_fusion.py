@@ -14,7 +14,9 @@ from pathlib import Path
 from harness import VmlabTestCase
 
 # A stand-in for `vmrun` (and `vmcli`): VMs are .vmx files, their state lives in
-# a JSON file, every call is logged.
+# a JSON file, every call is logged. A .vmx the state does not know yet (a copy)
+# is a stopped VM with the snapshots listed in its .vmsd, one per line. A .vmx
+# that mentions encryption.keySafe opens only with -vp and the state's vm_password.
 FAKE_VMRUN = textwrap.dedent(
     """\
     #!/usr/bin/env python3
@@ -25,6 +27,10 @@ FAKE_VMRUN = textwrap.dedent(
         args = args[2:]
     with open(log_path, "a") as log:
         log.write(json.dumps(args) + "\\n")
+    auth = {}
+    while args and args[0] in ("-vp", "-gu", "-gp"):
+        auth[args[0]] = args[1]
+        args = args[2:]
     state = json.load(open(state_path))
     def save():
         json.dump(state, open(state_path, "w"))
@@ -33,7 +39,14 @@ FAKE_VMRUN = textwrap.dedent(
         sys.exit(255)
     command = args[0] if args else ""
     vmx = os.path.realpath(args[1]) if len(args) > 1 else None
+    if vmx and vmx not in state["vms"] and os.path.isfile(vmx) and vmx.endswith(".vmx"):
+        vmsd = vmx[:-4] + ".vmsd"
+        snapshots = open(vmsd).read().split() if os.path.exists(vmsd) else []
+        state["vms"][vmx] = {"running": False, "snapshots": snapshots, "reverted": 0}
     vm = state["vms"].get(vmx) if vmx else None
+    encrypted = vm is not None and "encryption.keySafe" in open(vmx).read()
+    if encrypted and auth.get("-vp") != state.get("vm_password"):
+        fail("Cannot open VM: %s, A password is required for this operation" % args[1])
     if command == "list":
         running = [p for p, v in state["vms"].items() if v["running"]]
         print("Total running VMs: %d" % len(running))
@@ -50,6 +63,8 @@ FAKE_VMRUN = textwrap.dedent(
     elif command == "clone":
         if vm is None:
             fail("no such source VM")
+        if encrypted:
+            fail("Cannot read the virtual machine configuration file")
         snapshot = [a.split("=", 1)[1] for a in args if a.startswith("-snapshot=")][0]
         if snapshot not in vm["snapshots"]:
             fail("Invalid snapshot name '%s'" % snapshot)
@@ -73,6 +88,7 @@ FAKE_VMRUN = textwrap.dedent(
         if args[2] not in vm["snapshots"]:
             fail("Invalid snapshot name '%s'" % args[2])
         vm["reverted"] += 1
+        vm.setdefault("reverted_to", []).append(args[2])
         vm["running"] = False
         save()
     elif command == "getGuestIPAddress":
@@ -81,6 +97,12 @@ FAKE_VMRUN = textwrap.dedent(
         fail("fake vmrun: unsupported %r" % args)
     """
 )
+
+def _without_auth(args):
+    while args[:1] in (["-vp"], ["-gu"], ["-gp"]):
+        args = args[2:]
+    return args
+
 
 FUSION_LAB = """
 [labs.linux]
@@ -108,10 +130,13 @@ class FusionTestCase(VmlabTestCase):
         }
         return self.project.vmlab(*args, env=env, cwd=cwd)
 
+    def raw_calls(self):
+        """Every vmrun call as logged, with its passwords (-vp, -gu, -gp)."""
+        return [json.loads(line) for line in self.log_path.read_text().splitlines()] if self.log_path.exists() else []
+
     def calls(self, command):
-        if not self.log_path.exists():
-            return []
-        return [c for c in (json.loads(line) for line in self.log_path.read_text().splitlines()) if c[0] == command]
+        """The calls of one vmrun command, without their passwords."""
+        return [c for c in map(_without_auth, self.raw_calls()) if c[0] == command]
 
     def vms(self):
         return json.loads(self.state_path.read_text())["vms"]
@@ -148,8 +173,8 @@ class FusionConfigTest(FusionTestCase):
         for fragment in fragments:
             self.assertIn(fragment, r.err)
 
-    def test_fusion_labs_are_linux_only_so_far(self):
-        self.assertConfigError('[labs.w]\nprovider = "fusion"\nos = "windows"\n', "labs.w.os", "linux")
+    def test_fusion_labs_are_linux_or_windows(self):
+        self.assertConfigError('[labs.m]\nprovider = "fusion"\nos = "macos"\n', "labs.m.os", "linux or windows", 'provider = "tart"')
 
     def test_tart_points_linux_labs_to_fusion(self):
         self.assertConfigError('[labs.l]\nprovider = "tart"\nos = "linux"\n', "labs.l.os", 'provider = "fusion"')

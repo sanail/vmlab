@@ -122,7 +122,7 @@ class FakeProvider(Provider):
         dest.write_bytes(_placeholder_png())
 
     @classmethod
-    def validate_options(cls, config_path, key, options):
+    def validate_options(cls, config_path, key, options, os_name):
         for k in sorted(set(options) - set(OPTIONS)):
             raise ConfigError(config_path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(OPTIONS))
         if "ui_tree" in options:

@@ -197,7 +197,7 @@ class TartProvider(Provider):
         self._channels = None
 
     @classmethod
-    def validate_options(cls, config_path, key, options):
+    def validate_options(cls, config_path, key, options, os_name):
         for k in sorted(set(options) - set(DEFAULTS)):
             raise ConfigError(config_path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(DEFAULTS))
         base = options.get("base", DEFAULTS["base"])
@@ -356,8 +356,11 @@ class HostVMs:
     """Tart's VMs on this Host, for `vmlab clean` (vmlab.clean)."""
 
     provider = "tart"
-    default_base = DEFAULTS["base"]
     service_suffixes = SERVICE_SUFFIXES
+
+    @staticmethod
+    def default_base(lab):
+        return DEFAULTS["base"]
 
     @property
     def service_dir(self):

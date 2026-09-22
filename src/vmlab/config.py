@@ -162,7 +162,7 @@ def load(start):
                 path,
                 key + ".os",
                 "Provider %s runs os = %s only" % (provider, " or ".join(supported)),
-                'macOS Labs use provider = "tart", Linux Labs provider = "fusion" (Windows: planned); provider = "fake" tries vmlab without a hypervisor',
+                'macOS Labs use provider = "tart", Linux and Windows Labs provider = "fusion"; provider = "fake" tries vmlab without a hypervisor',
             )
         arch = table.get("arch", host_arch())
         if arch not in ARCHES:
@@ -170,7 +170,7 @@ def load(start):
         options = table.get(provider, {})
         if not isinstance(options, dict):
             raise ConfigError(path, "%s.%s" % (key, provider), "must be a table", "write it as [%s.%s]" % (key, provider))
-        PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options)
+        PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options, os_name)
         app = _app(path, key + ".app", table.get("app", {}))
         labs[name] = Lab(
             name,

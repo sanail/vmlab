@@ -2,7 +2,7 @@
 
 A **Provider** adapts one hypervisor to vmlab. Scenarios never see it. They talk to the Scenario API, which reaches the Provider through the Runner and Deploy. So a new Provider needs no changes to Scenarios, reports or the CLI. Vocabulary: `CONTEXT.md`. Channel design: ADR 0003.
 
-The Tart Provider (`src/vmlab/providers/tart.py`) is a complete example: Base guest creation and provisioning, clones for Clean state, and SSH with a `tart exec` fallback. The Fusion Provider (`src/vmlab/providers/fusion.py`) shows the other shapes: a Base guest installed unattended from an ISO, linked clones restored by snapshot, and a guest-exec Channel (`vmrun`) that returns no output and so captures it in files named per call. UTM and Parallels are registered as stubs. Selecting one fails at config load and points here. Replacing a stub with a real Provider is the intended path.
+The Tart Provider (`src/vmlab/providers/tart.py`) is a complete example: Base guest creation and provisioning, clones for Clean state, and SSH with a `tart exec` fallback. The Fusion Provider (`src/vmlab/providers/fusion.py`) shows the other shapes: a Base guest installed unattended from an ISO, linked clones restored by snapshot, and a guest-exec Channel (`vmrun`) that returns no output and so captures it in files named per call. Its Windows half (`fusion_windows.py`, with `providers/windows.py` for what any Windows Provider needs) shows a third: a Base guest a person makes, adopted by a wizard that checks each step, and copies instead of clones. UTM and Parallels are registered as stubs. Selecting one fails at config load and points here. Replacing a stub with a real Provider is the intended path.
 
 ## 1. Implement the interface
 
@@ -10,7 +10,7 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 
 | Method | Contract |
 | --- | --- |
-| `validate_options(config_path, key, options)` (classmethod) | Check the Lab's `[labs.<lab>.<name>]` table. Raise `ConfigError(config_path, "<key>.<option>", problem, fix)` for anything wrong, including unknown keys. |
+| `validate_options(config_path, key, options, os_name)` (classmethod) | Check the Lab's `[labs.<lab>.<name>]` table (`os_name` is the Lab's `os`). Raise `ConfigError(config_path, "<key>.<option>", problem, fix)` for anything wrong, including unknown keys. |
 | `SUPPORTED_OS` (class attribute) | The Lab OSes it runs, e.g. `("macos",)`, or `None` for all. Config load rejects other Labs. |
 | `detect()` | `(ok, detail, fix)`: is the hypervisor installed and usable? `doctor` shows this first. |
 | `is_running()` | Is this Lab's Guest powered on? Must be cheap; the Runner calls it often. |
@@ -19,7 +19,7 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | `is_reachable()` | Has it booted far enough for its Channels to work (e.g. it has an IP and SSH answers)? The base `up()` polls it until the Lab's `boot_timeout`. |
 | `channels()` | The Guest's Channels, preferred first (see below). The base `exec()` falls back through them. |
 | `restore()` | Return the running Guest to its Clean state (snapshot revert, or re-clone from the Base guest). It must be reachable again when this returns. |
-| `copy_in(src, guest_dir)` | Copy a Host file or folder into `guest_dir` (created; `~` is the Guest user's home). Return the absolute Guest path of the copy. |
+| `copy_in(src, guest_dir)` | Copy a Host file or folder into `guest_dir` (created; `~` is the Guest user's home). Return the absolute Guest path of the copy. `copy_in_by_tar` does it over `exec`'s stdin for POSIX Guests; `vmlab.providers.windows.copy_in` does it for Windows ones, where stdin cannot carry it. |
 | `screenshot(dest)` | Write a PNG of the Guest's screen to `dest`, Host-side where the hypervisor can. |
 
 These are built on the methods above; override them only when the Guest needs something else:
@@ -49,6 +49,7 @@ Subclass `vmlab.providers.base.Channel`. Set a short `name` (it appears in repor
 - Pass `argv` without re-splitting it. Quote each element for the remote shell, so spaces and quotes arrive intact.
 - Apply `env` to the command only, never to the Guest's global environment.
 - Use a unique output file per call if the Channel captures output through files. Never use a shared one: concurrent calls would race.
+- Implement `send_file(local, guest_path)` if the Channel can carry a file of any size (scp, the hypervisor's own file copy). Windows Guests need it: their `exec` cannot take much on stdin.
 
 Typical Channels: SSH with vmlab's own key and known_hosts (multiplexed; reuse `vmlab.providers.ssh.SshChannel`), the hypervisor's guest-exec (`tart exec`, `vmrun runProgramInGuest`), and SSH plus an interactive Scheduled Task on Windows. ADR 0003 has the defaults per OS.
 

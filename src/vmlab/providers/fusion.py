@@ -1,30 +1,35 @@
-"""VMware Fusion Provider: Linux Guests (Windows: planned).
+"""VMware Fusion Provider: Linux and Windows Guests.
 
-A Lab's Guest is a linked clone of its Base guest's provisioned snapshot
-(`vmlab base create ubuntu-26.04`), so it costs little disk and no project
-ever runs in the Base guest. Clean state is the clone's own snapshot,
+A Lab's Guest is a clone of its Base guest's provisioned snapshot (`vmlab
+base create ubuntu-26.04` or `windows-11`), so it costs little disk and no
+project ever runs in the Base guest: a linked clone for Linux, an APFS copy
+for Windows, whose VM is encrypted for its TPM and which vmrun cannot clone
+(vmlab.providers.fusion_windows). Clean state is the clone's own snapshot,
 vmlab-clean, taken when the clone is made: restoring reverts to it. VMs live
 under $VMLAB_HOME/fusion, never in Fusion's own Virtual Machines folder.
 
-Channels (ADR 0003): SSH, multiplexed, with vmlab's key and the host key
-pinned when the Base guest was installed; vmrun guest operations as the
-fallback, with the Guest user's password from vmlab's home. vmrun needs that
-password on its command line, so it shows in the Host's process list for the
-length of a call; it guards a throwaway Guest on Fusion's private NAT network.
+Channels (ADR 0003): SSH first, with vmlab's key and the host key pinned when
+the Base guest was made, and vmrun guest operations as the fallback. On Linux
+SSH is multiplexed and runs the command itself; on Windows, where an SSH
+session cannot reach the desktop, it hands the call to an interactive
+Scheduled Task, as vmrun -interactive does (vmlab.providers.windows). vmrun takes the
+Guest user's password, and an encrypted VM's own password, from vmlab's home
+on its command line, so they show in the Host's process list for the length of
+a call; they guard a throwaway Guest on Fusion's private NAT network.
 Screenshots are Host-side (vmcli MKS captureScreenshot): no Guest credentials,
 no Wayland consent dialog.
 
-The desktop session is GNOME on Wayland, or Xfce on X11 for Labs that ask for
-it: a new clone of such a Lab boots once to switch its autologin session
-before its Clean state is taken. Commands run with the session's environment
-(DISPLAY, WAYLAND_DISPLAY, ...), as a terminal on its desktop would.
+The Linux desktop session is GNOME on Wayland, or Xfce on X11 for Labs that
+ask for it: a new clone of such a Lab boots once to switch its autologin
+session before its Clean state is taken. Commands run with the session's
+environment (DISPLAY, WAYLAND_DISPLAY, ...), as a terminal on its desktop would.
 
 Options, under [labs.<name>.fusion]:
 
-    base = "ubuntu-26.04"     # Base guest to clone (vmlab base list)
+    base = "ubuntu-26.04"     # Base guest to clone (vmlab base list); windows-11 for Windows Labs
     cpu = 4
     channels = ["ssh", "vmrun"]
-    session = "wayland"       # or "x11"
+    session = "wayland"       # or "x11"; Linux only
 """
 
 import base64
@@ -49,10 +54,12 @@ from pathlib import Path
 from vmlab import bases, hostproc
 from vmlab.config import ConfigError, host_arch
 from vmlab.home import vmlab_home
+from vmlab.providers import windows
 from vmlab.providers.base import BOOT_POLL_SECONDS, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
 from vmlab.providers.ssh import SshChannel, pin_host_key, public_key
 
 DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"], "session": "wayland"}
+WINDOWS_DEFAULTS = {"base": "windows-11", "cpu": 4, "channels": ["ssh", "vmrun"]}
 CHANNELS = ("ssh", "vmrun")
 # The autologin session (name of its .desktop file) for each session type. Base guests boot into Wayland.
 SESSIONS = {"wayland": "ubuntu", "x11": "xfce"}
@@ -63,6 +70,7 @@ INSTALL_FIX = (
     "brew install --cask vmware-fusion, or download it from Broadcom's support portal"
 )
 CALL_TIMEOUT = 60  # s for quick vmrun commands
+SEND_FILE_TIMEOUT = 600  # s for one file (a Build artifact) into a Guest
 DHCP_LEASES = "/var/db/vmware/vmnet-dhcpd-vmnet8.leases"  # Fusion's NAT network
 PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest boots
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
@@ -119,7 +127,7 @@ EXTENSION_DIR = "/tmp/vmlab-shell-extension"  # where provisioning finds the She
 # $VMLAB_HOME/fusion/<clone>.json: which project, Lab and Base guest a clone serves, and which
 # provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans (vmlab.clean).
 CLONE_RECORD = ".json"
-CREDENTIALS = ".credentials.json"  # a Base guest's user and password
+CREDENTIALS = ".credentials.json"  # a Base guest's user and password, and its VM's encryption password
 
 
 def fusion_dir():
@@ -181,9 +189,24 @@ def running_vmx():
 class FusionVM:
     """One Fusion VM by .vmx path: the Host-side lifecycle shared by Base guests and Lab clones."""
 
-    def __init__(self, vmx):
+    def __init__(self, vmx, secrets=None, password=None):
+        """secrets: the Base guest VM whose credentials hold this VM's encryption password, if
+        it has one; password: that password itself, for a VM vmlab keeps no credentials for."""
         self.vmx = Path(vmx)
+        self.secrets = secrets
+        self.password = password
         self._ip = None
+
+    def _password(self):
+        return self.password or (vm_password(self.secrets) if self.secrets else None)
+
+    def password_known(self):
+        return bool(self._password())
+
+    @property
+    def auth(self):
+        """vmrun's arguments that open an encrypted VM: every command but `list` needs them."""
+        return ["-vp", self._password()] if self._password() else []
 
     @property
     def name(self):
@@ -195,15 +218,16 @@ class FusionVM:
     def is_running(self):
         return self.exists() and os.path.realpath(str(self.vmx)) in running_vmx()
 
-    def start(self, timeout=CALL_TIMEOUT):
-        """Power on without a window; returns once the VM runs, not once it has booted."""
+    def start(self, timeout=CALL_TIMEOUT, gui=False):
+        """Power on, without a window unless gui (for steps a person does in the Guest);
+        returns once the VM runs, not once it has booted."""
         self._ip = None
         # Not through pipes: vmrun leaves a process behind that holds them open.
         log = self.vmx.parent / "vmlab-start.log"
         try:
             with log.open("w") as out:
                 code = subprocess.run(
-                    [vmrun_binary(), "-T", "fusion", "start", str(self.vmx), "nogui"],
+                    [vmrun_binary(), "-T", "fusion"] + self.auth + ["start", str(self.vmx), "gui" if gui else "nogui"],
                     stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, timeout=timeout, start_new_session=True,
                 ).returncode  # fmt: skip
         except FileNotFoundError:
@@ -217,12 +241,12 @@ class FusionVM:
         """Shut down through VMware Tools, or power off when that fails or hangs."""
         self._ip = None
         try:
-            if vmrun(["stop", self.vmx, "soft"], timeout)[0] == 0:
+            if vmrun(["stop", self.vmx, "soft"], timeout, self.auth)[0] == 0:
                 return
         except GuestTimeout:
             pass
         if self.is_running():
-            vmrun_ok(["stop", self.vmx, "hard"], CALL_TIMEOUT)
+            vmrun_ok(["stop", self.vmx, "hard"], CALL_TIMEOUT, self.auth)
 
     def ip(self):
         """The Guest's IP, or None. May be stale: reachability needs a probe.
@@ -232,7 +256,7 @@ class FusionVM:
         and Fusion's DHCP lease for the VM's MAC the third."""
         if self._ip is None:
             for args in (["readVariable", self.vmx, "guestVar", "ip"], ["getGuestIPAddress", self.vmx]):
-                code, out = vmrun(args, CALL_TIMEOUT)
+                code, out = vmrun(args, CALL_TIMEOUT, self.auth)
                 if code == 0 and re.match(r"^\d+\.\d+\.\d+\.\d+$", out.strip()):
                     self._ip = out.strip()
                     return self._ip
@@ -253,24 +277,47 @@ class FusionVM:
         self._ip = None
 
     def snapshots(self):
-        out = vmrun_ok(["listSnapshots", self.vmx], CALL_TIMEOUT)
+        out = vmrun_ok(["listSnapshots", self.vmx], CALL_TIMEOUT, self.auth)
         return [line.strip() for line in out.splitlines()[1:] if line.strip()]
 
     def snapshot(self, name, timeout=DISK_OP_TIMEOUT):
-        vmrun_ok(["snapshot", self.vmx, name], timeout)
+        vmrun_ok(["snapshot", self.vmx, name], timeout, self.auth)
 
     def revert(self, name, timeout):
-        vmrun_ok(["revertToSnapshot", self.vmx, name], timeout)
+        vmrun_ok(["revertToSnapshot", self.vmx, name], timeout, self.auth)
 
     def clone_linked(self, dest, snapshot, timeout):
         """Make dest (a FusionVM that does not exist yet) a linked clone of this VM's snapshot."""
         dest.vmx.parent.parent.mkdir(parents=True, exist_ok=True)
-        vmrun_ok(["clone", self.vmx, dest.vmx, "linked", "-snapshot=%s" % snapshot, "-cloneName=%s" % dest.name], timeout)
+        vmrun_ok(["clone", self.vmx, dest.vmx, "linked", "-snapshot=%s" % snapshot, "-cloneName=%s" % dest.name], timeout, self.auth)
+
+    def clone_copy(self, dest):
+        """Make dest (a FusionVM that does not exist yet) a copy of this stopped VM, as it is now.
+
+        An APFS clone of its files: instant, and it shares their blocks until either changes
+        them. It works for encrypted VMs, which vmrun cannot clone ("Cannot read the virtual
+        machine configuration file"). Its files are renamed after dest, the snapshot list
+        (.vmsd, found by the .vmx's name) with them; it gets its own UUID and MAC address."""
+        dest.vmx.parent.parent.mkdir(parents=True, exist_ok=True)
+        code, out, err = hostproc.run(["cp", "-c", "-R", str(self.vmx.parent), str(dest.vmx.parent)], DISK_OP_TIMEOUT)
+        if code:
+            shutil.rmtree(str(dest.vmx.parent), ignore_errors=True)
+            raise GuestError(
+                "copying %s failed: %s" % (self.vmx.parent, (err or out).strip()),
+                "vmlab's home (%s) must be on the same APFS volume as its Base guests; free some disk space" % vmlab_home(),
+            )
+        for suffix in (".vmx", ".vmsd"):
+            copied = dest.vmx.parent / (self.vmx.stem + suffix)
+            if copied.exists() and copied.name != dest.name + suffix:
+                copied.rename(dest.vmx.parent / (dest.name + suffix))
+        # A copy that says so: Fusion would otherwise ask "moved or copied?" and wait for an answer.
+        dest.set_config({"uuid.action": "create", "msg.autoAnswer": "TRUE", "displayName": dest.name,
+                         "ethernet0.generatedAddress": None, "ethernet0.generatedAddressOffset": None})  # fmt: skip
 
     def delete(self, timeout=DISK_OP_TIMEOUT):
         if self.is_running():
             self.stop()
-        code, out = vmrun(["deleteVM", self.vmx], timeout)
+        code, out = vmrun(["deleteVM", self.vmx], timeout, self.auth)
         if code and self.exists():
             raise GuestError("`vmrun deleteVM %s` failed: %s" % (self.vmx, out.strip()), "delete it in Fusion, then retry")
         if self.vmx.parent.exists():  # vmrun leaves logs behind, and knows nothing of a VM that never started
@@ -287,7 +334,10 @@ class FusionVM:
 
     def screenshot(self, dest, timeout):
         try:
-            code, out, err = hostproc.run([vmcli_binary(), str(self.vmx), "MKS", "captureScreenshot", str(dest)], timeout)
+            with tempfile.TemporaryFile() as stdin:  # vmcli reads an encrypted VM's password on stdin
+                stdin.write(((self._password() or "") + "\n").encode("utf-8"))
+                stdin.seek(0)
+                code, out, err = hostproc.run([vmcli_binary(), str(self.vmx), "MKS", "captureScreenshot", str(dest)], timeout, stdin=stdin)
         except FileNotFoundError:
             raise GuestError("vmcli is missing from VMware Fusion", INSTALL_FIX)
         except subprocess.TimeoutExpired:
@@ -309,11 +359,20 @@ def credentials(base_vm):
         raise GuestError("the Guest credentials %s are missing" % path, "re-create the Base guest: vmlab base create NAME")
 
 
-def save_credentials(base_vm, user, password):
+def save_credentials(base_vm, user, password, vm_password=None):
+    """vm_password: the VM's encryption password (Windows Base guests), which its clones share."""
     path = _credentials_path(base_vm)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
-        json.dump({"user": user, "password": password}, f)
+        json.dump(dict({"user": user, "password": password}, **({"vm_password": vm_password} if vm_password else {})), f)
+
+
+def vm_password(base_vm):
+    """The encryption password a Base guest's VM (and so its clones) needs, or None."""
+    try:
+        return json.loads(_credentials_path(base_vm).read_text(encoding="utf-8")).get("vm_password")
+    except (OSError, ValueError):
+        return None
 
 
 class VmrunChannel(Channel):
@@ -327,14 +386,17 @@ class VmrunChannel(Channel):
         self.vm = vm
         self.base_vm = base_vm
 
-    def exec(self, argv, timeout, env, stdin=None):
-        deadline = time.time() + timeout
-        timed_out = GuestTimeout("%s timed out after %ss on Channel vmrun and was killed" % (list(argv), timeout))
+    def _auth(self):
         try:
             creds = credentials(self.base_vm)
         except GuestError as exc:  # the Channel cannot carry the call; SSH may
             raise ChannelError(exc.message, exc.fix)
-        auth = ["-gu", creds["user"], "-gp", creds["password"]]
+        return self.vm.auth + ["-gu", creds["user"], "-gp", creds["password"]]
+
+    def exec(self, argv, timeout, env, stdin=None):
+        deadline = time.time() + timeout
+        timed_out = GuestTimeout("%s timed out after %ss on Channel vmrun and was killed" % (list(argv), timeout))
+        auth = self._auth()
         call = "/tmp/vmlab-call-%s" % uuid.uuid4().hex
         command = " ".join(shlex.quote(a) for a in (["env"] + ["%s=%s" % kv for kv in sorted(env.items())] if env else []) + list(argv))
         script = "\n".join([
@@ -362,6 +424,20 @@ class VmrunChannel(Channel):
             read = lambda name: (local / name).read_text(encoding="utf-8", errors="replace")  # noqa: E731
             return ExecResult(list(argv), int(read("code").strip() or 255), read("out"), read("err"))
 
+    def _made(self, directory, auth):
+        """Is directory there in the Guest (made now or before)?"""
+        code, out = vmrun(["createDirectoryInGuest", self.vm.vmx, directory], CALL_TIMEOUT, auth)
+        return code == 0 or "exist" in out.lower()
+
+    def send_file(self, local, guest_path):
+        auth = self._auth()
+        deadline = time.time() + SEND_FILE_TIMEOUT
+        # A ChannelError, not a timeout that fails the Run: copying a file again over another
+        # Channel is safe, unlike running a command twice.
+        self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local, guest_path], deadline, auth,
+                    ChannelError("copying %s into %s did not finish within %ss" % (local, self.vm.name, SEND_FILE_TIMEOUT),
+                                 "check the Guest's disk space and that VMware Tools run"))  # fmt: skip
+
     def _vmrun(self, args, deadline, auth, timed_out):
         """One vmrun step of a call that must end by deadline; timed_out is what to raise if it does not."""
         remaining = deadline - time.time()
@@ -380,33 +456,78 @@ class VmrunChannel(Channel):
             )
 
 
+class WindowsVmrunChannel(VmrunChannel):
+    """vmrun -interactive into a Windows Guest's desktop session. The call's script
+    (vmlab.providers.windows) goes in, runs, and its one result file comes back:
+    three vmrun calls, four with stdin. vmrun refuses until the user is logged in."""
+
+    def __init__(self, vm, base_vm):
+        super().__init__(vm, base_vm)
+        self._call_dir = False
+
+    def exec(self, argv, timeout, env, stdin=None):
+        deadline = time.time() + timeout
+        timed_out = GuestTimeout("%s timed out after %ss on Channel vmrun and was killed" % (list(argv), timeout))
+        auth = self._auth()
+        call = windows.new_call()
+        if not self._call_dir:
+            # vmrun makes them, and says so when they are already there. Remembered only once it
+            # worked: while the Guest boots these fail, and a Channel that gave up on them would
+            # then fail every later call.
+            made = [self._made(directory, auth) for directory in windows.CALL_DIRS]
+            self._call_dir = all(made)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp)
+            (local / "script").write_text(windows.call_script(call, argv, env, timeout, stdin is not None), encoding="ascii")
+            self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local / "script", call + ".ps1"], deadline, auth, timed_out)
+            if stdin is not None:
+                with (local / "stdin").open("wb") as f:
+                    shutil.copyfileobj(stdin, f)
+                self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local / "stdin", call + ".in"], deadline, auth, timed_out)
+            self._vmrun(["runProgramInGuest", self.vm.vmx, "-interactive"] + windows.runner_argv(call), deadline, auth, timed_out)
+            self._vmrun(["copyFileFromGuestToHost", self.vm.vmx, call + ".result", local / "result"], deadline, auth, timed_out)
+            return windows.parse_result(argv, (local / "result").read_text(encoding="utf-8", errors="replace"), self.name)
+
+
+def defaults(os_name):
+    """A Lab's [labs.<name>.fusion] options when it sets none."""
+    return WINDOWS_DEFAULTS if os_name == "windows" else DEFAULTS
+
+
 class FusionProvider(Provider):
-    SUPPORTED_OS = ("linux",)
+    SUPPORTED_OS = ("linux", "windows")
 
     def __init__(self, project, lab):
         super().__init__(project, lab)
-        self.options = dict(DEFAULTS, **lab.options)
-        self.vm = FusionVM(vmx_path(self.guest_id))
+        self.options = dict(defaults(lab.os), **lab.options)
+        self.vm = FusionVM(vmx_path(self.guest_id), secrets=bases.vm_name(self.base_name))
         self._channels = None
         self._seen_session = None  # the session type the desktop probe last found
 
     @classmethod
-    def validate_options(cls, config_path, key, options):
-        for k in sorted(set(options) - set(DEFAULTS)):
-            raise ConfigError(config_path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(DEFAULTS))
-        base = options.get("base", DEFAULTS["base"])
+    def validate_options(cls, config_path, key, options, os_name):
+        allowed = defaults(os_name)
+        for k in sorted(set(options) - set(allowed)):
+            raise ConfigError(
+                config_path, "%s.%s" % (key, k), "unknown key" + (" for a Windows Lab" if k in DEFAULTS else ""), "remove it; allowed keys: %s" % ", ".join(allowed)
+            )
+        base = options.get("base", allowed["base"])
         if not (isinstance(base, str) and bases.NAME.match(base)):
-            raise ConfigError(config_path, key + ".base", "must be a Base guest name", 'e.g. base = "ubuntu-26.04" (see `vmlab base list`)')
-        cpu = options.get("cpu", DEFAULTS["cpu"])
+            raise ConfigError(config_path, key + ".base", "must be a Base guest name", 'e.g. base = "%s" (see `vmlab base list`)' % allowed["base"])
+        cpu = options.get("cpu", allowed["cpu"])
         if isinstance(cpu, bool) or not isinstance(cpu, int) or cpu < 1:
             raise ConfigError(config_path, key + ".cpu", "must be a whole number of CPUs >= 1", "e.g. cpu = 4")
-        channels = options.get("channels", DEFAULTS["channels"])
+        channels = options.get("channels", allowed["channels"])
         if not (isinstance(channels, list) and channels and all(c in CHANNELS for c in channels) and len(set(channels)) == len(channels)):
             raise ConfigError(
-                config_path, key + ".channels", "must list Channels from: %s" % ", ".join(CHANNELS), 'e.g. channels = ["ssh", "vmrun"]'
+                config_path, key + ".channels", "must list Channels from: %s" % ", ".join(CHANNELS), "e.g. channels = %s" % json.dumps(allowed["channels"])
             )
         if options.get("session", DEFAULTS["session"]) not in SESSIONS:
             raise ConfigError(config_path, key + ".session", "must be one of: %s" % ", ".join(sorted(SESSIONS)), 'e.g. session = "x11"')
+
+    @property
+    def windows(self):
+        return self.lab.os == "windows"
 
     @property
     def base_name(self):
@@ -437,7 +558,8 @@ class FusionProvider(Provider):
 
     @property
     def session(self):
-        return self.options["session"]
+        """The Linux desktop session type; None on Windows."""
+        return self.options.get("session")
 
     def start(self):
         record = self._base()
@@ -450,14 +572,20 @@ class FusionProvider(Provider):
             or CLEAN_SNAPSHOT not in self.vm.snapshots()  # its session switch did not finish
         ):
             self.vm.delete(self.lab.boot_timeout)
+        if not self.vm.exists() and self.vm.vmx.parent.exists():
+            self.vm.delete(self.lab.boot_timeout)  # a copy or clone that did not finish: start over
         if not self.vm.exists():
-            base_vm = FusionVM(record["vmx"])
+            base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
             if base_vm.is_running():
                 raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, "vmrun stop '%s'" % base_vm.vmx)
-            base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
+            if self.windows:
+                base_vm.clone_copy(self.vm)
+                self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
+            else:
+                base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
             made_from = bases.provisioning(record)
             self._write_clone_record(made_from)
-            if self.session != DEFAULTS["session"]:
+            if self.session not in (None, DEFAULTS["session"]):
                 self._switch_session()
             self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
@@ -500,7 +628,7 @@ class FusionProvider(Provider):
 
     def up(self):
         super().up()
-        if self._seen_session != self.session:
+        if self.session and self._seen_session != self.session:
             raise GuestError(
                 "Lab %s asks for the %s session, but its Guest logged into %s" % (self.lab.name, SESSION_NAMES[self.session], SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")),
                 "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again"
@@ -522,23 +650,34 @@ class FusionProvider(Provider):
             return False
         self.vm.forget_ip()  # a stale address must not stick while the Guest boots
         # A probe, not a Run's call: trying the next Channel after a timeout is safe here.
+        if self.windows:
+            # Every Channel, not the first that answers: sshd and its Scheduled Task are up
+            # before vmrun agrees that someone is logged in ("The specified guest user must be
+            # logged in interactively"), and a Run must not start while a Channel still refuses.
+            return all(self._probes(channel, self.probe_argv()) for channel in self.channels())
         for channel in self.channels():
-            try:
-                result = channel.exec(DESKTOP_PROBE, PROBE_TIMEOUT, {})
-                if result.ok:
-                    self._seen_session = result.stdout.strip()
-                    return True
-            except GuestError:
-                continue
+            result = self._probes(channel, DESKTOP_PROBE)
+            if result:
+                self._seen_session = result.stdout.strip()
+                return True
         return False
+
+    def _probes(self, channel, probe):
+        """The probe's result over channel when it worked, else None."""
+        try:
+            result = channel.exec(probe, PROBE_TIMEOUT, {})
+        except GuestError:
+            return None
+        return result if result.ok else None
 
     def channels(self):
         if self._channels is None:
             record = bases.Registry().get(self.base_name) or {}
             base_vm = record.get("vm", bases.vm_name(self.base_name))
+            ssh, vmrun_channel = (windows.WindowsSshChannel, WindowsVmrunChannel) if self.windows else (SshChannel, VmrunChannel)
             by_name = {
-                "ssh": SshChannel(record.get("user", "vmlab"), self.vm.ip, base_vm, self.guest_id),
-                "vmrun": VmrunChannel(self.vm, base_vm),
+                "ssh": ssh(record.get("user", GUEST_USER), self.vm.ip, base_vm, self.guest_id),
+                "vmrun": vmrun_channel(self.vm, base_vm),
             }
             self._channels = [by_name[name] for name in self.options["channels"]]
         return self._channels
@@ -557,7 +696,7 @@ class FusionProvider(Provider):
         self.up()
 
     def copy_in(self, src, guest_dir):
-        return self.copy_in_by_tar(src, guest_dir)
+        return windows.copy_in(self, src, guest_dir) if self.windows else self.copy_in_by_tar(src, guest_dir)
 
     def screenshot(self, dest):
         self.vm.screenshot(dest, self.lab.step_timeout)
@@ -567,12 +706,15 @@ class HostVMs:
     """vmlab's Fusion VMs on this Host (all under $VMLAB_HOME/fusion), for `vmlab clean` (vmlab.clean)."""
 
     provider = "fusion"
-    default_base = DEFAULTS["base"]
     service_suffixes = (CLONE_RECORD, CREDENTIALS)
 
     @property
     def service_dir(self):
         return fusion_dir()
+
+    @staticmethod
+    def default_base(lab):
+        return defaults(lab.os)["base"]
 
     def vms(self):
         names = [p.name[: -len(".vmwarevm")] for p in fusion_dir().glob("*.vmwarevm") if vmx_path(p.name[: -len(".vmwarevm")]).is_file()]
@@ -580,10 +722,44 @@ class HostVMs:
         return {name: os.path.realpath(str(vmx_path(name))) in running for name in names}
 
     def delete_vm(self, name):
-        FusionVM(vmx_path(name)).delete()
+        """Delete the VM name, encrypted or not.
+
+        An encrypted VM opens only with the password vmlab keeps for a Base guest: its own, the
+        one of the Base guest its clone record names, or — when that record is what went missing,
+        which is why `vmlab clean` calls it a leftover — any Base guest's."""
+        vmx = vmx_path(name)
+        if not _encrypted(vmx):
+            FusionVM(vmx).delete()
+            return
+        base = _clone_record(name).get("base")
+        others = sorted(path.name[: -len(CREDENTIALS)] for path in fusion_dir().glob("*" + CREDENTIALS))
+        candidates = ([bases.vm_name(base)] if base else []) + others
+        failed = None
+        for secrets in dict.fromkeys(candidates):  # in order, without repeats
+            vm = FusionVM(vmx, secrets=secrets)
+            if not vm.password_known():
+                continue
+            try:
+                vm.delete()
+                return
+            except GuestError as exc:
+                if not vm.exists():
+                    return
+                failed = failed or exc
+        raise failed or GuestError(
+            "%s is encrypted and vmlab has no password for it" % vmx, "delete it in Fusion, where its password is in your Keychain"
+        )
 
     def stop_hint(self, name):
         return "vmrun stop '%s'" % vmx_path(name)
+
+
+def _encrypted(vmx):
+    """Does this VM need a password to open (Fusion encrypts every VM with a TPM)?"""
+    try:
+        return "encryption.keySafe" in vmx.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
 
 
 def _clone_record(vm):

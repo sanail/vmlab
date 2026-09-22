@@ -27,7 +27,7 @@ TEMPLATE = """\
 # Declare one table per Lab. Uncomment and adapt, e.g.:
 #
 # [labs.mac]
-# provider = "tart"        # tart: macOS on Apple Silicon; fusion: Linux (VMware Fusion); fake: no hypervisor (utm, parallels: stubs)
+# provider = "tart"        # tart: macOS on Apple Silicon; fusion: Linux and Windows (VMware Fusion); fake: no hypervisor (utm, parallels: stubs)
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 # memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs that don't fit
@@ -56,6 +56,15 @@ TEMPLATE = """\
 #
 # [labs.linux.fusion]
 # base = "ubuntu-26.04"    # Base guest to clone; create it once with `vmlab base create ubuntu-26.04`
+# cpu = 4
+# session = "wayland"      # GNOME on Wayland; "x11": Xfce on X11
+#
+# [labs.win]
+# provider = "fusion"
+# os = "windows"
+#
+# [labs.win.fusion]
+# base = "windows-11"      # Base guest to copy; create it once with `vmlab base create windows-11`
 # cpu = 4
 """
 

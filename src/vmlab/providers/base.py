@@ -50,6 +50,11 @@ class Channel:
 
     name = None
 
+    def send_file(self, local, guest_path):
+        """Copy the Host file local to the Guest path guest_path. Channels that carry files
+        themselves implement it; Windows Guests need it, where exec's stdin cannot carry much."""
+        raise NotImplementedError
+
     def exec(self, argv, timeout, env, stdin=None):
         """Run argv; return ExecResult whatever its exit code.
 
@@ -78,7 +83,7 @@ class Provider:
         self._ui_helper = None
 
     @classmethod
-    def validate_options(cls, config_path, key, options):
+    def validate_options(cls, config_path, key, options, os_name):
         """Raise ConfigError if this Provider's [labs.<name>.<provider>] table is wrong."""
 
     @property
@@ -121,6 +126,20 @@ class Provider:
         """
         raise NotImplementedError
 
+    def send_file(self, local, guest_path):
+        """Copy the Host file local into the Guest over the first Channel that can carry it."""
+        failures = []
+        for channel in self.channels():
+            try:
+                channel.send_file(local, guest_path)
+                return
+            except ChannelError as exc:
+                failures.append((channel.name, exc))
+        raise ChannelError(
+            "no Channel carried %s into Guest %s: %s" % (local, self.lab.name, "; ".join("%s: %s" % (name, exc.message) for name, exc in failures)),
+            "run `vmlab doctor %s`" % self.lab.name,
+        )
+
     def copy_in_by_tar(self, src, guest_dir):
         """copy_in for POSIX Guests: a tar stream over exec's stdin keeps bundles intact
         (symlinks, modes); the Guest-side script expands ~ and prints the absolute folder."""
@@ -148,9 +167,11 @@ class Provider:
         if self.lab.os == "windows":
             # %VARS% expand; ~ is the user profile.
             quoted = ["'%s'" % p.replace("'", "''") for p in paths]
+            # exit 0: PowerShell exits 1 when its last command failed, even with the error silenced,
+            # and a path that is not there is exactly what this asks for.
             script = (
                 "foreach ($p in @(%s)) { $p = [Environment]::ExpandEnvironmentVariables($p) -replace '^~', $env:USERPROFILE; "
-                "Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }" % ", ".join(quoted)
+                "Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }; exit 0" % ", ".join(quoted)
             )
             argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
         else:

@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux Guests; Windows planned) and the UI contract on macOS and Linux (X11 and Wayland). UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
+Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux and Windows Guests) and the UI contract on macOS and Linux (X11 and Wayland; Windows next). UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -32,7 +32,7 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 
 ```toml
 [labs.mac]
-provider = "fake"        # fake | tart (macOS) | fusion (Linux) (utm, parallels: stubs)
+provider = "fake"        # fake | tart (macOS) | fusion (Linux, Windows) (utm, parallels: stubs)
 os = "macos"             # macos | windows | linux
 arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 memory_gb = 4            # Host RAM the Guest takes; used by --parallel
@@ -157,6 +157,38 @@ The UI helper (`src/vmlab/guest/linux/vmlab-ui.py`) is plain Python sent with ev
 - **Hidden widgets**: a background tab or a hidden window stays in the AT-SPI tree; elements without the visible state are left out.
 - **Rebooting a Guest with unsaved documents**: an editor's inhibitor blocks `systemctl reboot` in the Guest. vmlab never reboots from inside: it stops the Guest from the Host (powering it off if it does not shut down in time) and starts it again.
 - **WebKitGTK** paints a window once and then never again with its DMA-BUF renderer on the Guest's software GL (Fusion passes no 3D to arm64 Linux), so screenshots freeze on the first frame. The session sets `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+
+## Windows Guests with VMware Fusion
+
+Windows comes from Fusion's own "Get Windows from Microsoft" flow, which only a person can click through, so `vmlab base create windows-11` is a wizard: it says what to do, checks each step before the next, and asks again until it holds. Re-running it continues where it stopped.
+
+```sh
+vmlab base create windows-11                       # walks you through Fusion's flow, then adopts your VM
+vmlab base create windows-11 --image ~/VMs/Win11.vmwarevm   # or name the VM to adopt
+```
+
+What the wizard asks of you: make the VM in Fusion (Windows 11, "only the files needed to support a TPM are encrypted", the password kept in your Keychain, a local administrator account with a password), then one click. What it does itself: find the VM, take its encryption password from your Keychain, copy it into `$VMLAB_HOME/fusion/` (an APFS clone of its files: instant, and it shares the original's disk space, so the original stays yours and untouched), provision the copy, reboot it, prove both Channels reach the desktop and snapshot it for Lab clones.
+
+**The one click.** vmrun runs programs as the Guest user with a filtered token, so nothing vmlab starts can administer Windows, and Windows' consent prompt is drawn on the secure desktop, where keys sent from the Host do not reach. So the wizard raises that prompt once, in a Fusion window it opens for the purpose, and asks you to click Yes; from then on administrators elevate without a prompt in this throwaway Guest, and provisioning runs headless. (Fusion refuses to start an encrypted VM with a window unless the password is in the Keychain, so vmlab puts the copy's there, as Fusion does for VMs you make.)
+
+Provisioning (`src/vmlab/guest/windows/provision.ps1`, idempotent) installs the OpenSSH server and vmlab's key (as `administrators_authorized_keys`, which sshd reads for administrators), turns on autologin (the password as an LSA secret, not the registry value every user can read), turns off Windows Update, sleep, the screen saver, the lock screen and the "finish setting up your device" pages, and makes UTF-8 the code page of every program, so output arrives as text on the Host.
+
+```toml
+[labs.win]
+provider = "fusion"
+os = "windows"
+memory_gb = 4
+
+[labs.win.fusion]
+base = "windows-11"            # the Base guest to copy
+cpu = 4
+channels = ["ssh", "vmrun"]    # SSH through an interactive Scheduled Task, then vmrun -interactive
+```
+
+- A Lab's Guest is an **APFS copy** of the Base guest, not a linked clone: vmrun cannot clone an encrypted VM ("Cannot read the virtual machine configuration file"). The copy is instant, shares the original's blocks and gets its own UUID and MAC address. Clean state is its `vmlab-clean` snapshot, as on Linux.
+- Every vmrun call carries the VM's encryption password (`-vp`) and the Guest user's (`-gu`/`-gp`), so both are visible in the Host's process list while a call runs; they live in `$VMLAB_HOME/fusion/` (mode 0600) and guard a throwaway Guest. Screenshots go through `vmcli`, which takes the password on stdin instead.
+- Both Channels run a call the same way: a script in the logged-in user's desktop session, unelevated, writing its exit code and raw output to one result file named for that call alone. So a fallback never changes what a command sees, and concurrent calls never mix. SSH is about 1.1 s per call, vmrun about 3 s; vmrun needs neither network nor sshd, which is why provisioning uses it. ADR 0003 has the numbers and the traps behind them.
+- Files (a Build artifact, a call's stdin) travel as files, never through a command's stdin: Windows' sshd stops reading stdin at about 4 KB and the call would hang. `vmlab up` waits until **every** Channel answers, because sshd is up before Windows finishes signing the user in.
 
 A Scenario is a Python file defining `scenario(g)`:
 

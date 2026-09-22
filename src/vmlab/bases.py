@@ -6,7 +6,8 @@ image, Guest user, provisioning version (None until provisioning succeeds) and
 provisioned_id, new with every successful provisioning, so Lab clones made
 before it can tell they are stale even when the version did not change.
 Fusion Base guests also record their .vmx, whether the install finished, and
-the snapshot Lab clones are linked to.
+the snapshot Lab clones are made from; Windows ones, whose image is the VM
+they were copied from, also whether the Guest elevates without asking.
 Its SSH host key is pinned in vmlab's known_hosts (vmlab.providers.ssh).
 """
 
@@ -18,7 +19,8 @@ from vmlab.home import vmlab_home
 from vmlab.providers.base import GuestError
 
 # Names `vmlab base create` knows an image for: a Tart image for macos-*, an
-# installer ISO per Host architecture for ubuntu-* (VMware Fusion).
+# installer ISO per Host architecture for ubuntu-* (VMware Fusion). windows-*
+# Base guests are copies of a VM made with Fusion: the wizard finds it.
 CATALOG = {
     "macos-tahoe": "ghcr.io/cirruslabs/macos-tahoe-base:latest",
     "macos-sequoia": "ghcr.io/cirruslabs/macos-sequoia-base:latest",
@@ -26,6 +28,7 @@ CATALOG = {
         "arm64": "https://cdimage.ubuntu.com/ubuntu/releases/26.04/release/ubuntu-26.04.1-desktop-arm64.iso",
         "x86_64": "https://releases.ubuntu.com/26.04/ubuntu-26.04.1-desktop-amd64.iso",
     },
+    "windows-11": None,
 }
 NAME = re.compile(r"^[a-z0-9][a-z0-9.-]*$")
 
@@ -71,12 +74,20 @@ class Registry:
         tmp.replace(self.path)
 
 
-def create(name, image, confirm, reprovision, out):
-    """Create and provision the Base guest name; idempotent."""
+def create(name, image, prompt, reprovision, out):
+    """Create and provision the Base guest name; idempotent. prompt asks the person at the
+    terminal (vmlab.cli.Terminal): confirmations, and a wizard's steps for Windows."""
     if not NAME.match(name):
         raise UsageError("invalid Base guest name %r: use lowercase letters, digits, '.' and '-'" % name)
-    if not name.startswith(("macos-", "ubuntu-")):
-        raise UsageError("vmlab creates macOS (Tart) and Ubuntu (VMware Fusion) Base guests; name it macos-<version> or ubuntu-<version>")
+    if not name.startswith(("macos-", "ubuntu-", "windows-")):
+        raise UsageError(
+            "vmlab creates macOS (Tart), Ubuntu and Windows (VMware Fusion) Base guests; name it macos-<version>, ubuntu-<version> or windows-<version>"
+        )
+    if name.startswith("windows-"):
+        from vmlab.providers import fusion_windows
+
+        fusion_windows.create_base(name, image, prompt=prompt, reprovision=reprovision, out=out)
+        return
     image = image or CATALOG.get(name)
     if isinstance(image, dict):
         image = image[host_arch()]
@@ -88,17 +99,17 @@ def create(name, image, confirm, reprovision, out):
     if name.startswith("macos-"):
         from vmlab.providers import tart
 
-        tart.create_base(name, image, confirm=confirm, reprovision=reprovision, out=out)
+        tart.create_base(name, image, confirm=prompt.confirm, reprovision=reprovision, out=out)
     else:
         from vmlab.providers import fusion
 
-        fusion.create_base(name, image, confirm=confirm, reprovision=reprovision, out=out)
+        fusion.create_base(name, image, confirm=prompt.confirm, reprovision=reprovision, out=out)
 
 
 def render(out):
     records = Registry().all()
     if not records:
-        out("No Base guests yet. Create one with: vmlab base create macos-tahoe (or ubuntu-26.04)")
+        out("No Base guests yet. Create one with: vmlab base create macos-tahoe (or ubuntu-26.04, windows-11)")
         return
     for name, r in sorted(records.items()):
         state = "ready" if r.get("provisioned") else "not provisioned (re-run vmlab base create %s)" % name
