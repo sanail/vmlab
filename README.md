@@ -69,7 +69,7 @@ vmlab base create macos-tahoe   # asks before downloading the image (tens of GB)
 vmlab base list
 ```
 
-`base create` clones a cirruslabs `*-base` image and provisions it: vmlab's SSH key, Remote Login, no sleep or screen saver, window and app restore off, the UI helper, and TCC grants (Accessibility, Screen Recording, Input Monitoring, Apple Events to System Events and Finder) for both Channels. It then reboots the Guest from outside, checks `kern.boottime` changed, and proves each Channel reaches System Events and holds the UI helper's Accessibility grant. `--reprovision` runs it again; so does a newer vmlab whose provisioning changed.
+`base create` clones a cirruslabs `*-base` image and provisions it: vmlab's SSH key, Remote Login, no sleep or screen saver, window and app restore off, the UI helper, TCC grants (Accessibility, Screen Recording, Input Monitoring, Apple Events to System Events and Finder) and Screen Recording approvals for both Channels. It then reboots the Guest from outside, checks `kern.boottime` changed, and proves each Channel reaches System Events and holds the UI helper's Accessibility grant. `--reprovision` runs it again; so does a newer vmlab whose provisioning changed.
 
 **Guest-only security trade-off.** Granting automation permissions without MDM means writing TCC.db directly, which needs SIP off. The cirruslabs `*-base` images ship with SIP off. This affects only the throwaway Guest, never the Host.
 
@@ -101,6 +101,7 @@ macOS traps the helper handles, so Scenarios don't have to:
 - **AXManualAccessibility** turns the tree on in Chromium and Electron apps. WebKit rejects it (error -25205), so it is set best effort and the wake-up read above is what makes WebKit work.
 - **Keyboard layouts**: chords are sent by physical key code (`cmd+c` copies on a Russian layout too) and text is typed as Unicode, independent of the layout.
 - **Focus stealing**: staging text in another app and pressing the app's hotkey happen in one Guest call (`stage-text --then`), and the result records which app was frontmost when the chord went out.
+- **Screen Recording consent**: even with the TCC grant, macOS 15+ asks again every 30 days ("... is requesting to bypass the system private window picker") when a client captures the screen without the picker, and the alert covers the app under test. Provisioning dates the next alert for vmlab's Channel clients to 2100 (`ScreenCaptureApprovals.plist` in the Guest), part of the same Guest-only trade-off as the TCC grants.
 - **Covered elements**: an element under the Dock, another window or scrolled out of view still has bounds. `click` asks Accessibility what lies under the point first and refuses with what it found there.
 
 A Scenario is a Python file defining `scenario(g)`:

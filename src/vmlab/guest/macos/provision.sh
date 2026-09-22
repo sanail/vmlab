@@ -99,4 +99,28 @@ for c in "${clients[@]}"; do
   done
 done
 
+say "Screen Recording: no recurring consent alert for vmlab's Channels"
+# Even with the TCC grant, macOS 15+ asks again every 30 days ("... is requesting
+# to bypass the system private window picker") when a client captures the screen
+# without the picker, and the alert covers whatever a Scenario is looking at. It
+# keys its approvals by the client's executable path: sshd-keygen-wrapper for SSH
+# sessions, and the Tart guest agent. The next alert is dated 2100.
+APPROVALS="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
+mkdir -p "$(dirname "$APPROVALS")"
+now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+{
+  printf '<?xml version="1.0" encoding="UTF-8"?>\n'
+  printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+  printf '<plist version="1.0"><dict>\n'
+  for c in "${clients[@]}"; do
+    [ "${c%% *}" = 1 ] || continue  # paths only
+    printf '<key>%s</key><dict>' "${c#* }"
+    printf '<key>kScreenCaptureApprovalLastAlerted</key><date>%s</date>' "$now"
+    printf '<key>kScreenCapturePrivacyHintDate</key><date>2100-01-01T00:00:00Z</date>'
+    printf '<key>kScreenCapturePrivacyHintPolicy</key><integer>2592000</integer></dict>\n'
+  done
+  printf '</dict></plist>\n'
+} > "$APPROVALS"
+plutil -lint -s "$APPROVALS" || fail "wrote an invalid $APPROVALS"
+
 say "done; tccd reads the grants after a reboot"
