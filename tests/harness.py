@@ -31,6 +31,11 @@ def zipapp_path():
     return _BUILD_DIR / "vmlab.pyz"
 
 
+# Tests never reach the Host's real hypervisors (`vmlab clean` would list, and could
+# delete, their VMs); a test that needs one passes a scripted stand-in instead.
+NO_HYPERVISORS = {name: "/nonexistent/" + name for name in ("VMLAB_TART", "VMLAB_VMRUN", "VMLAB_VMCLI")}
+
+
 class Result:
     def __init__(self, proc):
         self.code = proc.returncode
@@ -78,7 +83,7 @@ class Project:
 
     def vmlab_background(self, *args, cwd=None, pyz=None, env=None):
         """Start vmlab without waiting for it; the caller collects it with communicate()."""
-        env = dict(os.environ, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **(env or {}))
+        env = dict(os.environ, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **dict(NO_HYPERVISORS, **(env or {})))
         return subprocess.Popen(
             [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),

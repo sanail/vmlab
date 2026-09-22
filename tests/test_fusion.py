@@ -6,8 +6,10 @@ a Fusion Lab.
 """
 
 import json
+import shutil
 import stat
 import textwrap
+from pathlib import Path
 
 from harness import VmlabTestCase
 
@@ -265,3 +267,102 @@ class FusionCloneTest(FusionTestCase):
         self.assertExit(r, 0)
         [vm] = self.clones().values()
         self.assertFalse(vm["running"])
+
+
+class FusionCleanTest(FusionTestCase):
+    """`vmlab clean` also finds Fusion leftovers: clones of Labs that are gone, stray files, unused Base guests."""
+
+    def setUp(self):
+        super().setUp()
+        self.base_guest()
+        self.project.config(FUSION_LAB)
+
+    def clone_for(self, cwd=None):
+        """Make a Lab's clone (and its record); the fake vmrun never boots it."""
+        self.vmlab("up", cwd=cwd)
+        self.vmlab("down", cwd=cwd)
+        [path] = [p for p in self.clones() if p not in getattr(self, "_known", ())]
+        self._known = set(self.clones())
+        return Path(path)
+
+    def other_project(self):
+        root = self.project.root / "other"
+        (root / ".vmlab").mkdir(parents=True)
+        (root / ".vmlab" / "vmlab.toml").write_text(FUSION_LAB)
+        return root
+
+    def test_nothing_to_clean_while_every_clone_belongs_to_a_lab(self):
+        self.clone_for()
+        r = self.vmlab("clean", "--yes")
+        self.assertExit(r, 0)
+        self.assertIn("nothing to clean", r.out)
+
+    def test_the_clone_of_a_deleted_project_is_listed_and_deleted_when_confirmed(self):
+        other = self.other_project()
+        clone = self.clone_for(cwd=other)
+        shutil.rmtree(str(other))
+
+        r = self.vmlab("clean")  # no terminal: list only
+        self.assertExit(r, 0)
+        self.assertIn(clone.stem, r.out)
+        self.assertIn("no longer exists", r.out)
+        self.assertTrue(clone.exists())
+
+        r = self.vmlab("clean", "--yes")
+        self.assertExit(r, 0)
+        self.assertEqual([c[0] for c in self.calls("deleteVM")], ["deleteVM"])
+        self.assertFalse(clone.parent.exists())
+        self.assertEqual([f.name for f in (self.project.home / "fusion").iterdir() if f.name.startswith(clone.stem)], [])
+
+    def test_a_running_leftover_is_never_deleted(self):
+        other = self.other_project()
+        clone = self.clone_for(cwd=other)
+        shutil.rmtree(str(other))
+        state = json.loads(self.state_path.read_text())
+        state["vms"][str(clone.resolve())]["running"] = True
+        self.state_path.write_text(json.dumps(state))
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertIn("running", r.out)
+        self.assertTrue(clone.exists())
+
+    def test_an_unused_base_guest_is_deleted_only_with_bases_with_its_credentials(self):
+        self.clone_for()
+        self.base_guest(name="ubuntu-24.04")
+        credentials = self.project.home / "fusion" / "vmlab-base-ubuntu-24.04.credentials.json"
+        credentials.write_text("{}")
+
+        r = self.vmlab("clean", "--yes")
+        self.assertIn("ubuntu-24.04", r.out)
+        self.assertIn("--bases", r.out)
+        self.assertTrue(credentials.exists())
+
+        r = self.vmlab("clean", "--yes", "--bases")
+        self.assertExit(r, 0)
+        self.assertFalse(credentials.exists())
+        self.assertFalse((self.project.home / "fusion" / "vmlab-base-ubuntu-24.04.vmwarevm").exists())
+        self.assertTrue((self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.vmwarevm").exists(), "still used by this project's Lab")
+        self.assertNotIn("ubuntu-24.04", json.loads((self.project.home / "bases.json").read_text()))
+
+    def test_service_files_without_their_vm_are_removed(self):
+        for name in ("vmlab-gone-1-linux.json", "vmlab-base-gone.credentials.json"):
+            (self.project.home / "fusion" / name).write_text("{}")
+        r = self.vmlab("clean", "--yes")
+        self.assertExit(r, 0)
+        self.assertIn("vmlab-gone-1-linux", r.out)
+        self.assertIn("vmlab-base-gone", r.out)
+        self.assertEqual(sorted(f.name for f in (self.project.home / "fusion").iterdir()), ["vmlab-base-ubuntu-26.04.vmwarevm"])
+
+    def test_a_hypervisor_that_cannot_be_asked_is_skipped_with_a_warning_and_the_rest_still_cleaned(self):
+        records = json.loads((self.project.home / "bases.json").read_text())
+        records["macos-tahoe"] = {"provider": "tart", "os": "macos", "arch": "arm64", "vm": "vmlab-base-macos-tahoe", "provisioned": 5}
+        (self.project.home / "bases.json").write_text(json.dumps(records))
+        (self.project.home / "fusion" / "vmlab-gone-1-linux.json").write_text("{}")
+
+        r = self.vmlab("clean", "--yes")  # the harness gives no Tart
+
+        self.assertExit(r, 0)
+        self.assertIn("warning: tart: skipped", r.out)
+        self.assertIn("deleted files vmlab-gone-1-linux", r.out)

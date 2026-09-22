@@ -30,7 +30,6 @@ import subprocess
 import tempfile
 import time
 import uuid
-from pathlib import Path
 
 from vmlab import bases, hostproc, uihelpers
 from vmlab.config import ConfigError
@@ -57,7 +56,7 @@ SYSTEM_EVENTS_TIMEOUT = 30  # s; longer means a TCC consent dialog is waiting fo
 TART_EXEC_FAILURE = r'^(the specified VM "{vm}" does not exist|VM "{vm}" is not running|.*(guest agent|gRPC|UNAVAILABLE|vsock))'
 DISPLAY_PREFS = "/Library/Preferences/com.apple.windowserver.displays.plist"
 # $VMLAB_HOME/tart/<clone>.json: which project, Lab and Base guest a clone serves, and which
-# provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans.
+# provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans (vmlab.clean).
 CLONE_RECORD = ".json"
 LEGACY_CLONE_STATE = ".base-provisioned"  # before clone records: just the provisioning
 SERVICE_SUFFIXES = (CLONE_RECORD, LEGACY_CLONE_STATE, ".log")
@@ -353,86 +352,25 @@ def _write_clone_record(vm, record):
         legacy.unlink()
 
 
-class Leftover:
-    """Something of vmlab's on this Host that no known Lab needs any more."""
+class HostVMs:
+    """Tart's VMs on this Host, for `vmlab clean` (vmlab.clean)."""
 
-    def __init__(self, kind, name, reason, remove, running=False, needs_bases=False):
-        self.kind, self.name, self.reason, self.remove = kind, name, reason, remove
-        self.running = running  # never deleted while running
-        self.needs_bases = needs_bases  # a Base guest: deleted only with --bases (re-downloading costs tens of GB)
+    provider = "tart"
+    default_base = DEFAULTS["base"]
+    service_suffixes = SERVICE_SUFFIXES
 
+    @property
+    def service_dir(self):
+        return vmlab_home() / "tart"
 
-def _clone_orphan_reason(vm):
-    """(why the clone vm is not needed, or None; the Base guest it serves)."""
-    from vmlab import config
-    from vmlab.providers import provider_for
+    def vms(self):
+        return {name: bool(row.get("Running")) for name, row in list_vms("local").items()}
 
-    record = _clone_record(vm)
-    if record is None:
-        return "made by an older vmlab or elsewhere: its project is unknown", None
-    root = Path(record["project"])
-    if not (root / config.CONFIG_DIR / config.CONFIG_NAME).is_file():
-        return "its project %s no longer exists" % root, record["base"]
-    try:
-        project = config.load(str(root))
-    except config.ConfigError:
-        return None, record["base"]  # cannot tell: keep it
-    lab = project.labs.get(record["lab"])
-    if lab is None or lab.provider != "tart":
-        return "project %s has no Lab %s on Tart any more" % (root, record["lab"]), record["base"]
-    if provider_for(project, lab).guest_id != vm:
-        return "project %s's Lab %s uses another clone now" % (root, record["lab"]), record["base"]
-    return None, record["base"]
+    def delete_vm(self, name):
+        tart_ok(["delete", name], CALL_TIMEOUT)
 
-
-def _remove_files(vm):
-    for suffix in SERVICE_SUFFIXES:
-        path = _service_file(vm, suffix)
-        if path.exists():
-            path.unlink()
-
-
-def _delete_clone(vm):
-    tart_ok(["delete", vm], CALL_TIMEOUT)
-    _remove_files(vm)
-
-
-def _delete_base(name, vm):
-    from vmlab.providers.ssh import unpin_host_key
-
-    tart_ok(["delete", vm], CALL_TIMEOUT)
-    _remove_files(vm)
-    bases.Registry().remove(name)
-    unpin_host_key(vm)
-
-
-def leftovers(bases_in_use=()):
-    """What `vmlab clean` offers to delete: orphaned Lab clones, service files whose VM is gone,
-    and Base guests no known Lab uses. bases_in_use: Base guests the current project needs."""
-    vms = list_vms("local")
-    registry = bases.Registry().all()
-    base_vms = {bases.vm_name(name): name for name in registry}
-    used = set(bases_in_use)
-    found = []
-    for vm, row in sorted(vms.items()):
-        if not vm.startswith("vmlab-") or vm.startswith("vmlab-base-"):
-            continue  # not vmlab's, or a Base guest
-        reason, base = _clone_orphan_reason(vm)
-        if reason is None:
-            used.add(base)
-        else:
-            found.append(Leftover("clone", vm, reason, lambda vm=vm: _delete_clone(vm), running=bool(row.get("Running"))))
-    for vm, name in sorted(base_vms.items()):
-        if name not in used and vm in vms:
-            found.append(
-                Leftover("base", vm, "Base guest %s: no known Lab uses it" % name, lambda name=name, vm=vm: _delete_base(name, vm),
-                         running=bool(vms[vm].get("Running")), needs_bases=True)
-            )  # fmt: skip
-    tart_dir = vmlab_home() / "tart"
-    strays = sorted({p.name[: -len(s)] for p in tart_dir.iterdir() for s in SERVICE_SUFFIXES if p.name.endswith(s)} - set(vms)) if tart_dir.is_dir() else []
-    for vm in strays:
-        found.append(Leftover("files", vm, "service files of a VM that is gone", lambda vm=vm: _remove_files(vm)))
-    return found
+    def stop_hint(self, name):
+        return "tart stop %s" % name
 
 
 def create_base(name, image, confirm, reprovision, out):

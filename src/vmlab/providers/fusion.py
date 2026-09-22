@@ -66,8 +66,9 @@ CLEAN_SNAPSHOT = "vmlab-clean"
 # The graphical session is up (autologin done): a Run can drive the desktop.
 DESKTOP_PROBE = ["/bin/sh", "-c", 'XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user is-active --quiet graphical-session.target']
 # $VMLAB_HOME/fusion/<clone>.json: which project, Lab and Base guest a clone serves, and which
-# provisioning of the Base guest it was made from.
+# provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans (vmlab.clean).
 CLONE_RECORD = ".json"
+CREDENTIALS = ".credentials.json"  # a Base guest's user and password
 
 
 def fusion_dir():
@@ -245,7 +246,7 @@ class FusionVM:
 
 
 def _credentials_path(base_vm):
-    return fusion_dir() / ("%s.credentials.json" % base_vm)
+    return fusion_dir() / (base_vm + CREDENTIALS)
 
 
 def credentials(base_vm):
@@ -445,6 +446,29 @@ class FusionProvider(Provider):
 
     def screenshot(self, dest):
         self.vm.screenshot(dest, self.lab.step_timeout)
+
+
+class HostVMs:
+    """vmlab's Fusion VMs on this Host (all under $VMLAB_HOME/fusion), for `vmlab clean` (vmlab.clean)."""
+
+    provider = "fusion"
+    default_base = DEFAULTS["base"]
+    service_suffixes = (CLONE_RECORD, CREDENTIALS)
+
+    @property
+    def service_dir(self):
+        return fusion_dir()
+
+    def vms(self):
+        names = [p.name[: -len(".vmwarevm")] for p in fusion_dir().glob("*.vmwarevm") if vmx_path(p.name[: -len(".vmwarevm")]).is_file()]
+        running = running_vmx() if names else set()
+        return {name: os.path.realpath(str(vmx_path(name))) in running for name in names}
+
+    def delete_vm(self, name):
+        FusionVM(vmx_path(name)).delete()
+
+    def stop_hint(self, name):
+        return "vmrun stop '%s'" % vmx_path(name)
 
 
 def _clone_record(vm):

@@ -125,22 +125,23 @@ def _base(args):
 
 
 def _clean(args):
-    from vmlab.providers import tart
+    from vmlab import clean
 
     in_use = set()
     try:  # run inside a project, its Labs' Base guests count as used even before their first clone
-        project = config.load(os.getcwd())
-        in_use = {lab.options.get("base", tart.DEFAULTS["base"]) for lab in project.labs.values() if lab.provider == "tart"}
+        in_use = clean.bases_in_use(config.load(os.getcwd()))
     except ConfigError:
         pass
-    found = tart.leftovers(in_use)
+    found, warnings = clean.leftovers(in_use)
+    for warning in warnings:
+        print("warning: %s" % warning)
     if not found:
         print("nothing to clean")
         return EXIT_OK
     deletable = []
     for item in found:
         if item.running:
-            note = "running: left alone (tart stop %s)" % item.name
+            note = "running: left alone (%s)" % item.stop_hint
         elif item.needs_bases and not args.bases:
             note = "kept: pass --bases to delete it"
         else:
