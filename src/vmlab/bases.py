@@ -48,9 +48,17 @@ class Registry:
     def get(self, name):
         return self.all().get(name)
 
+    def remove(self, name):
+        records = self.all()
+        if records.pop(name, None) is not None:
+            self._write(records)
+
     def put(self, name, record):
         records = self.all()
         records[name] = record
+        self._write(records)
+
+    def _write(self, records):
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(records, indent=2, sort_keys=True), encoding="utf-8")
         tmp.replace(self.path)

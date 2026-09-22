@@ -39,6 +39,10 @@ def main(argv=None):
     p.add_argument("--yes", action="store_true", help="allow downloading the image without asking")
     p.add_argument("--reprovision", action="store_true", help="provision again even if it is ready")
 
+    p = sub.add_parser("clean", help="delete what no known Lab needs: orphaned clones, stray files, unused Base guests")
+    p.add_argument("--yes", action="store_true", help="delete without asking")
+    p.add_argument("--bases", action="store_true", help="also delete unused Base guests (re-creating one downloads its image)")
+
     p = sub.add_parser("self-update", help="replace the project's vendored vmlab.pyz with a newer one")
     p.add_argument("--from", dest="source", metavar="PYZ", help="vmlab.pyz to vendor (default: the skill's copy)")
 
@@ -79,6 +83,8 @@ def main(argv=None):
             return EXIT_OK
         if args.command == "base":
             return _base(args)
+        if args.command == "clean":
+            return _clean(args)
         project = config.load(os.getcwd())
         if args.command == "run":
             return _run(project, args)
@@ -115,6 +121,40 @@ def _base(args):
         return EXIT_OK
     progress = functools.partial(print, flush=True)  # it takes minutes: show each step as it happens
     bases.create(args.name, args.image, confirm=lambda question: args.yes or _ask(question), reprovision=args.reprovision, out=progress)
+    return EXIT_OK
+
+
+def _clean(args):
+    from vmlab.providers import tart
+
+    in_use = set()
+    try:  # run inside a project, its Labs' Base guests count as used even before their first clone
+        project = config.load(os.getcwd())
+        in_use = {lab.options.get("base", tart.DEFAULTS["base"]) for lab in project.labs.values() if lab.provider == "tart"}
+    except ConfigError:
+        pass
+    found = tart.leftovers(in_use)
+    if not found:
+        print("nothing to clean")
+        return EXIT_OK
+    deletable = []
+    for item in found:
+        if item.running:
+            note = "running: left alone (tart stop %s)" % item.name
+        elif item.needs_bases and not args.bases:
+            note = "kept: pass --bases to delete it"
+        else:
+            note = "to delete"
+            deletable.append(item)
+        print("%-6s %s\n       %s; %s" % (item.kind, item.name, item.reason, note))
+    if not deletable:
+        return EXIT_OK
+    if not (args.yes or _ask("Delete %d of them?" % len(deletable))):
+        print("Nothing deleted. Re-run with --yes to delete them, or in a terminal to be asked.")
+        return EXIT_OK
+    for item in deletable:
+        item.remove()
+        print("deleted %s %s" % (item.kind, item.name))
     return EXIT_OK
 
 

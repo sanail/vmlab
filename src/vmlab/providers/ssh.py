@@ -62,6 +62,14 @@ def pin_host_key(alias, host_key):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def unpin_host_key(alias):
+    """Forget alias's pinned host key, e.g. when its Base guest is deleted."""
+    path = ssh_dir() / "known_hosts"
+    if path.exists():
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.split(" ", 1)[0] != alias]
+        path.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+
+
 def remote_command(argv, env, path_append=()):
     """A command line for the Guest's POSIX shell that runs argv with env, every word quoted."""
     words = ["exec"]

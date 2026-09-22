@@ -87,6 +87,8 @@ channels = ["ssh", "exec"]   # SSH (multiplexed), then `tart exec` (the Tart gue
 ```
 
 - Guests run headless, with no shared clipboard (it would overwrite what you copied) and no audio (a Guest's audio device can grab your Bluetooth headset).
+- A clone lives until a restore or a re-provisioned Base guest replaces it (the old one is deleted first, so a Lab has at most one); `vmlab down` only stops it. It costs only what it changed relative to its Base guest.
+- `vmlab clean` finds what no known Lab needs, using the record each clone keeps in `$VMLAB_HOME/tart/<clone>.json` (project, Lab, Base guest): clones whose project or Lab is gone (moved, renamed or deleted), clones of unknown origin, service files whose VM is gone, and Base guests no known Lab uses. It lists them and deletes after you confirm (`--yes` to skip asking). Running VMs and VMs vmlab did not make are never touched; Base guests are deleted only with `--bases`, since re-creating one downloads its image. Run it inside a project to count that project's Labs as users of their Base guests even before their first clone.
 - Clean state = delete the clone and clone the Base guest again. A clone is also made again on the next start after its Base guest is provisioned again (`--reprovision`, or a newer vmlab), so no Lab keeps running without what changed.
 - SSH uses vmlab's own key and known_hosts in `$VMLAB_HOME/ssh/`. The Guest's host key is pinned at provisioning under the Base guest's name, never its IP, so reused DHCP addresses can't break or confuse it. Your `~/.ssh` is never read or written.
 - Screenshots are taken in the Guest with `screencapture`, because Tart has no Host-side screenshot.
@@ -176,6 +178,7 @@ Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VM
 ```
 vmlab init | vmlab self-update [--from PYZ]
 vmlab base create NAME [--image IMAGE] [--yes] [--reprovision] | vmlab base list
+vmlab clean [--yes] [--bases]            # delete orphaned clones, stray files and (with --bases) unused Base guests
 vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
                                          # exit 0 all passed, 1 a Check failed or a Run errored, 2 usage/config error
 vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
