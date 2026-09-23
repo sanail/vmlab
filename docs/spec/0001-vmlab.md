@@ -93,27 +93,26 @@ An agent skill, `vmlab`, following the open SKILL.md standard, plus a host CLI o
 62. As a developer, I want a Markdown summary, so that I can read results quickly.
 63. As a developer, I want each Run's outputs in a timestamped folder per Lab, so that history is kept and comparable.
 64. As a developer, I want the suite runnable with only python3 installed, including the macOS system Python, so that no extra tooling is needed.
-65. As a developer, I want guidance for running the suite on a schedule on my Mac (launchd) or a self-hosted CI runner, so that regular checks happen without me.
-66. As a developer, I want a Scenario to fail with a clear message naming the Check, Lab and evidence, so that I know where to look.
-67. As a developer, I want a way to prove a new Check goes red against a build without the fix, so that I trust it catches the regression.
+65. As a developer, I want a Scenario to fail with a clear message naming the Check, Lab and evidence, so that I know where to look.
+66. As a developer, I want a way to prove a new Check goes red against a build without the fix, so that I trust it catches the regression.
 
 ### Channels and Providers
 
-68. As a developer, I want each Guest to use its fastest reliable Channel automatically, so that Runs are quick.
-69. As a developer, I want an automatic fallback to the other Channel when the preferred one fails, so that transient Channel problems don't fail the Run.
-70. As a developer, I want Windows UI commands to reach the logged-in desktop, so that UI automation works despite SSH sessions being non-interactive.
-71. As a developer, I want every Channel call to have a timeout, so that a hung Guest can't hang the suite.
-72. As a contributor, I want a documented Provider interface and stub Providers for UTM and Parallels, so that I can add a hypervisor without touching Scenarios.
-73. As a future Linux or Windows Host user, I want the same Scenarios to run once a Provider for my hypervisor exists, so that my suite is Host-independent.
+67. As a developer, I want each Guest to use its fastest reliable Channel automatically, so that Runs are quick.
+68. As a developer, I want an automatic fallback to the other Channel when the preferred one fails, so that transient Channel problems don't fail the Run.
+69. As a developer, I want Windows UI commands to reach the logged-in desktop, so that UI automation works despite SSH sessions being non-interactive.
+70. As a developer, I want every Channel call to have a timeout, so that a hung Guest can't hang the suite.
+71. As a contributor, I want a documented Provider interface and stub Providers for UTM and Parallels, so that I can add a hypervisor without touching Scenarios.
+72. As a future Linux or Windows Host user, I want the same Scenarios to run once a Provider for my hypervisor exists, so that my suite is Host-independent.
 
 ### Skill and agents
 
-74. As a Claude Code user, I want the skill to trigger on requests like "test my app on Windows", so that I don't need to remember its name.
-75. As a Cursor user, I want install instructions for the skill, so that I can use it there too.
-76. As a user of another agent, I want the skill to follow the open SKILL.md standard with plain-text references and shell-invokable tools, so that it works without an agent-specific adapter.
-77. As an agent, I want a short router in SKILL.md that sends me to exactly one workflow (setup, ad-hoc run, regression authoring), so that I load only the context I need.
-78. As an agent, I want documented traps per OS (TCC, lazy accessibility trees, focus stealing, keyboard layouts, Wayland input), so that I don't rediscover them.
-79. As a developer, I want all host-level installs and large downloads to require my confirmation, so that the agent never changes my machine unexpectedly.
+73. As a Claude Code user, I want the skill to trigger on requests like "test my app on Windows", so that I don't need to remember its name.
+74. As a Cursor user, I want install instructions for the skill, so that I can use it there too.
+75. As a user of another agent, I want the skill to follow the open SKILL.md standard with plain-text references and shell-invokable tools, so that it works without an agent-specific adapter.
+76. As an agent, I want a short router in SKILL.md that sends me to exactly one workflow (setup, ad-hoc run, regression authoring), so that I load only the context I need.
+77. As an agent, I want documented traps per OS (TCC, lazy accessibility trees, focus stealing, keyboard layouts, Wayland input), so that I don't rediscover them.
+78. As a developer, I want all host-level installs and large downloads to require my confirmation, so that the agent never changes my machine unexpectedly.
 
 ## Implementation Decisions
 
@@ -156,7 +155,7 @@ An agent skill, `vmlab`, following the open SKILL.md standard, plus a host CLI o
 - Full x86_64 emulation of Guests on arm64 Hosts (and vice versa) beyond what the guest OS itself provides.
 - An MCP server wrapping vmlab.
 - Pixel-diff screenshot comparison as a default Check (possible later as opt-in).
-- Cloud CI execution (hosted macOS runners lack nested virtualization); only self-hosted runners and local schedules are documented.
+- Running the suite on a schedule (launchd, self-hosted or cloud CI runners), including guidance for it.
 - Acquiring Windows media outside Fusion's built-in flow, and any licence handling.
 - Verification in Codex or other agents beyond Claude Code (and optionally Cursor), though the skill follows the open standard.
 - Mobile platforms and web apps.
