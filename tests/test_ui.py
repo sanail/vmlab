@@ -5,6 +5,7 @@ stage-text, so the same shapes can be checked here as on real Guests (Seam 2).
 """
 
 import json
+import threading
 import time
 from pathlib import Path
 
@@ -167,6 +168,71 @@ class UiCliTest(UiTestCase):
         self.ui("wait-for", "--log", "~/app.log", "--pattern", "never", "--timeout", "1", code=1)
         self.ui("wait-for", "--process", "no-such-process-vmlab", "--timeout", "1", code=1)
 
+    def guest_home(self):
+        [guest] = list((self.project.home / "fake").iterdir())
+        return guest / "fs" / "home"
+
+    def test_gone_inverts_process_file_and_log_conditions(self):
+        (self.guest_home() / "app.log").write_text("boot\n")
+        self.assertTrue(self.ui("wait-for", "--process", "no-such-process-vmlab", "--gone", "--timeout", "1")["met"])
+        self.assertTrue(self.ui("wait-for", "--file", "~/nope", "--gone", "--timeout", "1")["met"])
+        waited = json.loads(self.ui("wait-for", "--file", "~/app.log", "--gone", "--timeout", "1", code=1).out)
+        self.assertEqual(waited["condition"], {"file": "~/app.log", "gone": True})
+        self.assertTrue(self.ui("wait-for", "--log", "~/app.log", "--pattern", "ready", "--gone", "--timeout", "1")["met"])
+        self.ui("wait-for", "--log", "~/app.log", "--pattern", "boot", "--gone", "--timeout", "1", code=1)
+
+    def test_exec_is_met_by_exit_code_and_carries_the_last_answer(self):
+        waited = self.ui("wait-for", "--timeout", "1", "--exec", "sh", "-c", "echo up; exit 0")
+        self.assertTrue(waited["met"])
+        self.assertEqual((waited["code"], waited["stdout"]), (0, "up\n"))
+        self.assertEqual(waited["condition"], {"exec": ["sh", "-c", "echo up; exit 0"]})
+        r = self.ui("wait-for", "--timeout", "1", "--exec", "sh", "-c", "echo down; exit 3", code=1)
+        waited = json.loads(r.out)
+        self.assertEqual((waited["met"], waited["code"], waited["stdout"]), (False, 3, "down\n"))
+
+    def test_exec_with_a_pattern_is_met_by_its_output_whatever_the_exit_code(self):
+        waited = self.ui("wait-for", "--pattern", r"ready: \d+", "--timeout", "1", "--exec", "sh", "-c", "echo ready: 7; exit 4")
+        self.assertTrue(waited["met"])
+        self.assertEqual(waited["code"], 4)
+        self.ui("wait-for", "--pattern", "never", "--timeout", "1", "--exec", "echo", "ready", code=1)
+
+    def test_exec_argv_may_follow_a_double_dash(self):
+        self.assertTrue(self.ui("wait-for", "--timeout", "1", "--exec", "--", "sh", "-c", "exit 0")["met"])
+
+    def test_exec_gone_waits_for_the_command_to_stop_succeeding(self):
+        self.assertTrue(self.ui("wait-for", "--gone", "--timeout", "1", "--exec", "false")["met"])
+        self.ui("wait-for", "--gone", "--timeout", "1", "--exec", "true", code=1)
+
+    def test_exec_turns_true_mid_wait(self):
+        flag = self.guest_home() / "flag"
+        timer = threading.Timer(1, flag.write_text, ["x"])
+        timer.start()
+        self.addCleanup(timer.cancel)
+        waited = self.ui("wait-for", "--timeout", "10", "--exec", "sh", "-c", "test -e ~/flag")
+        self.assertTrue(waited["met"])
+        self.assertGreaterEqual(waited["waited_s"], 0.5)
+
+    def test_exec_of_a_command_the_guest_does_not_have_fails_at_once(self):
+        started = time.time()
+        r = self.ui("wait-for", "--timeout", "30", "--exec", "no-such-command-vmlab", "--flag", code=1)
+        self.assertLess(time.time() - started, 15)
+        self.assertIn("no-such-command-vmlab", r.err)
+        self.assertIn("--flag", r.err)
+        self.ui("wait-for", "--timeout", "30", "--exec", "sh", "-c", "no-such-command-vmlab", code=1)
+
+    def test_exec_keeps_only_a_tail_of_its_output(self):
+        waited = self.ui("wait-for", "--timeout", "1", "--exec", "sh", "-c", "seq 1 5000")
+        self.assertTrue(waited["stdout"].endswith("4999\n5000\n"))
+        self.assertLess(len(waited["stdout"]), 5000)
+
+    def test_exec_needs_a_command(self):
+        r = self.ui("wait-for", "--exec", code=2)
+        self.assertIn("--exec", r.err)
+
+    def test_pattern_goes_with_log_or_exec(self):
+        r = self.ui("wait-for", "--file", "a", "--pattern", "x", code=2)
+        self.assertIn("--pattern", r.err)
+
     def test_wait_for_needs_exactly_one_condition(self):
         r = self.ui("wait-for", "--file", "a", "--process", "b", code=2)
         self.assertIn("one condition", r.err)
@@ -186,6 +252,21 @@ class UiCliTest(UiTestCase):
         self.assertIn("--lab", r.err)
         self.assertExit(self.project.vmlab("up", "win"), 0)
         self.assertEqual(self.ui("tree", "--lab", "win")["role"], "desktop")
+
+
+class BrokenChannelWaitTest(VmlabTestCase):
+    def test_a_failed_channel_is_not_met_yet(self):
+        self.project.config(FAKE_LAB + '[labs.mac.fake]\nchannels = ["ssh"]\nbroken_channels = ["ssh"]\n')
+        self.assertExit(self.project.vmlab("up"), 0)
+        started = time.time()
+        r = self.project.vmlab("ui", "wait-for", "--timeout", "1", "--exec", "true")
+        self.assertExit(r, 1)
+        waited = json.loads(r.out)
+        self.assertFalse(waited["met"])
+        self.assertGreaterEqual(waited["waited_s"], 1)
+        self.assertLess(time.time() - started, 15)
+        self.assertIn("broken", waited["error"])
+        self.assertEqual((waited["code"], waited["stdout"]), (None, ""))
 
 
 class LinuxUiTest(VmlabTestCase):
@@ -306,3 +387,33 @@ class UiScenarioTest(UiTestCase):
         self.assertExit(self.project.vmlab("run"), 1)
         self.assertLess(time.time() - started, 15)
         self.assertIn("timeout", self.project.report()["scenarios"][0]["error"])
+
+    def test_exec_and_gone_conditions_in_a_scenario(self):
+        self.project.scenario("exec.py", """
+            def scenario(g):
+                g.check("exec", g.wait_for(exec=["sh", "-c", "echo ready"], pattern="ready", timeout=2)["stdout"] == "ready\\n")
+                g.check("exec gone", g.wait_for(exec=["false"], gone=True, timeout=2)["met"])
+                g.check("process gone", g.wait_for(process="no-such-process-vmlab", gone=True, timeout=2)["met"])
+                g.check("not met", not g.wait_for(exec=["false"], timeout=0.5)["met"])
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_an_exec_wait_is_bounded_by_the_scenario_timeout(self):
+        self.project.scenario("slow.py", """
+            TIMEOUT = 1
+            def scenario(g):
+                g.wait_for(exec=["false"], timeout=30)
+                g.check("unreachable", True)
+        """)
+        started = time.time()
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertLess(time.time() - started, 15)
+        self.assertIn("timeout", self.project.report()["scenarios"][0]["error"])
+
+    def test_a_missing_command_errors_the_scenario_naming_it(self):
+        self.project.scenario("typo.py", """
+            def scenario(g):
+                g.wait_for(exec=["no-such-command-vmlab"], timeout=30)
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertIn("no-such-command-vmlab", self.project.report()["scenarios"][0]["error"])

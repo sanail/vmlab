@@ -268,7 +268,7 @@ Scenarios and the agent read and drive the Guest's UI with the same commands and
 | `ui focus --app APP [--window TITLE]` | `g.focus(app, window=None)` | `{"app", "window", "frontmost"}` |
 | `ui clipboard [--set TEXT]` | `g.clipboard()`, `g.set_clipboard(text)` | `{"text"}` |
 | `ui stage-text TEXT [--app APP] [--then CHORD]` | `g.stage_text(text, app=None, then=None)` | `{"app", "file", "frontmost", "selected", "pressed"}` |
-| `ui wait-for CONDITION [--timeout S]` | `g.wait_for(..., timeout=None)` | `{"met", "waited_s", "condition"[, "matches"]}` |
+| `ui wait-for CONDITION [--gone] [--timeout S]` | `g.wait_for(..., gone=False, timeout=None)` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "error"]}` |
 | `ui screenshot [--out PATH]` | `g.screenshot(name)` | `{"path"}` (Scenarios: the path in the Run folder) |
 
 Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` in screen points, pixels on Windows, or null), `focused`, `enabled`, `native_role` (e.g. `AXButton`) and `children`. The root is the `desktop`, with `truncated` true when a size limit cut the tree short; its children are applications (with `pid`), holding their windows and tray items.
@@ -278,7 +278,7 @@ Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`,
 - Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key: `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`, `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...). An unknown key is a usage error (exit 2).
 - `focus` brings a running app to the front and waits until it is frontmost; `--window` first raises its first window whose title contains TITLE. An app that is not running, or a window that is not there, is an error naming what is.
 - `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or GNOME Text Editor, `gnome-text-editor`), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.
-- `wait-for` takes exactly one condition: an element (`--text`/`--role`/`--app`, or `--gone` for its disappearance), `--process NAME`, `--file PATH` or `--log PATH --pattern REGEX`. It polls until the condition holds or the timeout (default: the Lab's `step_timeout`) passes, never with fixed sleeps. Unmet, the CLI exits 1 and a Scenario gets `"met": false` to check.
+- `wait-for` takes exactly one condition: an element (`--text`/`--role`/`--app`), `--process NAME`, `--file PATH`, `--log PATH --pattern REGEX`, or a command, `--exec ARG...` (last, since everything after it is the command; `g.wait_for(exec=[...])`): it exits 0, or with `--pattern` its stdout matches whatever the exit code, and the result carries the last answer's `code` and the tail of its `stdout`. `--gone` inverts any condition. It polls until the condition holds or the timeout (default: the Lab's `step_timeout`) passes, never with fixed sleeps. A poll that gets no answer (a failed Channel, a hung call) is "not met yet", with `"error"` saying why; a command the Guest does not have fails at once. Unmet, the CLI exits 1 and a Scenario gets `"met": false` to check.
 - UI commands need a running Guest (`vmlab up` or `vmlab deploy`). In a Scenario they count against its timeout like `g.exec`.
 
 ```python

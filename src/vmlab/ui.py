@@ -21,7 +21,7 @@ import re
 import time
 
 from vmlab.config import UsageError
-from vmlab.providers.base import GuestError, GuestTimeout
+from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
 
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
 POLL_SECONDS = 0.25  # between checks of a wait_for condition; the condition and timeout decide when it ends
@@ -246,22 +246,32 @@ class Query:
         return [dict({k: v for k, v in n.items() if k != "children"}, app=a) for n, a in candidates]
 
 
-# Conditions for wait_for. poll(ui, timeout) returns (met, extra result fields).
+# Conditions for wait_for. poll(ui, timeout) returns (holds, extra result fields); wait_for inverts
+# holds for gone=True. UNANSWERED is the extra fields before any poll has answered.
+STDOUT_TAIL = 2000  # characters of an exec condition's last output kept in the result
+# How a Guest says it has no such command: sh's 127; on Windows, what call.ps1 and cmd.exe exit
+# with (9009), or PowerShell's error for an unknown command (exit 1).
+MISSING_CODES = (127, 9009)
+NOT_RECOGNIZED = "is not recognized as"
 
 
 class ElementCondition:
-    def __init__(self, query, gone):
-        self.query, self.gone = query, gone
+    UNANSWERED = {}
+
+    def __init__(self, query):
+        self.query = query
 
     def describe(self):
-        return {k: v for k, v in (("text", self.query.text), ("role", self.query.role), ("app", self.query.app), ("gone", self.gone or None)) if v is not None}
+        return {k: v for k, v in (("text", self.query.text), ("role", self.query.role), ("app", self.query.app)) if v is not None}
 
     def poll(self, ui, timeout):
         matches = self.query.matches(ui.tree(self.query.app, timeout=timeout))
-        return (not matches if self.gone else bool(matches)), {"matches": matches}
+        return bool(matches), {"matches": matches}
 
 
 class ProcessCondition:
+    UNANSWERED = {}
+
     def __init__(self, name):
         self.name = name
 
@@ -273,6 +283,8 @@ class ProcessCondition:
 
 
 class FileCondition:
+    UNANSWERED = {}
+
     def __init__(self, path):
         self.path = path
 
@@ -284,12 +296,11 @@ class FileCondition:
 
 
 class LogCondition:
+    UNANSWERED = {}
+
     def __init__(self, path, pattern):
         self.path, self.pattern = path, pattern
-        try:
-            self.regex = re.compile(pattern, re.M)
-        except re.error as exc:
-            raise UsageError("--pattern %r is not a valid regular expression: %s" % (pattern, exc))
+        self.regex = _regex(pattern)
 
     def describe(self):
         return {"log": self.path, "pattern": self.pattern}
@@ -299,22 +310,73 @@ class LogCondition:
         return result.ok and self.regex.search(result.stdout) is not None, {}
 
 
-def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None):
-    """The one wait_for condition these arguments describe; UsageError unless there is exactly one."""
+class ExecCondition:
+    """argv exits 0, or with a pattern, its stdout matches whatever the exit code."""
+
+    UNANSWERED = {"code": None, "stdout": ""}
+
+    def __init__(self, argv, pattern):
+        self.argv, self.pattern = argv, pattern
+        self.regex = None if pattern is None else _regex(pattern)
+
+    def describe(self):
+        return dict({"exec": self.argv}, **({} if self.pattern is None else {"pattern": self.pattern}))
+
+    def poll(self, ui, timeout):
+        result = ui.provider.exec(self.argv, timeout)
+        if result.code in MISSING_CODES or (result.code and NOT_RECOGNIZED in result.stderr):
+            detail = (result.stderr.strip().splitlines() or ["exit %d" % result.code])[-1]
+            raise GuestError("wait-for --exec %s: the Guest has no such command (%s)" % (self.argv, detail), "check the command's name and that it is installed in the Guest")
+        held = result.ok if self.regex is None else self.regex.search(result.stdout) is not None
+        return held, {"code": result.code, "stdout": result.stdout[-STDOUT_TAIL:]}
+
+
+class Gone:
+    """Another condition, inverted: it holds while the other does not."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.UNANSWERED = inner.UNANSWERED
+
+    def describe(self):
+        return dict(self.inner.describe(), gone=True)
+
+    def poll(self, ui, timeout):
+        held, extra = self.inner.poll(ui, timeout)
+        return not held, extra
+
+
+def _regex(pattern):
+    try:
+        return re.compile(pattern, re.M)
+    except re.error as exc:
+        raise UsageError("--pattern %r is not a valid regular expression: %s" % (pattern, exc))
+
+
+def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None):
+    """The one wait_for condition these arguments describe; UsageError unless there is exactly one.
+
+    gone=True inverts it. exec is an argv."""
     element = text is not None or role is not None
-    if sum([element, process is not None, file is not None, log is not None]) != 1:
-        raise UsageError("wait-for needs exactly one condition: an element (--text/--role), --process, --file or --log with --pattern")
-    if gone and not element:
-        raise UsageError("--gone applies to elements only")
+    if sum([element, process is not None, file is not None, log is not None, exec is not None]) != 1:
+        raise UsageError("wait-for needs exactly one condition: an element (--text/--role), --process, --file, --log with --pattern, or --exec")
+    if pattern is not None and log is None and exec is None:
+        raise UsageError("--pattern goes with --log or --exec")
     if element:
-        return ElementCondition(Query(text, role, app), gone)
-    if process is not None:
-        return ProcessCondition(process)
-    if file is not None:
-        return FileCondition(file)
-    if pattern is None:
-        raise UsageError("wait-for --log needs --pattern")
-    return LogCondition(log, pattern)
+        found = ElementCondition(Query(text, role, app))
+    elif process is not None:
+        found = ProcessCondition(process)
+    elif file is not None:
+        found = FileCondition(file)
+    elif log is not None:
+        if pattern is None:
+            raise UsageError("wait-for --log needs --pattern")
+        found = LogCondition(log, pattern)
+    else:
+        if not (isinstance(exec, (list, tuple)) and exec and all(isinstance(a, str) for a in exec)):
+            raise UsageError("wait-for --exec needs a command: a non-empty argv list of strings, e.g. --exec test -e /tmp/ready")
+        found = ExecCondition(list(exec), pattern)
+    return Gone(found) if gone else found
 
 
 class PosixProbes:
@@ -419,12 +481,13 @@ class UI:
     def wait_for(self, condition, timeout=None):
         """Poll condition until it holds or timeout seconds (default: the Lab's step_timeout) pass.
 
-        Returns {"met", "waited_s", "condition", ...}; an unmet condition is not an error.
+        Returns {"met", "waited_s", "condition", ...}, with "error" when the last poll got no
+        answer (a failed Channel, a hung call); an unmet condition is not an error.
         """
         timeout = self.provider.lab.step_timeout if timeout is None else timeout
         started = time.time()
         deadline = started + timeout
-        extra = {}
+        extra, error = dict(condition.UNANSWERED), None
         first = True
         while True:
             # A poll may not outlive the wait by more than a moment, except the first: the answer
@@ -435,15 +498,19 @@ class UI:
             first = False
             try:
                 met, extra = condition.poll(self, poll_timeout)
-            except GuestTimeout as exc:
-                # A slow or hung poll just means "not met yet". A Scenario running out
-                # of time (a subclass) still ends the Scenario.
-                if type(exc) is not GuestTimeout:
+                error = None
+            except (ChannelError, GuestTimeout) as exc:
+                # A failed Channel or a slow or hung poll just means "not met yet". A Scenario
+                # running out of time (a subclass of GuestTimeout) still ends the Scenario.
+                if isinstance(exc, GuestTimeout) and type(exc) is not GuestTimeout:
                     raise
-                met = False
+                met, error = False, exc.message
             now = time.time()
             if met or now >= deadline:
-                return dict({"met": bool(met), "waited_s": round(now - started, 3), "condition": condition.describe()}, **extra)
+                result = dict({"met": bool(met), "waited_s": round(now - started, 3), "condition": condition.describe()}, **extra)
+                if error:
+                    result["error"] = error  # why the last poll got no answer
+                return result
             time.sleep(min(POLL_SECONDS, deadline - now))
 
 

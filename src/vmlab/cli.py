@@ -76,7 +76,7 @@ def main(argv=None):
     p = sub.add_parser("status", help="show whether each Lab's Guest is running")
     p.add_argument("--json", action="store_true", help="print JSON")
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_exec_dashes(sys.argv[1:] if argv is None else list(argv)))
     if args.command == "version":
         print("vmlab %s" % __version__)
         return EXIT_OK
@@ -124,6 +124,16 @@ def main(argv=None):
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_FAILED
     return EXIT_OK
+
+
+def _exec_dashes(argv):
+    """argv without the -- in `ui wait-for ... --exec -- COMMAND`: argparse keeps a command
+    after an option's -- only from Python 3.12 on."""
+    if argv[:2] == ["ui", "wait-for"] and "--exec" in argv:
+        at = argv.index("--exec")
+        if argv[at + 1 : at + 2] == ["--"]:
+            return argv[: at + 1] + argv[at + 2 :]
+    return argv
 
 
 def _run(project, args):
@@ -236,12 +246,17 @@ def _ui_parser(sub):
     p = ui_sub.add_parser("type", parents=[common], help="type text into whatever has focus")
     p.add_argument("text")
     p = ui_sub.add_parser("wait-for", parents=[common, element], help="wait for one condition; exit 1 if it is not met in time")
-    p.add_argument("--gone", action="store_true", help="wait for the element to disappear")
+    p.add_argument("--gone", action="store_true", help="wait for the condition to stop holding (an element, process or file gone, ...)")
     p.add_argument("--process", help="a process of this name runs")
     p.add_argument("--file", help="this Guest path exists (~ is the Guest user's home)")
     p.add_argument("--log", help="this Guest file has a line matching --pattern")
-    p.add_argument("--pattern", help="a Python regular expression")
+    p.add_argument("--pattern", help="a Python regular expression, for --log or --exec")
     p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
+    # Last, as it takes everything after it: the command's own options stay its own.
+    p.add_argument(
+        "--exec", nargs=argparse.REMAINDER, metavar="ARG",
+        help="this command exits 0 (with --pattern: its output matches); goes last: --exec [--] COMMAND ...",
+    )  # fmt: skip
     p = ui_sub.add_parser("focus", parents=[common], help="bring a running app (and one of its windows) to the front")
     p.add_argument("--app", required=True)
     p.add_argument("--window", help="raise the first window whose title contains this")
@@ -298,7 +313,7 @@ def _ui(project, args):
     elif c == "type":
         result = contract.type(args.text)
     elif c == "wait-for":
-        condition = ui.condition(args.text, args.role, args.app, args.gone, args.process, args.file, args.log, args.pattern)
+        condition = ui.condition(args.text, args.role, args.app, args.gone, args.process, args.file, args.log, args.pattern, args.exec)
         result = contract.wait_for(condition, timeout=args.timeout)
     elif c == "clipboard":
         result = contract.clipboard(set=args.set)

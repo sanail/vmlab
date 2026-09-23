@@ -141,11 +141,12 @@ class Guest:
         """Open text in a third-party editor, select it all and press the chord then, all in one Guest call."""
         return self._ui_call(lambda contract: contract.stage_text(text, app=app, then=then))
 
-    def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, timeout=None):
-        """Wait until one condition holds: an element appears (or is gone), a process runs, a file
-        exists, or a log file has a line matching pattern. Returns {"met": bool, ...}; never raises
-        for an unmet condition. timeout defaults to the Lab's step_timeout."""
-        condition = ui.condition(text, role, app, gone, process, file, log, pattern)
+    def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, timeout=None):
+        """Wait until one condition holds: an element appears, a process runs, a file exists, a log
+        file has a line matching pattern, or the command exec (an argv) exits 0 (with pattern: its
+        stdout matches). gone=True waits for the condition to stop holding instead. Returns
+        {"met": bool, ...}; never raises for an unmet condition. timeout defaults to the Lab's step_timeout."""
+        condition = ui.condition(text, role, app, gone, process, file, log, pattern, exec)
         return self._ui_call(lambda contract: contract.wait_for(condition, timeout=timeout))
 
     def _ui_call(self, fn):

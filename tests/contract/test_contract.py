@@ -218,6 +218,49 @@ def scenario(g):
         [shot] = report["scenarios"][0]["screenshots"]
         self.assertTrue((Path(report["run_dir"]) / shot).read_bytes().startswith(b"\x89PNG"))
 
+    def test_06b_wait_for_a_command_and_a_process_that_quits(self):
+        self.assertPassed(*self.target.scenario("wait_exec.py", COMMANDS + """
+import base64
+import uuid
+
+def background(g, posix, windows):
+    # Started and left running: the call returns at once.
+    if g.os == "windows":
+        encoded = base64.b64encode(windows.encode("utf-16-le")).decode("ascii")
+        return cmd(g, "", "Start-Process -WindowStyle Hidden powershell -ArgumentList '-NoProfile','-EncodedCommand','%s'" % encoded)
+    return ["sh", "-c", "nohup sh -c \\"$1\\" >/dev/null 2>&1 </dev/null &", "sh", posix]
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:6]
+    flag = "contract-wait-" + tag
+    started = g.exec(background(g, "sleep 3; touch ~/" + flag, "Start-Sleep 3; New-Item -Force (Join-Path $HOME %s)" % flag))
+    g.check("the delayed command started", started.ok, detail=started.stderr)
+    probe = cmd(g, "test -e ~/" + flag + " && echo here", "if (Test-Path (Join-Path $HOME %s)) { 'here' } else { exit 1 }" % flag)
+    waited = g.wait_for(exec=probe, timeout=60)
+    g.check("an exec condition turns true mid-wait", waited["met"] and waited["waited_s"] >= 1 and waited["code"] == 0, detail=waited)
+    g.check("its result carries the output", waited["stdout"].strip() == "here", detail=waited)
+    matched = g.wait_for(exec=cmd(g, "echo ready 7; exit 2", "'ready 7'; exit 2"), pattern=r"ready \\d", timeout=10)
+    g.check("a pattern decides whatever the exit code", matched["met"] and matched["code"] == 2, detail=matched)
+    try:
+        g.wait_for(exec=["no-such-command-vmlab-" + tag], timeout=30)
+        g.check("a missing command raises", False)
+    except Exception as exc:
+        g.check("a missing command raises, naming it", "no-such-command-vmlab-" + tag in str(exc), detail=str(exc))
+    # A process with a name of its own that quits after a few seconds: on macOS a link to sleep
+    # (macOS kills a copy of a system binary), on Linux a script (its sleep is a multicall
+    # binary that goes by the name it is called with), on Windows a copy of ping.
+    name = "vs" + tag
+    darwin = g.os != "windows" and g.exec(["uname"]).stdout.strip() == "Darwin"  # a Fake Lab runs on the Host
+    posix = 'ln -sf /bin/sleep "$0" && "$0" 8' if darwin else 'printf "#!/bin/sh\\nsleep 8\\n" > "$0" && chmod +x "$0" && "$0"'
+    g.exec(background(g, posix.replace("$0", "${TMPDIR:-/tmp}/" + name),
+        "$p = Join-Path $env:TEMP '%s.exe'; Copy-Item C:\\Windows\\System32\\PING.EXE $p; & $p -n 9 127.0.0.1" % name))
+    running = g.wait_for(process=name, timeout=30)
+    g.check("the process runs", running["met"], detail=running)
+    gone = g.wait_for(process=name, gone=True, timeout=60)
+    g.check("process gone after it quits", gone["met"] and gone["condition"] == {"process": name, "gone": True}, detail=gone)
+    g.exec(cmd(g, 'rm -f ~/%s "${TMPDIR:-/tmp}/%s"' % (flag, name), "Remove-Item -Force (Join-Path $HOME %s), (Join-Path $env:TEMP %s.exe)" % (flag, name)))
+"""))
+
     @ui
     def test_07_ui_tree_and_find_share_one_shape(self):
         self.assertPassed(*self.target.scenario("ui_tree.py", UI + """
