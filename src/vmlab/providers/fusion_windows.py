@@ -78,10 +78,13 @@ GET_WINDOWS = """\
      needed to support a TPM are encrypted" and let Fusion keep the password in your Keychain.
   3. In Windows Setup, make a local account with a password: vmlab signs in with it.
      If Setup insists on a Microsoft account, press Shift+F10 and run: start ms-cxh:localonly
-  4. Once Windows shows its desktop, install VMware Tools (vmlab runs everything through them;
+  4. Set Windows' time zone to your Mac's (Settings > Time & language > Date & time; it is
+     Pacific Time after an English (United States) install). Fusion gives Windows the Mac's
+     local time, which Windows reads in its own time zone: another one sets its clock hours off.
+  5. Once Windows shows its desktop, install VMware Tools (vmlab runs everything through them;
      Fusion's flow leaves them out): in Fusion, Virtual Machine > Install VMware Tools; in
      Windows, open the DVD drive in File Explorer, run setup (Typical), and restart when it asks.
-  5. Come back here. vmlab copies the VM; the original stays yours."""
+  6. Come back here. vmlab copies the VM; the original stays yours."""
 KEYCHAIN_NOTE = ("  If macOS asks whether %s may use a password in your Keychain, click Always Allow:\n"
                  "  Allow lets it once, and vmlab needs it again on later runs.")
 START_IN_FUSION = """\
