@@ -33,7 +33,7 @@ from vmlab import bases, hostproc, uihelpers
 from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
-    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, FusionVM, WindowsVmrunChannel, credentials, fusion_dir, running_vmx, save_credentials, vm_password, vmrun, vmx_path,
+    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, fusion_dir, running_vmx, save_credentials, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
@@ -62,12 +62,16 @@ Get-Content -LiteralPath $log
 Remove-Item -Force -ErrorAction SilentlyContinue $script, $params
 exit $p.ExitCode
 """]  # fmt: skip
-SESSION = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $PID).SessionId; [Console]::OutputEncoding.CodePage"]
+LANGUAGE_PS = "(Get-UICulture).Name"  # the signed-in user's display language, e.g. en-US
+SESSION = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $PID).SessionId; [Console]::OutputEncoding.CodePage; " + LANGUAGE_PS]
+DISPLAY_LANGUAGE = ["powershell", "-NoProfile", "-NonInteractive", "-Command", LANGUAGE_PS]
 FUSION_FOLDERS = ("Virtual Machines.localized", "Virtual Machines", "Documents/Virtual Machines.localized")
 
 GET_WINDOWS = """\
   1. In VMware Fusion: File > New..., choose "Get Windows from Microsoft", pick Windows 11
-     and its language, and follow Fusion's steps. VMware Tools come with it.
+     and English (United States), and follow Fusion's steps. VMware Tools come with it.
+     Windows Labs expect en-US element names; a Lab written for another language sets
+     language under [labs.NAME.fusion].
   2. When Fusion asks how to encrypt the VM (Windows 11 needs a TPM), choose "Only the files
      needed to support a TPM are encrypted" and let Fusion keep the password in your Keychain.
   3. In Windows Setup, make a local account with a password: vmlab signs in with it.
@@ -80,11 +84,13 @@ def create_base(name, image, prompt, reprovision, out):
     running_vmx()  # Fusion is installed and answers
     vm = FusionVM(vmx_path(bases.vm_name(name)), secrets=bases.vm_name(name))
     record = bases.Registry().get(name) or {}
-    if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not reprovision:
+    # --image naming another VM than the one adopted: adopt it in its place (e.g. Windows in another language)
+    other_image = bool(image and record.get("image") and _image_vmx(image) != Path(record["image"]).resolve())
+    if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not (reprovision or other_image):
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
         return
     wizard = Wizard(name, prompt, out)
-    if not (record.get("installed") and vm.exists()):
+    if other_image or not (record.get("installed") and vm.exists()):
         _adopt(wizard, name, vm, image)
     _provision(wizard, name, vm)
 
@@ -195,6 +201,13 @@ def _adopt(wizard, name, vm, image):
         "user": found["user"], "installed": True, "provisioned": None,
     })  # fmt: skip
     wizard.out("  copied. The original VM is untouched: delete it in Fusion once you no longer need it.")
+
+
+def _image_vmx(image):
+    """The .vmx that --image names (a .vmx file or a .vmwarevm folder), resolved."""
+    path = Path(image).expanduser()
+    candidates = sorted(path.glob("*.vmx")) if path.is_dir() else [path]
+    return candidates[0].resolve() if candidates else path.resolve()
 
 
 def _find_vm(image, prompt):
@@ -356,13 +369,16 @@ def _provision(wizard, name, vm):
     ssh = WindowsSshChannel(creds["user"], vm.ip, vm.name, vm.name)
     try:
         for each in (channel, ssh):
-            session, codepage = _desktop_session(vm, each)
+            session, codepage, language = _desktop_session(vm, each)
             if session == 0 or codepage != 65001:
                 raise GuestError(
                     "Channel %s runs its calls in session %s with code page %s, not in the desktop session with UTF-8" % (each.name, session, codepage),
                     "re-run `vmlab base create %s --reprovision`" % name,
                 )
             wizard.out("  Channel %s reaches the desktop session (session %s, UTF-8)" % (each.name, session))
+        expected = WINDOWS_DEFAULTS["language"]
+        if language.lower() != expected.lower():
+            wizard.out("  display language %s: Windows Labs expect %s unless they set language under [labs.NAME.fusion]" % (language or "unknown", expected))
         # The UI helper compiles itself on first use (~10 s): done here, it is in the snapshot,
         # and Labs do not pay for it after every restore.
         info = uihelpers.windows_helper_info(ssh, uihelpers.WINDOWS_COMPILE_TIMEOUT)
@@ -374,21 +390,21 @@ def _provision(wizard, name, vm):
     snapshot = "vmlab-provisioned-%s" % provisioned_id[:12]
     # Earlier snapshots stay: Lab clones made from them still need them until they are re-cloned.
     vm.snapshot(snapshot)
-    record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot)
+    record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot, language=language)
     registry.put(name, record)
     wizard.out('Base guest %s is ready (Fusion VM %s). Windows Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))
 
 
 def _desktop_session(vm, channel):
-    """(session id, code page) of calls over channel, once it answers after a boot."""
+    """(session id, code page, display language) of calls over channel, once it answers after a boot."""
     deadline = time.time() + BASE_BOOT_TIMEOUT
     while True:
         vm.forget_ip()
         try:
             result = channel.exec(SESSION, CALL_TIMEOUT, {})
             if result.ok:
-                session, codepage = result.stdout.split()[:2]
-                return int(session), int(codepage)
+                session, codepage, language = (result.stdout.split() + [""])[:3]  # no language: the invariant culture
+                return int(session), int(codepage), language
             problem = result.stderr.strip()
         except GuestError as exc:
             problem = exc.message

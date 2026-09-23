@@ -60,7 +60,9 @@ from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, Channe
 from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"], "session": "wayland"}
-WINDOWS_DEFAULTS = {"base": "windows-11", "cpu": 4, "channels": ["ssh", "vmrun"]}
+# language: the Windows display language the Lab's Scenarios expect; element names are in it.
+WINDOWS_DEFAULTS = {"base": "windows-11", "cpu": 4, "channels": ["ssh", "vmrun"], "language": "en-US"}
+LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 CHANNELS = ("ssh", "vmrun")
 # The autologin session (name of its .desktop file) for each session type. Base guests boot into Wayland.
 SESSIONS = {"wayland": "ubuntu", "x11": "xfce"}
@@ -546,6 +548,9 @@ class FusionProvider(Provider):
             )
         if options.get("session", DEFAULTS["session"]) not in SESSIONS:
             raise ConfigError(config_path, key + ".session", "must be one of: %s" % ", ".join(sorted(SESSIONS)), 'e.g. session = "x11"')
+        language = options.get("language", allowed.get("language"))
+        if os_name == "windows" and not (isinstance(language, str) and LANGUAGE.match(language)):
+            raise ConfigError(config_path, key + ".language", "must be a Windows language tag", 'e.g. language = "en-US" (the default)')
 
     @property
     def windows(self):
@@ -617,7 +622,25 @@ class FusionProvider(Provider):
                              "vmlab base create %s   (asks for one click on the UAC prompt)" % name))  # fmt: skip
         if "ssh" in self.options["channels"] and not is_pinned(base_vm):
             findings.append(("SSH host key", WARN, "none pinned for %s: the ssh Channel refuses its Guests" % base_vm, "vmlab base create %s --reprovision" % name))
+        if self.windows and not self.vm.is_running():  # a running Guest is asked instead: diagnose_guest
+            language = record.get("language")
+            if language:
+                findings.append(self._language_finding(language, "Base guest %s" % name, WARN))
+            else:
+                findings.append(("Display language", INFO, "not recorded for Base guest %s (provisioned by an older vmlab); checked while the Guest runs" % name,
+                                 "vmlab base create %s --reprovision   (records it)" % name))  # fmt: skip
         return findings + self._diagnose_clone(record)
+
+    def _language_finding(self, language, where, status):
+        """Does where (the Base guest as recorded, or the running Guest) show Windows in the Lab's language?
+        A mismatch is status: a Base guest's does not stop its Guest from starting."""
+        wanted = self.options["language"]
+        if language.lower() == wanted.lower():
+            return ("Display language", OK, language, None)
+        return ("Display language", status, "%s shows Windows in %s, but the Lab expects %s: element names (buttons, menus, windows) come in the display language" % (where, language, wanted),
+                "make a Windows VM in %s with Fusion's \"Get Windows from Microsoft\" (it asks for the language), then adopt it in place of the current one: "
+                "vmlab base create %s --image PATH/TO/ITS.vmx (Labs copy the new one at their next start); or, if the Lab's Scenarios are written for %s, "
+                'set language = "%s" under [labs.%s.fusion]' % (wanted, self.base_name, language, language, self.lab.name))  # fmt: skip
 
     def _diagnose_clone(self, record):
         up = "`vmlab up %s` makes it again" % self.lab.name
@@ -638,6 +661,8 @@ class FusionProvider(Provider):
         return [("Clone", OK, str(self.vm.vmx), None)]
 
     def diagnose_guest(self):
+        if self.windows:
+            return [self._diagnose_language()]
         if not self.session:
             return []
         if self._seen_session != self.session:
@@ -645,6 +670,17 @@ class FusionProvider(Provider):
             return [("Desktop session", FAIL, "the Lab asks for %s, but the Guest logged into %s" % (SESSION_NAMES[self.session], seen),
                      "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again" % ((self.lab.name,) * 3))]  # fmt: skip
         return [("Desktop session", OK, SESSION_NAMES[self.session], None)]
+
+    def _diagnose_language(self):
+        from vmlab.providers import fusion_windows
+
+        try:
+            result = self.exec(fusion_windows.DISPLAY_LANGUAGE, CALL_TIMEOUT)
+        except GuestError as exc:
+            return ("Display language", WARN, "cannot read it: %s" % exc.message, exc.fix)
+        if not (result.ok and result.stdout.strip()):
+            return ("Display language", WARN, "cannot read it: %s" % (result.stderr.strip() or "no answer"), "check the Guest's PowerShell")
+        return self._language_finding(result.stdout.strip(), "the Guest", FAIL)
 
     def is_running(self):
         return self.vm.is_running()

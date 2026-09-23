@@ -33,7 +33,7 @@ A Base guest is one OS version, shared by every project on this Host, and each L
 
 - **macOS**: `vmlab base create macos-tahoe` (or `macos-sequoia`) downloads a cirruslabs image of tens of GB. When asking, tell the user the trade-off it makes: the image has SIP off, and provisioning writes automation grants straight into the Guest's TCC database, the only way to grant them without MDM. It weakens only this throwaway Guest, never the Host.
 - **Linux**: `vmlab base create ubuntu-26.04` downloads the Ubuntu desktop ISO (about 4 GB) and installs it unattended (about 15 minutes in all). An ISO the user already has goes in with `--image PATH`.
-- **Windows**: `vmlab base create windows-11` is a wizard: the user clicks through Fusion's "Get Windows from Microsoft" and answers one Windows prompt in a window it opens. It needs the user's terminal: ask them to run it there (in Claude Code: `! python3 SKILL_DIR/scripts/vmlab.pyz base create windows-11`, with the real path).
+- **Windows**: `vmlab base create windows-11` is a wizard: the user clicks through Fusion's "Get Windows from Microsoft" (tell them to pick English (United States): Windows Labs expect en-US element names) and answers one Windows prompt in a window it opens. It needs the user's terminal: ask them to run it there (in Claude Code: `! python3 SKILL_DIR/scripts/vmlab.pyz base create windows-11`, with the real path).
 
 `base create` asks before it downloads; without a terminal that question reads as no. Relay it to the user, and on yes run it with `--yes`. It is idempotent: after a failure, read its error, fix the cause, and run it again; it resumes. Done when `vmlab base list` shows each one `ready`.
 
@@ -49,7 +49,7 @@ Each Lab is one Guest: one OS version on one Provider. Add one `[labs.NAME]` tab
 
 - macOS: `provider = "tart"`, `[labs.NAME.tart] base = "macos-tahoe"`.
 - Linux: `provider = "fusion"`, `[labs.NAME.fusion] base = "ubuntu-26.04"`, `session = "wayland"` (GNOME) or `"x11"` (Xfce). Testing both Desktop sessions means two Labs.
-- Windows: `provider = "fusion"`, `[labs.NAME.fusion] base = "windows-11"`.
+- Windows: `provider = "fusion"`, `[labs.NAME.fusion] base = "windows-11"`, `language = "en-US"` (the default: the display language Scenarios' element names are in; the wizard's VM must be English (United States) Windows, and `vmlab doctor` fails a Lab whose Guest shows another).
 - `arch` is the Build artifact's; leave it out for the Host's own.
 
 Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the Host, installed, quit and launched in the Guest, and which Guest paths hold the app's state. Read [app-recipes.md](app-recipes.md) and derive every recipe from the project's build system and packaging. Show the user what you wrote, and say which recipes are guesses to confirm.

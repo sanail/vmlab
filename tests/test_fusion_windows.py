@@ -84,6 +84,15 @@ class WindowsLabConfigTest(WindowsTestCase):
         self.assertIn("labs.win.fusion.session", r.err)
         self.assertIn("unknown key for a Windows Lab", r.err)
 
+    def test_the_display_language_is_a_language_tag(self):
+        self.project.config(WINDOWS_LAB + '[labs.win.fusion]\nlanguage = "English"\n')
+
+        r = self.vmlab("status")
+
+        self.assertExit(r, 2)
+        self.assertIn("labs.win.fusion.language", r.err)
+        self.assertIn('language = "en-US"', r.err)
+
 
 class WindowsDoctorTest(WindowsTestCase):
     def setUp(self):
@@ -113,6 +122,41 @@ class WindowsDoctorTest(WindowsTestCase):
 
         self.assertRegex(r.out, r"warn\s+win: Elevation: ")
         self.assertIn("vmlab base create windows-11", r.out)
+
+    def test_a_base_guest_in_the_labs_display_language(self):
+        self.set_record(language="en-US")
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+win: Display language: en-US")
+
+    def test_a_base_guest_in_another_display_language_is_a_warning_until_the_guest_runs(self):
+        self.set_record(language="de-DE")
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)  # the Guest can start; its running check fails
+        self.assertRegex(r.out, r"warn\s+win: Display language: .*de-DE.*en-US")
+        self.assertIn('language = "de-DE"', r.out)
+        self.assertIn("vmlab base create windows-11 --image", r.out)
+        self.assertRegex(r.out, r"info\s+win: Guest: stopped", "the checks after it still run")
+
+    def test_a_lab_can_name_another_display_language(self):
+        self.project.config(WINDOWS_LAB + '[labs.win.fusion]\nlanguage = "de-DE"\n')
+        self.set_record(language="de-de")
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+win: Display language: de-de")
+
+    def test_a_base_guest_provisioned_before_languages_were_recorded_is_checked_while_it_runs(self):
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"info\s+win: Display language: .*while the Guest runs")
+        self.assertIn("vmlab base create windows-11 --reprovision", r.out)
 
     def test_missing_credentials_fail_since_vmrun_cannot_open_the_vm(self):
         (self.project.home / "fusion" / "vmlab-base-windows-11.credentials.json").unlink()
@@ -248,6 +292,26 @@ class WindowsBaseWizardTest(WindowsTestCase):
 
         self.assertFalse((self.project.home / "fusion" / "vmlab-base-windows-11.vmwarevm").exists())
         self.assertNotIn("windows-11", json.loads((self.project.home / "bases.json").read_text()) if (self.project.home / "bases.json").exists() else {})
+
+    def test_another_image_is_adopted_in_place_of_a_ready_base_guest(self):
+        # e.g. an English Windows VM replacing one installed in another display language
+        base = self.windows_base()
+        new = self.windows_vm(self.project.root / "elsewhere", name="Windows 11 en-US")
+
+        r = self.wizard("--image", new.parent, security=self.keychain(VM_PASSWORD))
+
+        self.assertExit(r, 1)
+        self.assertIn("ok: The VM's encryption password", r.out)
+        self.assertIn("The Windows account", r.err, "the next step needs a person")
+        self.assertTrue(base.exists(), "nothing is replaced before every step holds")
+
+    def test_the_adopted_image_again_leaves_a_ready_base_guest_alone(self):
+        self.windows_base()
+
+        r = self.wizard("--image", "/somewhere/Windows 11.vmx")
+
+        self.assertExit(r, 0)
+        self.assertIn("Base guest windows-11 is ready", r.out)
 
     def test_vmlabs_own_vm_is_never_adopted(self):
         # A Lab's clone is a Windows VM too; copying it onto itself would delete it.

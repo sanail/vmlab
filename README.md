@@ -205,7 +205,7 @@ vmlab base create windows-11                       # walks you through Fusion's 
 vmlab base create windows-11 --image ~/VMs/Win11.vmwarevm   # or name the VM to adopt
 ```
 
-What the wizard asks of you: make the VM in Fusion (Windows 11, "only the files needed to support a TPM are encrypted", the password kept in your Keychain, a local administrator account with a password), then one click. What it does itself: find the VM, take its encryption password from your Keychain, copy it into `$VMLAB_HOME/fusion/` (an APFS clone of its files: instant, and it shares the original's disk space, so the original stays yours and untouched), provision the copy, reboot it, prove both Channels reach the desktop and snapshot it for Lab clones.
+What the wizard asks of you: make the VM in Fusion (Windows 11 in English (United States), "only the files needed to support a TPM are encrypted", the password kept in your Keychain, a local administrator account with a password), then one click. What it does itself: find the VM, take its encryption password from your Keychain, copy it into `$VMLAB_HOME/fusion/` (an APFS clone of its files: instant, and it shares the original's disk space, so the original stays yours and untouched), provision the copy, reboot it, prove both Channels reach the desktop and snapshot it for Lab clones.
 
 **The one click.** vmrun runs programs as the Guest user with a filtered token, so nothing vmlab starts can administer Windows, and Windows' consent prompt is drawn on the secure desktop, where keys sent from the Host do not reach. So the wizard raises that prompt once, in a Fusion window it opens for the purpose, and asks you to click Yes; from then on administrators elevate without a prompt in this throwaway Guest, and provisioning runs headless. (Fusion refuses to start an encrypted VM with a window unless the password is in the Keychain, so vmlab puts the copy's there, as Fusion does for VMs you make.)
 
@@ -221,7 +221,10 @@ memory_gb = 4
 base = "windows-11"            # the Base guest to copy
 cpu = 4
 channels = ["ssh", "vmrun"]    # SSH through an interactive Scheduled Task, then vmrun -interactive
+language = "en-US"             # the display language the Lab's Scenarios expect
 ```
+
+- **Display language**: element names (buttons, menus, window titles) come in the Guest's display language, so a Scenario that finds "Close" works only on an English Windows. Make the Base guest from English (United States) Windows; provisioning records the language it finds, and `vmlab doctor` fails a Lab whose Base guest (or running Guest) shows a language other than its `language`. To replace a Base guest's Windows, make a new VM in Fusion and adopt it with `vmlab base create windows-11 --image PATH`: Labs copy the new one at their next start.
 
 - A Lab's Guest is an **APFS copy** of the Base guest, not a linked clone: vmrun cannot clone an encrypted VM ("Cannot read the virtual machine configuration file"). The copy is instant, shares the original's blocks and gets its own UUID and MAC address. Clean state is its `vmlab-clean` snapshot, as on Linux.
 - Every vmrun call carries the VM's encryption password (`-vp`) and the Guest user's (`-gu`/`-gp`), so both are visible in the Host's process list while a call runs; they live in `$VMLAB_HOME/fusion/` (mode 0600) and guard a throwaway Guest. Screenshots go through `vmcli`, which takes the password on stdin instead.

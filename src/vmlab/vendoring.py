@@ -77,6 +77,7 @@ TEMPLATE = """\
 # [labs.win.fusion]
 # base = "windows-11"      # Base guest to copy; create it once with `vmlab base create windows-11`
 # cpu = 4
+# language = "en-US"       # the Windows display language the Scenarios' element names are in
 """
 
 
