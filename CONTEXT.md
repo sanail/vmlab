@@ -52,6 +52,10 @@ _Avoid_: assertion, expectation
 One execution of one **Scenario** on one **Guest**, producing a report, screenshots and logs.
 _Avoid_: session, job
 
+**Suite run**:
+One execution of a **Regression suite** (or the part of it asked for) on one **Lab**, whose **Runs** share one report folder.
+_Avoid_: Run (for the whole suite), run folder (for one **Scenario**)
+
 **Ad-hoc run**:
 A **Run** of a **Scenario** that is not saved in the project — a one-off request from the user.
 
@@ -68,8 +72,10 @@ _Avoid_: test suite, smoke tests
 - A **Run** executes one **Scenario** on one **Guest** against one **Build artifact**
 - An **Ad-hoc run** and a **Regression suite** use the same **Scenario** format; they differ only in whether the **Scenario** is saved
 - A **Regression suite** restores **Clean state** once at its start; a **Scenario** may demand its own restore
+- A **Suite run** holds one **Run** per **Scenario** it executes; what a **Scenario** starts in the **Guest** ends with its **Run**, not with the **Suite run**
 - A **Guest**'s architecture follows the **Host**'s; the other architecture is covered only where the guest OS emulates it
 
 ## Flagged ambiguities
 
 - "VM" was used for both the running machine and its definition — resolved: the running machine is a **Guest**, its project-level definition is a **Lab**.
+- "Run" was used both for one **Scenario**'s execution and for the whole suite's on a **Lab** (its report folder) — resolved: the first is a **Run**, the second a **Suite run**.
