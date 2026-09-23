@@ -117,7 +117,7 @@ class BaseCreateTest(TartTestCase):
         r = self.vmlab("base", "create", "macos-tahoe", "--yes", tart=self.project.root / "no-such-tart")
 
         self.assertExit(r, 1)
-        self.assertIn("brew install cirruslabs/cli/tart", r.err)
+        self.assertIn("brew install openai/tools/tart", r.err)
 
     def test_list_shows_no_base_guests_yet(self):
         r = self.vmlab("base", "list")
@@ -172,7 +172,7 @@ class TartDoctorTest(TartTestCase):
         r = self.vmlab("doctor", tart=self.project.root / "no-such-tart")
 
         self.assertExit(r, 1)
-        self.assertIn("brew install cirruslabs/cli/tart", r.out)
+        self.assertIn("brew install openai/tools/tart", r.out)
 
     def ready_base(self, **record):
         self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])

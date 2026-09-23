@@ -19,7 +19,7 @@ Tell the user which of their OSes this Host covers, which need a hypervisor inst
 
 A hypervisor is missing when step 1's `Hypervisors` line says `not found` for it and its `Host` line says this Host can run its Guests (Tart needs Apple Silicon). For each missing one the agreed Labs need, ask first, then:
 
-- **Tart** (an agent can install it): `brew install cirruslabs/cli/tart`. No `brew`: installing Homebrew is its own host install, asked about separately (https://brew.sh).
+- **Tart** (an agent can install it): `brew install openai/tools/tart`. Tart moved from cirruslabs to openai (github.com/cirruslabs/tart redirects to github.com/openai/tart); the old `cirruslabs/cli` tap no longer loads in current Homebrew. Its macOS images stay at `ghcr.io/cirruslabs/`. No `brew`: installing Homebrew is its own host install, asked about separately (https://brew.sh).
 - **VMware Fusion** (only a person can install it): Fusion Pro is free, but the download sits behind a free Broadcom account, and Homebrew has no cask for it. Walk the user through it one step at a time, and verify each step before giving the next:
   1. Sign in or register at https://support.broadcom.com, then find "VMware Fusion" under the free downloads and download the latest Fusion Pro. Verified when the user names the downloaded `VMware-Fusion-*.dmg` (usually in `~/Downloads`) and it is there.
   2. Open the `.dmg` and drag VMware Fusion to Applications. Verified when `/Applications/VMware Fusion.app/Contents/Public/vmrun` exists.

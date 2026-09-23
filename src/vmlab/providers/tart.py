@@ -39,7 +39,7 @@ from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "macos-tahoe", "cpu": 4, "display": "1920x1080", "channels": ["ssh", "exec"]}
 CHANNELS = ("ssh", "exec")
-INSTALL_FIX = "install Tart (ask before installing anything on the Host): brew install cirruslabs/cli/tart"
+INSTALL_FIX = "install Tart (ask before installing anything on the Host): brew install openai/tools/tart"
 RUN_FLAGS = ["--no-graphics", "--no-clipboard", "--no-audio"]
 PATH_APPEND = ("/usr/local/bin", "/opt/homebrew/bin")  # what `tart exec` has on PATH, so both Channels agree
 CALL_TIMEOUT = 60  # s for quick tart subcommands

@@ -100,7 +100,7 @@ boot_seconds = 0             # fault injection: a slow boot
 
 ## macOS Guests with Tart
 
-Needs an Apple Silicon Mac with [Tart](https://tart.run) (`brew install cirruslabs/cli/tart`). A **Base guest** is created once per Host and shared by all projects; each Lab runs in its own APFS clone of it, which costs almost no disk:
+Needs an Apple Silicon Mac with [Tart](https://tart.run) (`brew install openai/tools/tart`). A **Base guest** is created once per Host and shared by all projects; each Lab runs in its own APFS clone of it, which costs almost no disk:
 
 ```sh
 vmlab base create macos-tahoe   # asks before downloading the image (tens of GB); --yes to allow it; idempotent
