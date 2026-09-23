@@ -20,7 +20,7 @@ import sys
 import time
 import traceback
 
-from vmlab import ui
+from vmlab import arch, ui
 from vmlab.config import ConfigError, UsageError
 from vmlab.providers.base import GuestError, GuestTimeout
 
@@ -51,7 +51,8 @@ class Guest:
     def __init__(self, lab, provider, run_dir, launch_app):
         self.lab = lab.name
         self.os = lab.os
-        self.arch = lab.arch
+        self.arch = lab.arch  # the Build artifact's
+        self.guest_arch = arch.guest_arch()  # differs from arch when the Guest OS emulates it
         self._provider = provider
         self._run_dir = run_dir
         self._launch_app = launch_app

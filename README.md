@@ -34,7 +34,7 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 [labs.mac]
 provider = "fake"        # fake | tart (macOS) | fusion (Linux, Windows) (utm, parallels: stubs)
 os = "macos"             # macos | windows | linux
-arch = "arm64"           # arm64 | x86_64; defaults to the Host's
+arch = "arm64"           # arm64 | x86_64: the Build artifact's; defaults to the Host's (see "Architecture")
 memory_gb = 4            # Host RAM the Guest takes; used by --parallel
 boot_timeout = 300       # seconds from power-on until the Guest must be reachable
 step_timeout = 60        # default seconds per Guest call
@@ -210,6 +210,7 @@ def scenario(g):
     g.check("echo prints hello", r.stdout.strip() == "hello", detail=r.stderr)
     g.screenshot("after echo")             # saved in the Run folder as evidence
     g.check("icon looks right", True, visual=True)  # a judgement from a screenshot: reported "visual, unverified"
+    # g.lab, g.os, g.arch (the Build artifact's) and g.guest_arch (the Guest's: the Host's)
 ```
 
 ## UI contract
@@ -264,6 +265,17 @@ Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VM
 - Labs run one after another. `--parallel` runs them concurrently, starting a Lab only while its `memory_gb` fits in free Host memory (free + inactive pages; override with `VMLAB_FREE_MEMORY_GB`) and queueing the rest. A Guest that is already running needs no memory, and a Lab larger than all free memory runs alone. Each Lab keeps its own Run folder and reports.
 - vmlab stops only Guests it started (recorded in `$VMLAB_HOME/started.json`), including ones an earlier Ad-hoc or `--keep` run left running. A Guest started outside vmlab, or with `vmlab up`, is never stopped by `vmlab run`.
 
+## Architecture
+
+A Guest's architecture follows the Host's. A Lab's `arch` is its Build artifact's, and when it differs from the Host's the Lab runs only where the Guest OS itself runs the other architecture's programs:
+
+| Host | native | emulated by the Guest OS | not covered |
+|---|---|---|---|
+| arm64 | arm64 Labs | x86_64 Windows (Windows on Arm's x64 emulation) | x86_64 macOS (vmlab installs no Rosetta 2), x86_64 Linux |
+| x86_64 | x86_64 Labs | none | every arm64 Lab |
+
+An emulated Lab runs in a Guest of the Host's architecture and its reports say so. A Lab that is not covered is never silently dropped: `vmlab doctor` warns about it (and checks nothing else for it), and `vmlab run` skips it with a warning, without building or starting anything, and writes its reports with status `skipped` (a skipped `<testcase>` in `junit.xml`). A skipped Lab does not fail the Run; `vmlab deploy` skips it with the same warning, and `vmlab up` warns before starting its Guest. Under emulation Windows shows an x64 process an x64 OS, so an app sees no difference. The x86_64 Host column is encoded but untested; tests play that Host with `VMLAB_HOST_ARCH=x86_64`, which changes only this coverage decision.
+
 ## CLI
 
 ```
@@ -271,11 +283,11 @@ vmlab init | vmlab self-update [--from PYZ]
 vmlab base create NAME [--image IMAGE] [--yes] [--reprovision] | vmlab base list
 vmlab clean [--yes] [--bases]            # delete orphaned clones, stray files and (with --bases) unused Base guests
 vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
-                                         # exit 0 all passed, 1 a Check failed or a Run errored, 2 usage/config error
+                                         # exit 0 all passed (or skipped), 1 a Check failed or a Run errored, 2 usage/config error
 vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
-vmlab doctor [LAB...] [--json]           # Provider, Guest, per-Channel and UI helper checks with fixes; exit 1 on FAIL
+vmlab doctor [LAB...] [--json]           # arch coverage, Provider, Guest, per-Channel and UI helper checks with fixes; exit 1 on FAIL
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab version
 ```

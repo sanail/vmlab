@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 from vmlab.scenario import VISUAL
 
-STATUS_ORDER = ("passed", "failed", "error")
+STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
 
 
 def overall_status(scenarios):
@@ -31,15 +31,20 @@ def totals(report):
 
 def _write_junit(path, report):
     t = report["totals"]
+    skipped = int(report["status"] == "skipped")
     suite = ET.Element(
         "testsuite",
         name="vmlab.%s" % report["lab"],
-        tests=str(t["checks"] + t["errors"]),
+        tests=str(t["checks"] + t["errors"] + skipped),
         failures=str(t["failed_checks"]),
         errors=str(t["errors"]),
+        skipped=str(skipped),
         time="%.3f" % report["duration_s"],
         timestamp=report["started_at"],
     )
+    if skipped:
+        case = ET.SubElement(suite, "testcase", classname=report["lab"], name="Architecture")
+        ET.SubElement(case, "skipped", message=report["coverage"]["detail"])
     if report["error"]:
         case = ET.SubElement(suite, "testcase", classname=report["lab"], name="Guest setup")
         error = ET.SubElement(case, "error", message=report["error"].splitlines()[0])
@@ -82,7 +87,11 @@ def _markdown(report):
             t["errors"],
             report["started_at"],
         ),
+        "",
+        "Architecture: %s" % report["coverage"]["detail"],
     ]
+    for warning in report["warnings"]:
+        lines += ["", "> **warning:** %s" % warning]
     if report["deploy"]:
         d = report["deploy"]
         lines += ["", "Build artifact: %s (%s)" % (d["artifact"], "rebuilt" if d["built"] else "up to date")]

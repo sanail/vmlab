@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vmlab import __version__, bases, config, doctor, runner, ui, vendoring
+from vmlab import __version__, arch, bases, config, doctor, runner, ui, vendoring
 from vmlab.config import ConfigError, UsageError
 from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
@@ -112,7 +112,8 @@ def _run(project, args):
     reports = runner.run(
         project, args.labs, args.scenarios, out=print, keep=args.keep, fresh=args.fresh, parallel=args.parallel, stop_command=_prog() + " down"
     )
-    return EXIT_OK if all(r["status"] == "passed" for r in reports) else EXIT_FAILED
+    # a skipped Lab (arch not covered on this Host) warned and wrote its reports; it fails nothing
+    return EXIT_OK if all(r["status"] in ("passed", "skipped") for r in reports) else EXIT_FAILED
 
 
 def _base(args):
@@ -277,6 +278,9 @@ def _ui(project, args):
 def _up_down(project, command, names):
     started_guests = StartedGuests()
     for lab in project.select_labs(names):
+        warning = arch.warning(lab) if command == "up" else None
+        if warning:
+            print("warning: %s: %s" % (lab.name, warning))
         provider = provider_for(project, lab)
         getattr(provider, command)()
         started_guests.discard(runner.guest_key(provider))  # the user now owns (or stopped) it

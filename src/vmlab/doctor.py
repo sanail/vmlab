@@ -1,4 +1,5 @@
-"""`vmlab doctor`: is each Lab's Provider present, its Guest reachable, and which Channels work?
+"""`vmlab doctor`: does this Host cover each Lab's arch, is its Provider present, its Guest
+reachable, and which Channels work?
 
 Each finding is ok, warn or FAIL, with a fix for anything not ok. Only FAIL
 makes doctor exit non-zero: a broken preferred Channel with a working fallback
@@ -7,6 +8,7 @@ still lets Runs pass, slower.
 
 import time
 
+from vmlab import arch
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 
@@ -30,8 +32,12 @@ def _finding(lab, check, status, detail, fix=None):
 
 
 def _diagnose_lab(provider, lab):
+    coverage = arch.coverage(lab)
+    if coverage["mode"] == arch.UNCOVERED:  # nothing else matters for a Lab that cannot run here
+        return [_finding(lab, "Architecture", WARN, coverage["detail"], arch.fix(lab))]
+    findings = [_finding(lab, "Architecture", OK, coverage["detail"])]
     present, detail, fix = provider.detect()
-    findings = [_finding(lab, "Provider %s" % lab.provider, OK if present else FAIL, detail, fix)]
+    findings.append(_finding(lab, "Provider %s" % lab.provider, OK if present else FAIL, detail, fix))
     if not present:
         return findings
 

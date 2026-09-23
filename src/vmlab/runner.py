@@ -8,6 +8,9 @@ once at its start and stops the Guests vmlab started; an Ad-hoc run (any
 Scenario file outside the scenarios folder) keeps Guest state and leaves its
 Guests running. A Scenario declaring FRESH, or --fresh, restores before a
 Scenario. The Lab's app state paths are removed before every Run.
+
+A Lab this Host does not cover (vmlab.arch) is skipped: no build, no Guest, a
+warning, and reports with status "skipped".
 """
 
 import threading
@@ -15,7 +18,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vmlab import __version__, report
+from vmlab import __version__, arch, report
 from vmlab.config import ConfigError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
@@ -112,7 +115,7 @@ def _run_parallel(runs, work, out):
         while pending or running:
             for lab_run in list(pending):
                 lab = lab_run.lab
-                need = 0 if provider_for(lab_run.project, lab).is_running() else lab.memory_gb
+                need = 0 if lab_run.skipped or provider_for(lab_run.project, lab).is_running() else lab.memory_gb
                 available = free - sum(running.values())
                 if need > available and running:
                     if lab.name not in announced:
@@ -135,6 +138,10 @@ def deploy(project, lab_names, out, stop_command="vmlab down"):
     started_guests = StartedGuests()
     kept = []
     for lab in project.select_labs(lab_names):
+        warning = arch.warning(lab)
+        if warning:
+            out("warning: %s: %s (skipped)" % (lab.name, warning))
+            continue
         provider = provider_for(project, lab)
         built = build_if_stale(project, lab)
         lock = guest_lock(provider)
@@ -181,8 +188,13 @@ class _LabRun:
         self.run_dir = _new_run_dir(project, lab, self.started)
         self.built = None
         self.error = None
+        self.coverage = arch.coverage(lab)
+        self.warnings = [w for w in [arch.warning(lab)] if w]
+        self.skipped = bool(self.warnings)
 
     def build(self):
+        if self.skipped:
+            return
         try:
             self.built = build_if_stale(self.project, self.lab, log_path=self.run_dir / "build.log")
         except GuestError as exc:
@@ -197,7 +209,9 @@ class _LabRun:
         results = []
         lab_calls = ChannelUse()  # calls outside any Run: suite restore and install
         lock = None
-        if not self.error:
+        for warning in self.warnings:
+            out("warning: %s: %s" % (lab.name, warning))
+        if not self.error and not self.skipped:
             try:
                 lock = guest_lock(provider)
             except GuestError as exc:
@@ -223,10 +237,12 @@ class _LabRun:
             "provider": lab.provider,
             "os": lab.os,
             "arch": lab.arch,
+            "coverage": self.coverage,
             "started_at": self.started.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_s": round(time.time() - self.t0, 3),
-            "status": "error" if self.error else report.overall_status(results),
+            "status": "error" if self.error else "skipped" if self.skipped else report.overall_status(results),
             "error": self.error,
+            "warnings": self.warnings,
             "run_dir": str(self.run_dir),
             "deploy": self.built,
             "channels": lab_calls.channels,
