@@ -1,3 +1,4 @@
 .scratch/
 dist/
 __pycache__/
+.idea
