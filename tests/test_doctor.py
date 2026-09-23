@@ -213,3 +213,32 @@ class BenchTest(VmlabTestCase):
 
         self.assertExit(r, 2)
         self.assertIn("--bench", r.err)
+
+
+class HostOnlyDoctorTest(VmlabTestCase):
+    def test_outside_a_project_it_checks_the_host_and_says_how_to_start_one(self):
+        self.project.dir.rmdir()
+
+        r = self.project.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"info\s+Host: Host: ")
+        self.assertRegex(r.out, r"info\s+Host: Hypervisors: .*Tart not found")
+        self.assertRegex(r.out, r"info\s+Host: Project: no \.vmlab/vmlab\.toml")
+        self.assertIn("vmlab init", r.out)
+
+    def test_outside_a_project_naming_a_lab_is_a_config_error(self):
+        self.project.dir.rmdir()
+
+        r = self.project.vmlab("doctor", "mac")
+
+        self.assertExit(r, 2)
+        self.assertIn("no vmlab config found", r.err)
+
+    def test_outside_a_project_bench_is_a_usage_error(self):
+        self.project.dir.rmdir()
+
+        r = self.project.vmlab("doctor", "--bench")
+
+        self.assertExit(r, 2)
+        self.assertIn("--bench", r.err)

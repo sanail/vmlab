@@ -12,6 +12,7 @@ import sys
 from harness import VmlabTestCase, zipapp_path
 
 LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
+TOML_BLOCK = re.compile(r"^```toml\n(.*?)^```", re.M | re.S)
 COMMAND = re.compile(r"(?:^|`)vmlab ((?:ui |base )?[a-z][a-z-]*)", re.M)  # in code: `vmlab run`, or a code block line
 
 
@@ -66,6 +67,25 @@ class SkillPackageTest(VmlabTestCase):
                     self.assertIn(words[1], self.help(words[0]), "%s names `vmlab %s`" % (doc.name, command))
                 else:
                     self.assertIn(words[0], top, "%s names `vmlab %s`" % (doc.name, command))
+
+    def test_each_guest_os_has_a_traps_reference_that_setup_and_scenarios_point_to(self):
+        for os_name in ("macos", "windows", "linux"):
+            traps = "traps-%s.md" % os_name
+            self.assertTrue((skill_dir() / "references" / traps).is_file(), traps)
+            for doc in ("setup.md", "scenarios.md"):
+                self.assertIn(traps, LINK.findall((skill_dir() / "references" / doc).read_text()), doc)
+
+    def test_every_toml_example_is_a_config_vmlab_loads(self):
+        for doc in self.docs():
+            for block in TOML_BLOCK.findall(doc.read_text()):
+                labs = sorted(set(re.findall(r"^\[labs\.([a-z0-9_-]+)", block, re.M)))
+                declared = set(re.findall(r"^\[labs\.([a-z0-9_-]+)\]", block, re.M))
+                stubs = "".join('[labs.%s]\nprovider = "fake"\nos = "linux"\n' % lab for lab in labs if lab not in declared)
+                self.project.config(stubs + block)
+
+                r = self.project.vmlab("doctor", "--json")
+
+                self.assertNotEqual(r.code, 2, "%s: a TOML example does not load:\n%s\n%s" % (doc.name, block, r.err))
 
     def test_the_bundled_zipapp_vendors_itself_into_a_project(self):
         pyz = skill_dir() / "scripts" / "vmlab.pyz"

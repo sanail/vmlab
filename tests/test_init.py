@@ -1,3 +1,4 @@
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,18 @@ class InitTest(VmlabTestCase):
         r = self.project.vmlab("run")
         self.assertExit(r, 2)
         self.assertIn("no Labs declared", r.err)
+
+    def test_the_template_examples_are_a_valid_config_once_uncommented(self):
+        self.assertExit(self.project.vmlab("init"), 0)
+        template = self.project.config_path.read_text()
+        examples = template[template.index("# [labs."):]
+        self.project.config_path.write_text(re.sub(r"^# ?", "", examples, flags=re.M))
+
+        r = self.project.vmlab("doctor")  # no hypervisors here: FAILs, but the config loaded
+
+        self.assertExit(r, 1)
+        for lab in ("mac", "linux", "win"):
+            self.assertIn("%s: Provider" % lab, r.out)
 
     def test_the_vendored_copy_runs_scenarios_on_its_own(self):
         self.assertExit(self.project.vmlab("init"), 0)

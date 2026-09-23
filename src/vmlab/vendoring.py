@@ -39,7 +39,7 @@ TEMPLATE = """\
 # artifact = "dist/MyApp.app"          # Build artifact on the Host (glob: newest match), relative to the project root
 # build = "npm run build"              # Host command run in the project root when the artifact is stale
 # inputs = ["src", "package.json"]     # the artifact is stale when older than any of these
-# install = "cp -R \"$VMLAB_ARTIFACT\" /Applications/"   # Guest shell; $VMLAB_ARTIFACT is the delivered copy
+# install = 'cp -R "$VMLAB_ARTIFACT" /Applications/'   # Guest shell; $VMLAB_ARTIFACT is the delivered copy
 # quit = "pkill -x MyApp"              # before every Run (exit code ignored)
 # launch = "open -a MyApp"             # before every Run, after the state paths are removed
 # env = { RUST_LOG = "debug" }         # extra environment for install, quit and launch

@@ -92,6 +92,17 @@ def main(argv=None):
             return _base(args)
         if args.command == "clean":
             return _clean(args)
+        if args.command == "doctor":
+            if args.calls != doctor.BENCH_CALLS and not args.bench:
+                raise UsageError("--calls goes with --bench")
+            if args.calls < 1:
+                raise UsageError("--calls must be at least 1")
+            if not args.labs and not config.has_config(os.getcwd()):
+                if args.bench:
+                    raise UsageError("--bench times the Channels of a project's running Guests; run it inside a project")
+                return _doctor(None, [], args.json, 0)  # before `vmlab init`: what this Host can test
+            project = config.load(os.getcwd())
+            return _doctor(project, project.select_labs(args.labs), args.json, args.calls if args.bench else 0)
         project = config.load(os.getcwd())
         if args.command == "run":
             return _run(project, args)
@@ -102,12 +113,6 @@ def main(argv=None):
             return _up_down(project, args.command, args.labs)
         if args.command == "status":
             return _status(project, args.json)
-        if args.command == "doctor":
-            if args.calls != doctor.BENCH_CALLS and not args.bench:
-                raise UsageError("--calls goes with --bench")
-            if args.calls < 1:
-                raise UsageError("--calls must be at least 1")
-            return _doctor(project, args.labs, args.json, args.calls if args.bench else 0)
         if args.command == "ui":
             return _ui(project, args)
         if args.command == "exec":
@@ -320,8 +325,8 @@ def _up_down(project, command, names):
     return EXIT_OK
 
 
-def _doctor(project, names, as_json, bench_calls):
-    findings = doctor.diagnose(project, project.select_labs(names), bench_calls)
+def _doctor(project, labs, as_json, bench_calls):
+    findings = doctor.diagnose(project, labs, bench_calls)
     if as_json:
         print(json.dumps(findings, indent=2))
     else:

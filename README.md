@@ -17,7 +17,7 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 
 ## The skill
 
-`skill/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `skill/references/` (setup, Ad-hoc run, regression) and those load the Scenario API reference on demand. `tools/build.py` assembles it with the zipapp as `scripts/vmlab.pyz`; copy `dist/skill/vmlab/` into an agent's skills folder (`~/.claude/skills/` or a project's `.claude/skills/`) to install it.
+`skill/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `skill/references/` (setup, Ad-hoc run, regression), and those load on demand the Scenario API, the app recipes (build hooks per stack, cross-building from a Mac, building inside the Guest) and each Guest OS's traps. `tools/build.py` assembles it with the zipapp as `scripts/vmlab.pyz`; copy `dist/skill/vmlab/` into an agent's skills folder (`~/.claude/skills/` or a project's `.claude/skills/`) to install it.
 
 ## Project layout
 
@@ -113,7 +113,7 @@ macOS traps the helper handles, so Scenarios don't have to:
 
 ## Linux Guests with VMware Fusion
 
-Needs a Mac with [VMware Fusion](https://www.vmware.com/products/desktop-hypervisor/workstation-and-fusion) (free; `brew install --cask vmware-fusion`). As with Tart, a **Base guest** is created once per Host and each Lab runs in its own linked clone of it:
+Needs a Mac with [VMware Fusion](https://www.vmware.com/products/desktop-hypervisor/workstation-and-fusion) (Fusion Pro, free: download it from Broadcom's support portal with a free Broadcom account; Homebrew no longer has a cask for it). As with Tart, a **Base guest** is created once per Host and each Lab runs in its own linked clone of it:
 
 ```sh
 vmlab base create ubuntu-26.04   # asks before downloading the Ubuntu desktop ISO (about 4 GB); --yes to allow it; idempotent
@@ -293,7 +293,8 @@ vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
 vmlab doctor [LAB...] [--json] [--bench [--calls N]]
                                          # Host, arch coverage, Provider, Base guest, clone, Guest, per-Channel, screenshot and
-                                         # UI helper checks with fixes; exit 1 on FAIL. --bench times each Channel of running Guests
+                                         # UI helper checks with fixes; exit 1 on FAIL. --bench times each Channel of running Guests.
+                                         # Outside a project: the Host only (which OSes it can test, which hypervisors it has)
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab exec [--lab LAB] [--timeout S] -- COMMAND ...   # one command in a running Guest; its output and exit code
 vmlab version

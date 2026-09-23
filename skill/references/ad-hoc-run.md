@@ -26,6 +26,8 @@ Drive the app one primitive at a time, observing after each step, until every st
 - **Wait**: `vmlab ui wait-for` an element (`--text`/`--role`/`--app`, `--gone`), `--process NAME`, `--file PATH` or `--log PATH --pattern REGEX`, with `--timeout S`. Every wait is a condition plus a timeout.
 - **Look inside**: `vmlab exec -- COMMAND ...` runs one command in the Guest and returns its output and exit code (vmlab's own failures say `vmlab: error:` on stderr): read the app's logs and files, list processes.
 
+A step that misbehaves with no clear error (input going nowhere, an empty tree, a permission message from the app) is usually a known trap: read the Guest OS's list ([macOS](traps-macos.md), [Windows](traps-windows.md), [Linux](traps-linux.md)) before working around it.
+
 Keep a list as you go: each step's primitive, its arguments, and the observation that showed it worked (the element that appeared, the log line, the file). That list becomes the Scenario. Before crystallising, re-read the user's request: every step and every expectation in it has an entry.
 
 ## 4. Crystallise and run clean

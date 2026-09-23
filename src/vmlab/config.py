@@ -107,19 +107,30 @@ def host_arch():
     return "arm64" if machine in ("arm64", "aarch64") else "x86_64"
 
 
+def has_config(start):
+    return _search_config(start) is not None
+
+
 def find_config(start):
-    start = Path(start).resolve()
-    for directory in (start,) + tuple(start.parents):
-        candidate = directory / CONFIG_DIR / CONFIG_NAME
-        if candidate.is_file():
-            return candidate
+    found = _search_config(start)
+    if found:
+        return found
     raise ConfigError(
-        start / CONFIG_DIR / CONFIG_NAME,
+        Path(start).resolve() / CONFIG_DIR / CONFIG_NAME,
         None,
         "no vmlab config found here or in any parent directory",
         "run vmlab from inside the project, or run `vmlab init` in the project root to create %s/%s"
         % (CONFIG_DIR, CONFIG_NAME),
     )
+
+
+def _search_config(start):
+    start = Path(start).resolve()
+    for directory in (start,) + tuple(start.parents):
+        candidate = directory / CONFIG_DIR / CONFIG_NAME
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def load(start):

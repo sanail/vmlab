@@ -34,8 +34,13 @@ SSH_TOOLS = ("ssh", "scp", "ssh-keygen")
 
 
 def diagnose(project, labs, bench_calls=0):
-    """Findings for the Host and each Lab; bench_calls > 0 also times each Channel that many times."""
+    """Findings for the Host and each Lab; bench_calls > 0 also times each Channel that many times.
+
+    Without a project (before `vmlab init`) only the Host is checked.
+    """
     findings = _diagnose_host()
+    if project is None:
+        findings.append(_finding(None, "Project", INFO, "no .vmlab/vmlab.toml here or above", "run `vmlab init` in the project root, then declare its Labs"))
     for lab in labs:
         findings.extend(_diagnose_lab(provider_for(project, lab), lab, bench_calls))
     return findings

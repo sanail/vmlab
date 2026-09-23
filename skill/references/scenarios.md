@@ -48,3 +48,12 @@ def scenario(g):
     palette = g.wait_for(text="Selection", app="MyApp", timeout=10)
     g.check("palette read the selection", palette["met"], detail=palette)
 ```
+
+## Traps on every OS
+
+- **Prove the precondition.** An empty read cannot tell "the app is wrong" from "the window is not up yet": every read-based Check first `wait_for`s the window or element it reads, and fails with that as its reason when it never comes.
+- **Nonces.** Test data carries a value unique to the Run (`uuid.uuid4().hex[:8]`), so leftovers of an earlier Run (a log line, a notification, a file) never pass a Check.
+- **Argv, not shell strings.** `g.exec` takes a list; each shell a string passes through parses it again (Host, Guest shell, `osascript` or PowerShell). Put longer test data in a file in the Guest and pass its path.
+- **Look before concluding.** Input that does nothing usually means something else holds the screen (a consent prompt, a dialog): `g.screenshot` and look.
+
+Per OS: [macOS](traps-macos.md), [Windows](traps-windows.md), [Linux](traps-linux.md).
