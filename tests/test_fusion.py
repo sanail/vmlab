@@ -491,7 +491,7 @@ class FusionCleanTest(FusionTestCase):
 
     def test_a_hypervisor_that_cannot_be_asked_is_skipped_with_a_warning_and_the_rest_still_cleaned(self):
         records = json.loads((self.project.home / "bases.json").read_text())
-        records["macos-tahoe"] = {"provider": "tart", "os": "macos", "arch": "arm64", "vm": "vmlab-base-macos-tahoe", "provisioned": 5}
+        records["macos-tahoe"] = {"provider": "tart", "os": "macos", "arch": "arm64", "vm": "vmlab-base-macos-tahoe", "provisioned": 6}
         (self.project.home / "bases.json").write_text(json.dumps(records))
         (self.project.home / "fusion" / "vmlab-gone-1-linux.json").write_text("{}")
 

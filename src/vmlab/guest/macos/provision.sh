@@ -99,12 +99,15 @@ for c in "${clients[@]}"; do
   done
 done
 
-say "Screen Recording: no recurring consent alert for vmlab's Channels"
-# Even with the TCC grant, macOS 15+ asks again every 30 days ("... is requesting
-# to bypass the system private window picker") when a client captures the screen
-# without the picker, and the alert covers whatever a Scenario is looking at. It
-# keys its approvals by the client's executable path: sshd-keygen-wrapper for SSH
-# sessions, and the Tart guest agent. The next alert is dated 2100.
+say "Screen Recording: no consent alert for vmlab's Channels"
+# Even with the TCC grant, macOS 15+ alerts ("... is requesting to bypass the system
+# private window picker") when a client captures the screen without the picker: at its
+# first capture, and again every 30 days. The alert covers whatever a Scenario is
+# looking at. replayd keys its approvals by the client's executable path, even where
+# the alert names a bundle id (com.apple.sshd-session for SSH sessions on macOS 26):
+# sshd-keygen-wrapper for SSH, and the Tart guest agent. Without a recorded use an
+# entry still gets the first-capture alert, so each records one; the next 30-day
+# alert is dated 2100.
 APPROVALS="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals.plist"
 mkdir -p "$(dirname "$APPROVALS")"
 now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -115,7 +118,9 @@ now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   for c in "${clients[@]}"; do
     [ "${c%% *}" = 1 ] || continue  # paths only
     printf '<key>%s</key><dict>' "${c#* }"
+    printf '<key>kScreenCaptureAlertableUsageCount</key><integer>1</integer>'
     printf '<key>kScreenCaptureApprovalLastAlerted</key><date>%s</date>' "$now"
+    printf '<key>kScreenCaptureApprovalLastUsed</key><date>%s</date>' "$now"
     printf '<key>kScreenCapturePrivacyHintDate</key><date>2100-01-01T00:00:00Z</date>'
     printf '<key>kScreenCapturePrivacyHintPolicy</key><integer>2592000</integer></dict>\n'
   done

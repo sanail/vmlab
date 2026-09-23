@@ -47,10 +47,23 @@ STOP_GRACE = 30  # s a Guest gets to shut down before tart forces it off
 CLONE_TIMEOUT = 4 * 3600  # s for a first clone, which downloads the image
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 900
-PROVISION_VERSION = 5  # bump when provision.sh or the UI helper changes; `base create` then re-provisions
+PROVISION_VERSION = 6  # bump when provision.sh or the UI helper changes; `base create` then re-provisions
 DESKTOP_PROBE = ["/usr/bin/pgrep", "-qx", "Dock"]  # the GUI session is up
 SYSTEM_EVENTS_PROBE = ["/usr/bin/osascript", "-e", 'tell application "System Events" to count processes']
 SYSTEM_EVENTS_TIMEOUT = 30  # s; longer means a TCC consent dialog is waiting for a click
+# Take a screenshot and print what replayd decided to alert about meanwhile. It logs each
+# decision (+[SCAlert ...]) before screencapture returns; the alert itself appears later
+# (showAlertWithTitle), possibly during the next Channel's probe, so that line is left out.
+# The log window starts at the next whole second, after the previous probe's decisions.
+# Exit 1: screencapture failed; exit 2: the log could not be read.
+SCREEN_ALERT_PROBE = """start=$(date -v+1S '+%Y-%m-%d %H:%M:%S')
+sleep 1
+shot=/tmp/vmlab-alert-probe-$$.png
+screencapture -x "$shot" || exit 1
+rm -f "$shot"
+log=$(/usr/bin/log show --start "$start" --style compact --predicate 'process == "replayd" AND eventMessage CONTAINS "+[SCAlert "') || exit 2
+printf '%s\\n' "$log" | grep -F '+[SCAlert ' | grep -vF showAlertWithTitle || true"""
+SCREEN_ALERT_TIMEOUT = 60  # s for a screenshot and a read of the log
 # `tart exec` passes the command's exit code and stderr through, so only Tart's
 # own phrasing (naming the VM, or its agent connection) marks a Channel failure.
 TART_EXEC_FAILURE = r'^(the specified VM "{vm}" does not exist|VM "{vm}" is not running|.*(guest agent|gRPC|UNAVAILABLE|vsock))'
@@ -285,24 +298,49 @@ class TartProvider(Provider):
         return findings
 
     def diagnose_guest(self):
-        """Apple Events over each Channel: a TCC consent dialog nobody can click hangs them."""
+        """Apple Events over each Channel: a TCC consent dialog nobody can click hangs them.
+        And a screenshot over each: macOS's Screen Recording alert would cover the app under test."""
         findings = []
         for channel in self.channels():
-            check = "Apple Events over %s" % channel.name
-            reprovision = "vmlab base create %s --reprovision" % self.base_name
-            try:
-                result = channel.exec(SYSTEM_EVENTS_PROBE, SYSTEM_EVENTS_TIMEOUT, {})
-            except GuestTimeout:
-                findings.append((check, WARN, "System Events did not answer within %ss: a TCC consent dialog is probably waiting in the Guest" % SYSTEM_EVENTS_TIMEOUT,
-                                 "look at its screen (vmlab ui screenshot --lab %s), then %s" % (self.lab.name, reprovision)))  # fmt: skip
-                continue
-            except ChannelError:
-                continue  # doctor reports the Channel itself
-            if result.ok:
-                findings.append((check, OK, "System Events answers", None))
-            else:
-                findings.append((check, WARN, "System Events refused: %s" % _tail(result.stderr, 1), reprovision))
+            findings += self._diagnose_apple_events(channel)
+            findings += self._diagnose_screen_recording_alert(channel)
         return findings
+
+    @property
+    def _reprovision(self):
+        return "vmlab base create %s --reprovision" % self.base_name
+
+    def _diagnose_apple_events(self, channel):
+        check = "Apple Events over %s" % channel.name
+        try:
+            result = channel.exec(SYSTEM_EVENTS_PROBE, SYSTEM_EVENTS_TIMEOUT, {})
+        except GuestTimeout:
+            return [(check, WARN, "System Events did not answer within %ss: a TCC consent dialog is probably waiting in the Guest" % SYSTEM_EVENTS_TIMEOUT,
+                     "look at its screen (vmlab ui screenshot --lab %s), then %s" % (self.lab.name, self._reprovision))]  # fmt: skip
+        except ChannelError:
+            return []  # doctor reports the Channel itself
+        if result.ok:
+            return [(check, OK, "System Events answers", None)]
+        return [(check, WARN, "System Events refused: %s" % _tail(result.stderr, 1), self._reprovision)]
+
+    def _diagnose_screen_recording_alert(self, channel):
+        check = "Screen Recording alert over %s" % channel.name
+        try:
+            result = channel.exec(["/bin/sh", "-c", SCREEN_ALERT_PROBE], SCREEN_ALERT_TIMEOUT, {})
+        except GuestTimeout:
+            return [(check, WARN, "a screenshot and a read of the Guest's log took over %ss, so no alert check was made" % SCREEN_ALERT_TIMEOUT,
+                     "look at its screen: vmlab ui screenshot --lab %s" % self.lab.name)]  # fmt: skip
+        except ChannelError:
+            return []  # doctor reports the Channel itself
+        if result.code == 1:
+            return [(check, WARN, "screencapture failed: %s" % _tail(result.stderr, 1), self._reprovision)]
+        if not result.ok:
+            return [(check, WARN, "could not read replayd's log, so no alert check was made: %s" % _tail(result.stderr, 1), None)]
+        if not result.stdout.strip():
+            return [(check, OK, "a screenshot raised none", None)]
+        return [(check, WARN, "a screenshot made macOS ask whether this Channel may \"bypass the system private window picker\"; "
+                 "the alert is on screen now and covers the app under test in every screenshot until someone answers it",
+                 "answer it (vmlab ui click --lab %s --text Allow), then %s" % (self.lab.name, self._reprovision))]  # fmt: skip
 
     def is_running(self):
         return self.vm.is_running()
@@ -384,7 +422,7 @@ class TartProvider(Provider):
         if not png.startswith(b"\x89PNG"):
             raise GuestError(
                 "screencapture in Guest %s failed: %s" % (self.lab.name, _tail(result.stderr)),
-                "the Screen Recording grant may be missing: vmlab base create %s --reprovision" % self.base_name,
+                "the Screen Recording grant may be missing: %s" % self._reprovision,
             )
         dest.write_bytes(png)
 

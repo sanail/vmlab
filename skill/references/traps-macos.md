@@ -32,13 +32,13 @@ Tell the user what this means for real users: an ad-hoc signed app's grant is ti
 
 **Do**: take `vmlab ui screenshot` and look at it before concluding anything. Answer the prompt with `ui click`. macOS writes some titles with a typographic apostrophe (`Don’t Allow`), so match those by a substring without it (`--text "t Allow"`); `--text Allow` exactly matches the Allow button. A prompt that returns on every clone belongs in the Scenario (before the steps it blocks), or in `install` when a setting can silence it.
 
-## A Screen Recording alert names `com.apple.sshd-session`
+## A Screen Recording alert covers the screen
 
-**Symptom**: an alert "“com.apple.sshd-session” is requesting to bypass the system private window picker ..." covers the screen after a screenshot over the ssh Channel.
+**Symptom**: an alert "“com.apple.sshd-session” (or another client) is requesting to bypass the system private window picker ..." covers the screen after a screenshot; `vmlab doctor` warns "Screen Recording alert over ssh" (or exec).
 
-**Cause**: a known vmlab gap on macOS 26: provisioning silences this recurring alert for vmlab's Channels by their paths, but macOS 26 names the SSH session by its bundle id.
+**Cause**: usually a Base guest provisioned before provisioning v6 (`vmlab doctor` shows the version), which did not yet silence the alert's first appearance. On a v6 Base guest it means macOS changed how it tracks these approvals: a vmlab gap to report.
 
-**Do**: answer it with `vmlab ui click --text Allow`, check with a screenshot that it has gone, and tell the user it appeared. It stays away for about 30 days in that Guest; a restore brings it back.
+**Do**: answer it with `vmlab ui click --text Allow` and check with a screenshot that it has gone, so the Run can go on. Then tell the user: for an older Base guest, `vmlab base create <base> --reprovision` fixes it for every Lab cloned from it; until then it returns after every restore.
 
 ## Notifications
 

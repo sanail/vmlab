@@ -30,7 +30,7 @@ These are built on the methods above; override them only when the Guest needs so
 - `remove_paths(paths, timeout)`: app state reset.
 - `probe_argv()`: the command `doctor` sends down each Channel (and `doctor --bench` times).
 - `diagnose()`: `doctor`'s checks of what the Guest is made from, answerable while it is stopped (its Base guest, its clone), as `[(check, status, detail, fix)]` with a status from `vmlab.providers.base` (`OK`, `INFO`, `WARN`, `FAIL`). A `FAIL` means the Guest cannot start, and doctor checks nothing further for the Lab. The default has none.
-- `diagnose_guest()`: the same for a running Guest whose Channels work, for what only this Provider's Guests can get wrong (Tart: a TCC consent dialog blocking Apple Events; Fusion: a Linux Guest logged into the wrong desktop session). Channels, screenshots and the UI helper are checked for every Provider.
+- `diagnose_guest()`: the same for a running Guest whose Channels work, for what only this Provider's Guests can get wrong (Tart: a TCC consent dialog blocking Apple Events, or a Screen Recording alert raised by a screenshot over each Channel; Fusion: a Linux Guest logged into the wrong desktop session). Channels, one screenshot and the UI helper are checked for every Provider.
 - `wrap_argv(argv, env)`: how every command is run; the default runs it as is. The Fusion Provider wraps Linux commands so they get the desktop session's environment.
 - `ui_call(command, params, timeout)`: the UI contract. It runs the Guest OS's UI helper (`vmlab.uihelpers`) over the Guest's Channels, so a Provider gets the UI contract for free once exec works. Only a Provider whose Guests need no helper overrides it, as the Fake Provider does.
 

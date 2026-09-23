@@ -169,9 +169,13 @@ class ContractTest(unittest.TestCase):
     def test_02_every_channel_works(self):
         proc = self.target.vmlab("doctor", self.target.lab, "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout)
-        channels = [f for f in json.loads(proc.stdout) if f["check"].startswith("Channel ")]
+        findings = json.loads(proc.stdout)
+        channels = [f for f in findings if f["check"].startswith("Channel ")]
         self.assertTrue(channels, proc.stdout)
         self.assertEqual([f for f in channels if f["status"] != "ok"], [])
+        # The Guest's first screenshots: a consent alert here would cover the app under test in every later one.
+        alerts = [f for f in findings if f["check"].startswith("Screen Recording alert")]
+        self.assertEqual([f for f in alerts if f["status"] != "ok"], [], proc.stdout)
 
     def test_03_exec_passes_stdout_stderr_exit_code_and_env(self):
         self.assertPassed(*self.target.scenario("exec.py", COMMANDS + """
