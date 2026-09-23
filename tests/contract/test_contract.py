@@ -302,6 +302,21 @@ def scenario(g):
 """))
 
     @ui
+    def test_09b_ui_a_taskbar_button_takes_a_click(self):
+        # The Windows 11 taskbar draws its buttons in XAML that FromPoint does not
+        # reach: a click's hit test must still find the button, not refuse it as covered.
+        if self.target.os != "windows":
+            self.skipTest("the taskbar is Windows'")
+        self.assertPassed(*self.target.scenario("ui_taskbar.py", UI + """
+def scenario(g):
+    buttons = g.find(role="button", app="explorer")["matches"]
+    g.check("the taskbar's buttons are in the tree", len(buttons) > 0, detail=buttons)
+    clicked = g.click(role="button", app="explorer", index=0)  # Start, whatever the display language
+    g.check("a click lands on the taskbar button", clicked["element"]["name"] == buttons[0]["name"], detail=clicked)
+    g.press("escape")
+"""))
+
+    @ui
     def test_10_ui_cli_prints_the_same_json(self):
         proc = self.target.vmlab("ui", "clipboard", "--set", "from the CLI", "--lab", self.target.lab)
         self.assertEqual(proc.returncode, 0, proc.stderr)

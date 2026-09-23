@@ -38,8 +38,9 @@ say "packages: accessibility bus, input and clipboard tools, VMware Tools, an X1
 # stages text.
 PACKAGES="open-vm-tools-desktop openssh-server at-spi2-core python3-pyatspi gir1.2-atspi-2.0 python3-xlib xdotool xclip wmctrl x11-utils psmisc gnome-text-editor"
 # GNOME 50 has no X11 session any more: Xfce provides one, on the same GDM. Without
-# recommends it stays small (no screen saver, power manager or extra apps).
-X11_PACKAGES="xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy dbus-x11"
+# recommends it stays small (no screen saver, power manager or extra apps), but
+# keeps a notification server: without xfce4-notifyd nothing answers apps' notifications.
+X11_PACKAGES="xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfce4-notifyd xserver-xorg-core xserver-xorg-input-libinput xserver-xorg-legacy dbus-x11"
 missing() { for p in "$@"; do dpkg-query -W -f='${Status}' "$p" 2>/dev/null | grep -q "ok installed" || echo "$p"; done; }
 # shellcheck disable=SC2086
 missing_packages=$(missing $PACKAGES) missing_x11=$(missing $X11_PACKAGES)

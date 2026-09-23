@@ -1,6 +1,6 @@
 # Linux Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: input, pointer and window focus on Wayland (vmlab's GNOME Shell extension; `xdotool` reaches only Xwayland apps there, and `ydotool` misplaces the pointer), typing any character on any layout, GTK's wrong element coordinates, hidden widgets left in the tree, WebKitGTK frozen on its first frame, reboots blocked by an editor, and screen lock, blanking and suspend.
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: input, pointer and window focus on Wayland (vmlab's GNOME Shell extension; `xdotool` reaches only Xwayland apps there, and `ydotool` misplaces the pointer), typing any character on any layout, GTK's wrong element coordinates, hidden widgets left in the tree, a WebKitGTK page under containers that say they are not visible, WebKitGTK frozen on its first frame, reboots blocked by an editor, and screen lock, blanking and suspend.
 
 Drive input only through `g.press`, `g.type`, `g.click` and `g.clipboard`: the same Scenario then works in both Desktop sessions.
 
@@ -21,6 +21,18 @@ A Lab runs GNOME on Wayland (`session = "wayland"`) or Xfce on X11 (`"x11"`). Wh
 **Symptom**: `ui tree` shows an Electron or Chromium app's window with no page inside.
 
 **Do**: launch it with `--force-renderer-accessibility` in the `launch` recipe. WebKitGTK apps (Tauri) expose their page through AT-SPI without a flag. A WebKitGTK window that stays blank: set `WEBKIT_DISABLE_COMPOSITING_MODE=1` in the Lab's `app.env`.
+
+## Tray menus
+
+**Symptom**: the app's tray icon is on the panel, but neither `ui tree` nor `ui find` shows it or its menu.
+
+**Cause**: panels keep tray icons and their menus out of the accessibility tree, and Wayland gives no coordinates to click at.
+
+**Do**: drive the menu the way the panel does, over D-Bus: the icon is a StatusNotifierItem registered with `org.kde.StatusNotifierWatcher` (`RegisteredStatusNotifierItems`), its `Menu` property names a `com.canonical.dbusmenu` object, `GetLayout` lists the items and `Event(id, "clicked", ...)` chooses one. Run it with `g.exec` as a small `python3` script (`gi.repository.Gio`), with `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus`. A libayatana item is registered as `:1.42/org/ayatana/NotificationItem/x`: the bus name ends at the first `/`.
+
+## Notifications
+
+**Do**: record them on the session bus rather than on screen: start `dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"` in the background (same bus address as above) before the step, and read its log: each `Notify` call lists the app name, icon, summary and body as its first four strings. Put a nonce in what the app sends. A `Notify` that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
 
 ## Processes and packages
 

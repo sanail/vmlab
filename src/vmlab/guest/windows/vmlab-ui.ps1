@@ -487,6 +487,38 @@ public static class Helper {
         }
     }
 
+    // FromPoint stops at a host that does not hit-test its content: the Windows 11
+    // taskbar answers with Shell_TrayWnd, never the button under the point. So the
+    // smallest element under what it answers whose bounds hold the point stands for
+    // it; walking down child by child would not do, since the taskbar's XAML host
+    // reports its own bounds unscaled (half size at 200 %). A window over the point
+    // is still what FromPoint answers, so what it covers stays out of reach.
+    static AutomationElement Deepest(AutomationElement e, System.Windows.Point at) {
+        if (e == null) return null;
+        return SmallestAt(e, at) ?? e;
+    }
+
+    // The smallest on-screen descendant of e whose bounds hold the point, or null.
+    static AutomationElement SmallestAt(AutomationElement e, System.Windows.Point at) {
+        CacheRequest request = new CacheRequest();
+        request.Add(AutomationElement.BoundingRectangleProperty);
+        request.Add(AutomationElement.IsOffscreenProperty);
+        AutomationElementCollection all;
+        try {
+            using (request.Activate()) all = e.FindAll(TreeScope.Descendants, Automation.ControlViewCondition);
+        } catch (ElementNotAvailableException) { return null; }
+        AutomationElement best = null;
+        double area = double.MaxValue;
+        foreach (AutomationElement d in all) {
+            if (Cached<bool>(d, AutomationElement.IsOffscreenProperty, true)) continue;
+            System.Windows.Rect r = Cached<System.Windows.Rect>(d, AutomationElement.BoundingRectangleProperty, System.Windows.Rect.Empty);
+            if (r.IsEmpty || !r.Contains(at) || r.Width * r.Height > area) continue;
+            best = d;  // on a tie the later one, drawn on top
+            area = r.Width * r.Height;
+        }
+        return best;
+    }
+
     static Dictionary<string, object> Click(Dictionary<string, object> p) {
         if (!p.ContainsKey("x") || !p.ContainsKey("y")) throw new Fail("click needs x and y");
         int x = (int)Num(p, "x", 0), y = (int)Num(p, "y", 0);
@@ -497,7 +529,8 @@ public static class Helper {
         // The chain from the deepest element at the point up to its window, as (label, bounds).
         List<KeyValuePair<string, Dictionary<string, object>>> chain = new List<KeyValuePair<string, Dictionary<string, object>>>();
         try {
-            AutomationElement e = AutomationElement.FromPoint(new System.Windows.Point(x, y));
+            System.Windows.Point at = new System.Windows.Point(x, y);
+            AutomationElement e = Deepest(AutomationElement.FromPoint(at), at);
             TreeWalker walker = TreeWalker.ControlViewWalker;
             while (e != null && chain.Count < 12 && !Automation.Compare(e, AutomationElement.RootElement)) {
                 chain.Add(new KeyValuePair<string, Dictionary<string, object>>(Label(e), Bounds(e.Current.BoundingRectangle)));

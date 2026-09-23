@@ -28,7 +28,9 @@ Traps (README: "Linux Guests with VMware Fusion"):
   whichever of its rectangles, with or without the client-side shadow, has the
   size the toolkit reports for the window.
 - Hidden widgets (a tab in the background, a hidden window) stay in the tree
-  without the VISIBLE or SHOWING state; they are left out.
+  without the VISIBLE or SHOWING state; they are left out. But a WebKitGTK page
+  (a Tauri app's) sits under containers without VISIBLE while it is on
+  screen: under such a container, what is SHOWING is kept.
 - Registrations of apps that no longer answer would cost AT-SPI's default
   timeout each: timeouts are short.
 """
@@ -284,9 +286,14 @@ class X11:
         run(["xdotool", "type", "--delay", "8", "--", text], "xdotool type", timeout=30 + len(text) // 10)
 
     def clipboard(self):
-        return output(["xclip", "-selection", "clipboard", "-o"])
+        return output(["xclip", "-selection", "clipboard", "-o"]) or ""  # no owner: empty
+
+    def owned(self):
+        return output(["xclip", "-selection", "clipboard", "-o", "-t", "TARGETS"]) is not None
 
     def set_clipboard(self, text):
+        if not text:
+            return self.clear_clipboard()
         # xclip stays behind to own the selection; it must not hold this call's pipes.
         try:
             proc = subprocess.Popen(
@@ -300,6 +307,28 @@ class X11:
         while self.clipboard() != text:
             if time.time() >= deadline:
                 fail("xclip did not take the clipboard")
+            time.sleep(POLL)
+
+    def clear_clipboard(self):
+        """Leave the clipboard with no owner, as it is at login. Owning it with no
+        text is something else: apps read that as text of an unexpected type."""
+        try:
+            # -quiet keeps xclip in the foreground, so ending it ends its ownership.
+            proc = subprocess.Popen(
+                ["xclip", "-selection", "clipboard", "-i", "-quiet"], stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+            )  # fmt: skip
+        except FileNotFoundError:
+            fail("xclip is not installed; %s" % REPROVISION)
+        proc.stdin.close()
+        deadline = time.time() + 5
+        while not self.owned() and time.time() < deadline:  # taken from whoever held it
+            time.sleep(POLL)
+        proc.terminate()
+        proc.wait(timeout=5)
+        while self.owned():
+            if time.time() >= deadline:
+                fail("the clipboard kept an owner")
             time.sleep(POLL)
 
 
@@ -372,6 +401,38 @@ class UI:
                 out.append(window)
         return out
 
+    def children(self, accessible):
+        try:
+            count = accessible.get_child_count()
+        except Exception:
+            return
+        for i in range(count):
+            try:
+                child = accessible.get_child_at_index(i)
+            except Exception:
+                continue
+            if child is not None:
+                yield child
+
+    def shown_children(self, accessible):
+        """The children that are on screen: the VISIBLE ones, and in place of a child
+        without VISIBLE, whatever under it is SHOWING (a WebKitGTK page)."""
+        for child in self.children(accessible):
+            if self.has(child, self.S.VISIBLE):
+                yield child
+            else:
+                yield from self.showing_within(child)
+
+    def showing_within(self, hidden):
+        for child in self.children(hidden):
+            self.nodes += 1
+            if self.nodes >= MAX_NODES:
+                return
+            if self.has(child, self.S.SHOWING):
+                yield child
+            else:
+                yield from self.showing_within(child)
+
     def placement(self, window, pid):
         """(coordinate type, (dx, dy)) turning the window's elements' extents into screen points."""
         Atspi = self.Atspi
@@ -441,16 +502,10 @@ class UI:
         if count and depth >= max_depth:
             self.truncated = True
             return node
-        for i in range(count):
+        for child in self.shown_children(accessible):
             if self.nodes >= MAX_NODES:
                 self.truncated = True
                 break
-            try:
-                child = accessible.get_child_at_index(i)
-            except Exception:
-                continue
-            if child is None or not self.has(child, S.VISIBLE):
-                continue
             kid = self.node(child, placement, depth + 1, max_depth)
             if kid is not None:
                 node["children"].append(kid)
@@ -499,17 +554,7 @@ class UI:
                 node = top
                 for _ in range(200):
                     hit = None
-                    try:
-                        count = node.get_child_count()
-                    except Exception:
-                        break
-                    for i in range(count):
-                        try:
-                            child = node.get_child_at_index(i)
-                        except Exception:
-                            continue
-                        if child is None or not self.has(child, self.S.VISIBLE):
-                            continue
+                    for child in self.shown_children(node):
                         cb = self.bounds(child, placement)
                         if cb and cb["x"] <= x < cb["x"] + cb["w"] and cb["y"] <= y < cb["y"] + cb["h"]:
                             hit = (child, cb)  # the last child drawn there is on top

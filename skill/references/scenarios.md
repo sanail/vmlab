@@ -29,7 +29,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.press("cmd+shift+space")` | `ui press CHORD` | `{"chord"}` |
 | `g.type(text)` | `ui type TEXT` | `{"typed": n}` |
 | `g.focus(app, window=None)` | `ui focus --app APP [--window T]` | `{"app", "window", "frontmost"}` |
-| `g.clipboard()`, `g.set_clipboard(text)` | `ui clipboard [--set TEXT]` | `{"text"}` |
+| `g.clipboard()`, `g.set_clipboard(text)` | `ui clipboard [--set TEXT]` | `{"text"}`; `""` empties the clipboard |
 | `g.stage_text(text, app=None, then=None)` | `ui stage-text TEXT [--app] [--then CHORD]` | `{"app", "file", "frontmost", "selected", "pressed"}` |
 | `g.wait_for(text=, role=, app=, gone=, process=, file=, log=, pattern=, timeout=None)` | `ui wait-for` | `{"met", "waited_s", "condition"[, "matches"]}` |
 | `g.screenshot(name)` | `ui screenshot` | `{"path"}` |

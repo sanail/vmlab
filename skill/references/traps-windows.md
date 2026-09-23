@@ -32,7 +32,13 @@ A web view reads the Windows theme (`AppsUseLightTheme`) once, when it is create
 
 ## Taskbar and tray
 
-Whether a window has a taskbar button cannot be read from its styles: frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched. Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`. Tray icons are `explorer`'s too. The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the old icon (install the old version, show its window), or it never goes red.
+Whether a window has a taskbar button cannot be read from its styles: frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched. Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`. Tray icons are `explorer`'s buttons too, and `g.click` reaches them. The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the old icon (install the old version, show its window), or it never goes red.
+
+A new app's tray icon waits among the hidden icons: `g.press("win+b")` focuses their chevron in any display language, `g.press("space")` opens it, and then the icon is on screen to click. The menu it opens belongs to the app's process: its items are `menuitem`s under `--app` with the process name, and a submenu opens on a click on its item. Opening the tray makes the taskbar the foreground window, as a user's click does: an app that reads "the foreground app" from its tray menu sees the taskbar.
+
+## Notifications
+
+Read the app's toasts from the Action Center's history rather than the screen: in PowerShell, `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null`, then `[Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('APP_ID')`, and each toast's `Content.GetElementsByTagName('text')` holds its title and body. `APP_ID` is the AppUserModelID the app's installer gives its Start menu shortcut (a Tauri app's: its identifier), so the app must be installed by its installer, not run as a bare `.exe`. Put a nonce in what the app sends.
 
 ## PowerShell parses twice
 

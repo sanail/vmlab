@@ -218,7 +218,7 @@ class FusionDoctorTest(FusionTestCase):
         self.base_guest("first")
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"].update(dict({"provisioned": 2}, **record))
+        records["ubuntu-26.04"].update(dict({"provisioned": 3}, **record))
         path.write_text(json.dumps(records))
         if credentials:
             (self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.credentials.json").write_text('{"user": "vmlab", "password": "pw"}')
@@ -234,7 +234,7 @@ class FusionDoctorTest(FusionTestCase):
 
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"ok\s+linux: Provider fusion")
-        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v2\)")
+        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v3\)")
         self.assertRegex(r.out, r"info\s+linux: Clone: none yet")
 
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
@@ -243,7 +243,7 @@ class FusionDoctorTest(FusionTestCase):
 
         r = self.vmlab("doctor")
 
-        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v2\)")
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v3\)")
 
     def test_a_base_guest_without_its_provisioned_snapshot_fails(self):
         self.project.config(FUSION_LAB)
