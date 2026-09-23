@@ -4,6 +4,7 @@ Tests only use what a user or CI would see: exit codes, stdout/stderr and the
 files vmlab writes into the project. Nothing here imports vmlab itself.
 """
 
+import atexit
 import json
 import os
 import shutil
@@ -23,6 +24,7 @@ def zipapp_path():
     global _BUILD_DIR
     if _BUILD_DIR is None:
         _BUILD_DIR = Path(tempfile.mkdtemp(prefix="vmlab-build-"))
+        atexit.register(shutil.rmtree, str(_BUILD_DIR), ignore_errors=True)
         subprocess.run(
             [sys.executable, str(REPO / "tools" / "build.py"), "--out", str(_BUILD_DIR / "vmlab.pyz")],
             check=True,
