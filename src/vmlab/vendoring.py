@@ -17,8 +17,19 @@ from vmlab.config import CONFIG_DIR, CONFIG_NAME, ConfigError
 
 PYZ_NAME = "vmlab.pyz"
 RUNS_IGNORE = "runs/"
-# Where an agent installs the vmlab skill; the zipapp ships as scripts/vmlab.pyz inside it.
-SKILL_DIRS = (".claude/skills/vmlab", ".cursor/skills/vmlab", ".agents/skills/vmlab", ".codex/skills/vmlab")
+RUN_NAME = "run"
+# Where agents install the vmlab skill; the zipapp ships as scripts/vmlab.pyz inside it.
+PROJECT_SKILL_DIRS = tuple(
+    "%s/skills/vmlab" % d for d in (".claude", ".cursor", ".agents", ".codex", ".opencode", ".kilo")
+)
+HOME_SKILL_DIRS = PROJECT_SKILL_DIRS + (".config/opencode/skills/vmlab",)  # OpenCode's own home folder
+
+RUN_SCRIPT = """\
+#!/bin/sh
+# The Regression suite: every saved Scenario on every Lab, or what the arguments name.
+# Takes what `vmlab run` takes (see `--help`). Created by `vmlab init`.
+exec python3 "$(dirname "$0")/vmlab.pyz" run "$@"
+"""
 
 TEMPLATE = """\
 # vmlab project config. A Lab describes one Guest (a virtual machine running one
@@ -87,6 +98,14 @@ def init(root, out):
         gitignore.write_text("\n".join(lines + [RUNS_IGNORE]) + "\n", encoding="utf-8")
         out("ignored   %s (in %s)" % (RUNS_IGNORE, gitignore))
 
+    run = vmlab_dir / RUN_NAME
+    if run.exists():
+        out("kept      %s" % run)
+    else:
+        run.write_text(RUN_SCRIPT, encoding="utf-8")
+        run.chmod(0o755)
+        out("created   %s" % run)
+
     pyz = vmlab_dir / PYZ_NAME
     if pyz.exists():
         out("kept      %s (%s); move it to another version with `vmlab self-update`" % (pyz, _version_of(pyz)))
@@ -136,7 +155,8 @@ def _default_source(pyz, project_root):
     running = _running_zipapp(required=False)
     if running and (not pyz.exists() or running != pyz.resolve()):
         return running
-    candidates = [base / d / "scripts" / PYZ_NAME for base in (project_root, Path.home()) for d in SKILL_DIRS]
+    candidates = [project_root / d / "scripts" / PYZ_NAME for d in PROJECT_SKILL_DIRS]
+    candidates += [Path.home() / d / "scripts" / PYZ_NAME for d in HOME_SKILL_DIRS]
     found = [c for c in candidates if c.is_file()]
     if not found:
         raise ConfigError(

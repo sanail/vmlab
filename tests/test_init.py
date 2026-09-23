@@ -1,3 +1,4 @@
+import os
 import re
 import subprocess
 import sys
@@ -92,6 +93,58 @@ class InitTest(VmlabTestCase):
         self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), "vmlab 0.0.1")
         self.assertIn("self-update", r.out)
 
+    def test_init_creates_an_executable_run_script(self):
+        self.assertExit(self.project.vmlab("init"), 0)
+        run = self.project.dir / "run"
+        self.assertTrue(os.access(str(run), os.X_OK))
+        self.assertTrue(run.read_text().startswith("#!/bin/sh\n"))
+
+    def test_init_keeps_an_edited_run_script(self):
+        self.assertExit(self.project.vmlab("init"), 0)
+        run = self.project.dir / "run"
+        run.write_text("#!/bin/sh\n# mine\n")
+        r = self.project.vmlab("init")
+        self.assertExit(r, 0)
+        self.assertEqual(run.read_text(), "#!/bin/sh\n# mine\n")
+        self.assertRegex(r.out, r"kept +\S*/\.vmlab/run\n")
+
+
+class RunScriptTest(VmlabTestCase):
+    """`.vmlab/run` runs the Regression suite with no agent, from anywhere in the project."""
+
+    def setUp(self):
+        super().setUp()
+        self.project.dir.rmdir()
+        self.assertExit(self.project.vmlab("init"), 0)
+        with self.project.config_path.open("a") as f:
+            f.write('\n[labs.mac]\nprovider = "fake"\nos = "macos"\n')
+        self.app = self.project.dir.parent
+
+    def run_script(self, *args, cwd):
+        return subprocess.run(
+            [str(self.project.dir / "run")] + list(args),
+            cwd=str(cwd), env=self.project.environ(bare=True), stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+        )
+
+    def test_it_runs_every_saved_scenario_from_the_project_root(self):
+        self.project.scenario("a.py", SMOKE)
+        self.project.scenario("b.py", SMOKE)
+
+        r = self.run_script(cwd=self.app)
+
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.project.report()["totals"]["scenarios"], 2)
+
+    def test_it_runs_from_a_subfolder_and_passes_arguments_and_the_exit_code_through(self):
+        self.project.scenario("ok.py", SMOKE)
+        self.project.scenario("red.py", 'def scenario(g):\n    g.check("red", False)\n')
+        (self.app / "src").mkdir()
+
+        r = self.run_script("red", "--lab", "mac", cwd=self.app / "src")
+
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual([s["name"] for s in self.project.report()["scenarios"]], ["red"])
+
 
 class SelfUpdateTest(VmlabTestCase):
     def test_self_update_from_the_skill_copy_reports_old_and_new_version(self):
@@ -113,6 +166,22 @@ class SelfUpdateTest(VmlabTestCase):
         self.assertExit(r, 0)
         self.assertIn("-> 9.0.0", r.out)
         self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), "vmlab 9.0.0")
+
+    def test_self_update_finds_the_skill_where_opencode_and_kilo_install_it(self):
+        app, home = self.project.dir.parent, self.project.fake_user_home
+        for base, skills in ((app, ".opencode"), (app, ".kilo"), (home, ".opencode"), (home, ".kilo"), (home, ".config/opencode")):
+            with self.subTest(skills=base / skills):
+                (self.project.dir / "vmlab.pyz").unlink(missing_ok=True)
+                self.assertExit(self.project.vmlab("init"), 0)  # the current version
+                skill = fake_zipapp(base / skills / "skills" / "vmlab" / "scripts" / "vmlab.pyz", "9.0.0")
+                try:
+                    r = self.project.vmlab_vendored("self-update")
+
+                    self.assertExit(r, 0)
+                    self.assertIn("-> 9.0.0 (from ", r.out)
+                    self.assertTrue(r.out.rstrip().endswith("%s/skills/vmlab/scripts/vmlab.pyz)" % skills), r.out)
+                finally:
+                    skill.unlink()  # the next location must not see this one
 
     def test_self_update_from_an_explicit_path(self):
         self.assertExit(self.project.vmlab("init"), 0)

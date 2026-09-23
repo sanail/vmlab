@@ -81,17 +81,20 @@ class Project:
             raise
         return Result(proc)
 
-    def vmlab_background(self, *args, cwd=None, pyz=None, env=None, bare=False):
-        """Start vmlab without waiting for it; the caller collects it with communicate().
+    def environ(self, env=None, bare=False):
+        """vmlab's environment: this project's homes, no hypervisors, then env.
 
         bare: only PATH from this process's environment, as a terminal or CI job without an agent would have.
         """
         inherited = {"PATH": os.environ["PATH"]} if bare else os.environ
-        env = dict(inherited, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **dict(NO_HYPERVISORS, **(env or {})))
+        return dict(inherited, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **dict(NO_HYPERVISORS, **(env or {})))
+
+    def vmlab_background(self, *args, cwd=None, pyz=None, env=None, bare=False):
+        """Start vmlab without waiting for it; the caller collects it with communicate()."""
         return subprocess.Popen(
             [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),
-            env=env,
+            env=self.environ(env, bare),
             stdin=subprocess.DEVNULL,  # never a terminal: vmlab must not wait for an answer
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

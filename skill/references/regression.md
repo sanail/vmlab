@@ -1,6 +1,6 @@
 # Regression suite
 
-Saved Scenarios in `.vmlab/scenarios/*.py` form the project's Regression suite: they run from a terminal, cron or CI through the pinned `python3 .vmlab/vmlab.pyz`, with no agent. API: [scenarios.md](scenarios.md).
+Saved Scenarios in `.vmlab/scenarios/*.py` form the project's Regression suite: they run from a terminal, cron or CI through the pinned copy, with no agent: `.vmlab/run` (the same as `python3 .vmlab/vmlab.pyz run`) runs them all. API: [scenarios.md](scenarios.md).
 
 The loop for a new or changed Scenario: write → run as CI would → measure → report.
 
@@ -20,19 +20,19 @@ Start from what already works: an Ad-hoc run's Scenario (`.vmlab/runs/ad-hoc/NAM
 From the project root, with the pinned copy, as a terminal or CI job will:
 
 ```sh
-python3 .vmlab/vmlab.pyz run NAME --lab LAB
+.vmlab/run NAME --lab LAB
 ```
 
 Repeat `--lab` per Lab the Scenario is meant for. A saved Scenario's run restores Clean state first, so nothing you did in the Guest while exploring can make it pass.
 
-Done when it passes on every Lab it is meant for, and the whole suite (`python3 .vmlab/vmlab.pyz run`) still does.
+Done when it passes on every Lab it is meant for, and the whole suite (`.vmlab/run`, no arguments) still does.
 
 ## 3. Measure
 
 A new Check proves nothing until it has failed: measure it goes red on a Build artifact without the fix (or without the feature), for the reason it names, and green with it.
 
 1. Take the fix out of the working tree, leaving the Scenario in: `git stash push -- PATHS` for the fix's files (`-u` for new ones), or revert its hunks by hand. When the fix is not written yet, the current Build artifact is already without it.
-2. `python3 .vmlab/vmlab.pyz run NAME --lab LAB`. The build hook rebuilds the Build artifact, since the files you touched in its `inputs` are now newer than it. Expect exit 1 with **the new Check** in the `FAIL` lines, its detail showing the bug's symptom. Any other Check that fails must follow from the missing fix too.
+2. `.vmlab/run NAME --lab LAB`. The build hook rebuilds the Build artifact, since the files you touched in its `inputs` are now newer than it. Expect exit 1 with **the new Check** in the `FAIL` lines, its detail showing the bug's symptom. Any other Check that fails must follow from the missing fix too.
 3. Put the fix back (`git stash pop`) and run again: exit 0.
 
 Check both Runs tested the Build artifact you meant: each Run folder holds a `build.log` only when it built, and `report.json` says `"deploy": {"built": true}`. No rebuild means nothing in the Lab's `inputs` got newer: the fix lives outside them, or taking it out only deleted files (a missing input counts for nothing). Widen `inputs`, or delete the Build artifact to force a build.
@@ -46,11 +46,11 @@ What each outcome means:
 
 ## 4. Report
 
-Tell the user, per Lab: the Scenario file, both measured Runs (exit codes, the Check's detail on the red one, both Run folders), and the command that runs the suite without you: `python3 .vmlab/vmlab.pyz run`.
+Tell the user, per Lab: the Scenario file, both measured Runs (exit codes, the Check's detail on the red one, both Run folders), and the command that runs the suite without you: `.vmlab/run`.
 
 ## Running the suite
 
-- `vmlab run` runs every saved Scenario on every Lab; `vmlab run NAME ... --lab LAB` narrows it.
+- `.vmlab/run` runs every saved Scenario on every Lab, from anywhere in the project; `.vmlab/run NAME ... --lab LAB` narrows it. It passes its arguments to `vmlab run`. A project made by an older vmlab gets it from `vmlab init`, which keeps everything else.
 - The suite restores Clean state once per Lab at its start, and stops the Guests vmlab started. `--keep` leaves them running for inspection; `--fresh` restores before every Scenario; `--parallel` runs Labs concurrently as free Host memory allows.
 - Exit code: 0 all passed (or skipped), 1 a Check failed or a Run errored, 2 a usage or config error. Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`, `summary.md` and screenshots.
 - Every `vmlab run` installs the Build artifact afresh, rebuilding it first when anything in its `inputs` is newer.

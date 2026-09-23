@@ -21,34 +21,52 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 
 ### Install the skill
 
-Build it, then copy `dist/skill/vmlab/` into the agent's skills folder, for every project (your home) or for one project:
+Build it (`python3 tools/build.py`), then copy `dist/skill/vmlab/` into a skills folder your agent reads: in your home for every project, or in a project for that project alone (commit it to share it). Agents that follow the open SKILL.md standard differ only in which folders they read:
+
+| Agent | project | home |
+| --- | --- | --- |
+| Claude Code | `.claude/skills/` | `~/.claude/skills/` |
+| Cursor | `.cursor/skills/`, `.agents/skills/`, `.claude/skills/` | `~/.cursor/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
+| Codex | `.agents/skills/` (in the working folder and the repository root; never `.claude/skills/`) | `~/.agents/skills/` |
+| OpenCode | `.opencode/skills/`, `.agents/skills/`, `.claude/skills/` | `~/.config/opencode/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
+| Kilo Code | `.kilo/skills/` | `~/.kilo/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
+
+In your home, `~/.agents/skills/` reaches every agent but Claude Code, and `~/.claude/skills/` every agent but Codex, so one copy and a symlink serve them all:
 
 ```sh
-python3 tools/build.py
-cp -R dist/skill/vmlab ~/.claude/skills/            # Claude Code, every project
-cp -R dist/skill/vmlab ~/.cursor/skills/            # Cursor, every project
-cp -R dist/skill/vmlab PROJECT/.claude/skills/      # Claude Code, one project (commit it to share it)
-cp -R dist/skill/vmlab PROJECT/.cursor/skills/      # Cursor, one project
+mkdir -p ~/.agents/skills ~/.claude/skills
+cp -R dist/skill/vmlab ~/.agents/skills/
+ln -s ../../.agents/skills/vmlab ~/.claude/skills/vmlab
 ```
 
-Create the `skills` folder first if it is missing. Both agents pick the skill up in a new session and use it on their own when a request fits ("test my app on Windows"), or when you ask for it by name: `/vmlab` in either. Cursor also reads `.claude/skills/` and `.agents/skills/`, so one project copy can serve both. Other agents that follow the open SKILL.md standard load the same folder from their own skills location.
+In a project the same pair serves all but Kilo Code, which reads only `.kilo/skills/` there; add a third link for it:
+
+```sh
+mkdir -p .agents/skills .claude/skills .kilo/skills
+cp -R PATH/TO/dist/skill/vmlab .agents/skills/
+ln -s ../../.agents/skills/vmlab .claude/skills/vmlab
+ln -s ../../.agents/skills/vmlab .kilo/skills/vmlab
+```
+
+An agent picks the skill up in a new session and uses it on its own when a request fits ("test my app on Windows"). To ask for it by name: `/vmlab` in Claude Code, Cursor and Kilo Code, `$vmlab` in Codex; in OpenCode, ask for the vmlab skill and its agent loads it with its `skill` tool. The skill is tested in Claude Code and Cursor; the other agents' folders come from their documentation.
 
 To upgrade, copy the new build over the old folder, then run `python3 .vmlab/vmlab.pyz self-update` in each project that uses vmlab: the project keeps its pinned copy until you do.
 
 ## Project layout
 
-`vmlab init` creates it (idempotent; an existing config is never touched):
+`vmlab init` creates it (idempotent: an existing config, `run` or vendored copy is never touched, so running it again in an older project adds only what is missing):
 
 ```
 .vmlab/
   vmlab.toml        # Labs; a commented template to start from
   vmlab.pyz         # the pinned CLI (ADR 0002): run it as `python3 .vmlab/vmlab.pyz ...`
+  run               # runs the Regression suite: `.vmlab/run [NAME...] [--lab LAB]...`, the same as `python3 .vmlab/vmlab.pyz run ...`
   scenarios/*.py    # Scenarios
   .gitignore        # ignores runs/
   runs/             # per invocation and Lab: <UTC timestamp>-<lab>/ with report.json, junit.xml, summary.md, screenshots/
 ```
 
-`vmlab self-update [--from PYZ]` replaces the vendored copy and prints `old -> new`. Run from a skill copy, it vendors itself; run from the vendored copy, it picks the newest `<skill>/scripts/vmlab.pyz` among `.claude`, `.cursor`, `.agents` and `.codex` skill folders in the project and in `~`. It refuses to downgrade.
+`vmlab self-update [--from PYZ]` replaces the vendored copy and prints `old -> new`. Run from a skill copy, it vendors itself; run from the vendored copy, it picks the newest `<skill>/scripts/vmlab.pyz` among the `.claude`, `.cursor`, `.agents`, `.codex`, `.opencode` and `.kilo` skill folders in the project and in `~`, and `~/.config/opencode/skills`. It refuses to downgrade.
 
 ```toml
 [labs.mac]
@@ -278,7 +296,7 @@ Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VM
 
 ## Lifecycle
 
-- A **Regression suite** (`vmlab run` with saved Scenario names, or none for all) restores Clean state once per Lab at its start, and before each Scenario that declares `FRESH = True`.
+- A **Regression suite** (`vmlab run` or `.vmlab/run`, with saved Scenario names or none for all) restores Clean state once per Lab at its start, and before each Scenario that declares `FRESH = True`.
 - An **Ad-hoc run** (`vmlab run path/to/scenario.py` outside `scenarios/`) keeps Guest state for fast iteration and leaves its Guests running, printing the stop command.
 - `--fresh` restores before every Scenario; `--keep` leaves Guests running.
 - Before every Run, the Lab's `app.state` paths are removed.
