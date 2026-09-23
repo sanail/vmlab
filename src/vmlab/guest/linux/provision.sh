@@ -118,10 +118,14 @@ allow-updates=false
 [org/gnome/shell]
 enabled-extensions=['vmlab-ui@vmlab']
 disable-extension-version-validation=true
+disable-user-extensions=false
 EOF
 # The session writes its own toolkit-accessibility=false at login; a lock keeps ours.
+# GNOME Shell sets disable-user-extensions when it stops within its first minute, which it
+# takes for a crash (a Guest shut down while its session starts is one): the lock keeps
+# vmlab's extension on. This Guest has no other extensions to protect.
 sudo -n mkdir -p /etc/dconf/db/local.d/locks
-echo /org/gnome/desktop/interface/toolkit-accessibility | sudo -n tee /etc/dconf/db/local.d/locks/00-vmlab >/dev/null
+printf '%s\n' /org/gnome/desktop/interface/toolkit-accessibility /org/gnome/shell/disable-user-extensions | sudo -n tee /etc/dconf/db/local.d/locks/00-vmlab >/dev/null
 sudo -n dconf update
 # The welcome wizard runs at first login and, as a "what's new" tour, after every
 # release upgrade; either covers the app under test.

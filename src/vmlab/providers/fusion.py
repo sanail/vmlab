@@ -79,7 +79,7 @@ PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest b
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 1800
-PROVISION_VERSION = 3  # bump when provision.sh or the Shell extension changes; `base create` then re-provisions
+PROVISION_VERSION = 4  # bump when provision.sh or the Shell extension changes; `base create` then re-provisions
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
@@ -675,7 +675,18 @@ class FusionProvider(Provider):
             seen = SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")
             return [("Desktop session", FAIL, "the Lab asks for %s, but the Guest logged into %s" % (SESSION_NAMES[self.session], seen),
                      "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again" % ((self.lab.name,) * 3))]  # fmt: skip
-        return [("Desktop session", OK, SESSION_NAMES[self.session], None)]
+        return [("Desktop session", OK, SESSION_NAMES[self.session], None)] + (self._diagnose_extensions() if self.session == "wayland" else [])
+
+    def _diagnose_extensions(self):
+        """vmlab's Shell extension drives Wayland sessions; GNOME may have turned all extensions off."""
+        try:
+            result = self.exec(["gsettings", "get", "org.gnome.shell", "disable-user-extensions"], CALL_TIMEOUT)
+        except GuestError as exc:
+            return [("Shell extensions", WARN, "cannot read GNOME's settings: %s" % exc.message, exc.fix)]
+        if result.stdout.strip() != "true":
+            return [("Shell extensions", OK, "on", None)]
+        return [("Shell extensions", FAIL, "GNOME Shell turned user extensions off (it does when it stops within its first minute), so vmlab's extension is off",
+                 "vmlab base create %s   (provisioning v%s locks them on; the Lab is cloned again at its next start)" % (self.base_name, PROVISION_VERSION))]  # fmt: skip
 
     def _diagnose_language(self):
         from vmlab.providers import fusion_windows
@@ -1100,6 +1111,12 @@ def _provision(name, vm, out):
             raise GuestError("the vmrun Channel cannot see the desktop session: %s" % result.stderr.strip(), "re-run `vmlab base create %s --reprovision`" % name)
         out("  Channel vmrun reaches the desktop session")
         out("  the UI helper reaches the desktop: %s" % _ui_helper_detail(ssh, name))
+    except GuestError:
+        try:
+            vm.stop()  # a running Base guest cannot be cloned; a re-run starts it again
+        except GuestError:
+            pass
+        raise
     finally:
         ssh.close()
     vm.stop()
