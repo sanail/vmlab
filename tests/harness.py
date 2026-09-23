@@ -33,7 +33,7 @@ def zipapp_path():
 
 # Tests never reach the Host's real hypervisors (`vmlab clean` would list, and could
 # delete, their VMs) or its Keychain; a test that needs one passes a scripted stand-in instead.
-NO_HYPERVISORS = {name: "/nonexistent/" + name for name in ("VMLAB_TART", "VMLAB_VMRUN", "VMLAB_VMCLI", "VMLAB_SECURITY")}
+NO_HYPERVISORS = {name: "/nonexistent/" + name for name in ("VMLAB_TART", "VMLAB_VMRUN", "VMLAB_VMCLI", "VMLAB_SECURITY", "VMLAB_OPEN")}
 
 
 class Result:

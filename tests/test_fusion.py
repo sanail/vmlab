@@ -55,6 +55,8 @@ FAKE_VMRUN = textwrap.dedent(
     elif command == "start":
         if vm is None:
             fail("Cannot open VM: %s, The virtual machine cannot be found" % args[1])
+        if "gui" in args[2:] and encrypted and state.get("gui_refused"):
+            fail("The operation is not supported")  # Fusion without the VM's password from the Keychain
         vm["running"] = True
         save()
     elif command == "stop":

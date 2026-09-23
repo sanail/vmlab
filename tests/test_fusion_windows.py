@@ -243,8 +243,16 @@ class WindowsBaseWizardTest(WindowsTestCase):
         security.chmod(security.stat().st_mode | stat.S_IXUSR)
         return security
 
-    def wizard(self, *args, security=None):
+    def set_base_record(self, **fields):
+        path = self.project.home / "bases.json"
+        records = json.loads(path.read_text())
+        records["windows-11"].update(fields)
+        path.write_text(json.dumps(records))
+
+    def wizard(self, *args, security=None, open_stub=None):
         env = {"VMLAB_SECURITY": str(security or self.keychain(None))}
+        if open_stub:
+            env["VMLAB_OPEN"] = str(open_stub)
         return self.project.vmlab("base", "create", "windows-11", *args, env=dict(env, **{
             "VMLAB_VMRUN": str(self.vmrun), "FAKE_VMRUN_STATE": str(self.state_path), "FAKE_VMRUN_LOG": str(self.log_path),
         }))  # fmt: skip
@@ -255,6 +263,7 @@ class WindowsBaseWizardTest(WindowsTestCase):
         self.assertExit(r, 1)
         self.assertIn("Get Windows from Microsoft", r.out)
         self.assertIn("Only the files\n     needed to support a TPM", r.out)
+        self.assertIn("Install VMware Tools", r.out, "Fusion's Get Windows flow leaves them out; vmrun needs them")
         self.assertIn("no Windows VM in Fusion's folders", r.err)
         self.assertIn("in a terminal window of your own", r.err)
         self.assertIn("Claude Code's `!`", r.err, "an agent's shell cannot answer it either")
@@ -315,6 +324,26 @@ class WindowsBaseWizardTest(WindowsTestCase):
 
         self.assertExit(r, 0)
         self.assertIn("Base guest windows-11 is ready", r.out)
+
+    def test_a_guest_fusion_will_not_start_in_a_window_is_opened_in_fusion(self):
+        # Fusion refuses `vmrun start gui` for an encrypted VM whose password it cannot read
+        # from the Keychain; the person still needs a window for the UAC click.
+        self.windows_base()
+        self.set_base_record(provisioned=None, elevated=False)
+        state = json.loads(self.state_path.read_text())
+        state["gui_refused"] = True
+        self.state_path.write_text(json.dumps(state))
+        opened = self.project.root / "opened.txt"
+        open_stub = self.project.root / "fake-open"
+        open_stub.write_text('#!/bin/sh\necho "$@" >> "%s"\n' % opened)
+        open_stub.chmod(open_stub.stat().st_mode | stat.S_IXUSR)
+
+        r = self.wizard(security=self.keychain(VM_PASSWORD), open_stub=open_stub)
+
+        self.assertExit(r, 1)
+        self.assertIn("vmlab-base-windows-11.vmx", opened.read_text())
+        self.assertIn("Always Allow", r.out)
+        self.assertIn("Start the Guest in a Fusion window", r.err)
 
     def test_vmlabs_own_vm_is_never_adopted(self):
         # A Lab's clone is a Windows VM too; copying it onto itself would delete it.

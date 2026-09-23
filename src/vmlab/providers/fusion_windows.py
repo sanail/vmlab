@@ -63,20 +63,33 @@ Remove-Item -Force -ErrorAction SilentlyContinue $script, $params
 exit $p.ExitCode
 """]  # fmt: skip
 LANGUAGE_PS = "(Get-UICulture).Name"  # the signed-in user's display language, e.g. en-US
+NO_TOOLS_GRACE = 180  # s after which a Guest whose VMware Tools never answer surely lacks them
+WINDOW_START_WAIT = 60  # s for Fusion to power on a VM it opened
 SESSION = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $PID).SessionId; [Console]::OutputEncoding.CodePage; " + LANGUAGE_PS]
 DISPLAY_LANGUAGE = ["powershell", "-NoProfile", "-NonInteractive", "-Command", LANGUAGE_PS]
 FUSION_FOLDERS = ("Virtual Machines.localized", "Virtual Machines", "Documents/Virtual Machines.localized")
 
 GET_WINDOWS = """\
   1. In VMware Fusion: File > New..., choose "Get Windows from Microsoft", pick Windows 11
-     and English (United States), and follow Fusion's steps. VMware Tools come with it.
+     and English (United States), and follow Fusion's steps.
      Windows Labs expect en-US element names; a Lab written for another language sets
      language under [labs.NAME.fusion].
   2. When Fusion asks how to encrypt the VM (Windows 11 needs a TPM), choose "Only the files
      needed to support a TPM are encrypted" and let Fusion keep the password in your Keychain.
   3. In Windows Setup, make a local account with a password: vmlab signs in with it.
      If Setup insists on a Microsoft account, press Shift+F10 and run: start ms-cxh:localonly
-  4. Once Windows shows its desktop, come back here. vmlab copies the VM; the original stays yours."""
+  4. Once Windows shows its desktop, install VMware Tools (vmlab runs everything through them;
+     Fusion's flow leaves them out): in Fusion, Virtual Machine > Install VMware Tools; in
+     Windows, open the DVD drive in File Explorer, run setup (Typical), and restart when it asks.
+  5. Come back here. vmlab copies the VM; the original stays yours."""
+KEYCHAIN_NOTE = ("  If macOS asks whether %s may use a password in your Keychain, click Always Allow:\n"
+                 "  Allow lets it once, and vmlab needs it again on later runs.")
+START_IN_FUSION = """\
+  Fusion would not start it with a window from vmlab (it could not take the VM's password
+  from your Keychain), so vmlab opened it in Fusion: %s
+""" + KEYCHAIN_NOTE % "VMware Fusion" + """
+  If Fusion asks for the VM's encryption password, it is your original VM's. If the VM
+  shows as stopped, click its Start button."""
 
 
 def create_base(name, image, prompt, reprovision, out):
@@ -151,6 +164,9 @@ def _adopt(wizard, name, vm, image):
             return None
         if "password" not in output.lower():
             return "vmrun cannot open the VM: %s" % output.strip()
+        if "keychain_note" not in found:
+            wizard.out(KEYCHAIN_NOTE % "security")
+            found["keychain_note"] = True
         password = _keychain_password(source) or wizard.prompt.secret("The VM's encryption password: ")
         if not password:
             return "vmlab needs the VM's encryption password, and it is not in your Keychain"
@@ -186,11 +202,13 @@ def _adopt(wizard, name, vm, image):
     def check_stopped():
         if not source_vm.is_running():
             return None
-        if wizard.prompt.confirm("%s is running. Shut Windows down now, so vmlab can copy it?" % source_vm.name):
+        if wizard.prompt.confirm("%s is running. Should vmlab shut Windows down for you now?" % source_vm.name):
+            wizard.out("  shutting Windows down (up to a minute; then vmlab powers it off)")
             source_vm.stop()
         return "the VM is still running" if source_vm.is_running() else None
 
-    wizard.step("Shut the VM down", "  vmlab copies the VM only while it is stopped: shut Windows down (Start > Power > Shut down).", check_stopped)
+    wizard.step("Shut the VM down", "  vmlab copies the VM only while it is stopped: shut Windows down (Start > Power > Shut down),\n"
+                "  or answer y above and vmlab does it.", check_stopped)
 
     if vm.exists() or vm.vmx.parent.exists():  # an adoption that did not finish: start over
         vm.delete()
@@ -288,10 +306,13 @@ def _provision(wizard, name, vm):
         wizard.out("starting %s%s" % (vm.name, " in a Fusion window: you will click once in it" if needs_click else ""))
         if needs_click:
             _keychain_save(vm)
-        vm.start(gui=needs_click)
+            _start_with_window(wizard, vm)
+        else:
+            vm.start()
 
     def signed_in():
         deadline = time.time() + BASE_BOOT_TIMEOUT
+        no_tools_since = None
         while True:
             try:
                 channel.exec(PROBE, CALL_TIMEOUT, {})
@@ -306,6 +327,13 @@ def _provision(wizard, name, vm):
                     record["user"] = user.strip()
                     registry.put(name, record)
                     continue
+                if "tools are not running" in exc.message.lower():
+                    no_tools_since = no_tools_since or time.time()
+                    if time.time() - no_tools_since > NO_TOOLS_GRACE:  # Windows has long booted by now
+                        return ("VMware Tools do not run in the Guest. In its Fusion window: Virtual Machine > Install VMware Tools;"
+                                " in Windows, open the DVD drive in File Explorer, run setup (Typical), and restart when it asks")
+                else:
+                    no_tools_since = None
                 if time.time() >= deadline:
                     return exc.message
             time.sleep(2)
@@ -394,6 +422,32 @@ def _provision(wizard, name, vm):
     record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot, language=language)
     registry.put(name, record)
     wizard.out('Base guest %s is ready (Fusion VM %s). Windows Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))
+
+
+def _start_with_window(wizard, vm):
+    """Start vm in a Fusion window, for the click a person gives in it; open it in Fusion when
+    vmrun may not (an encrypted VM whose password Fusion cannot read from the Keychain)."""
+    try:
+        vm.start(gui=True)
+        return
+    except GuestError as exc:
+        if "not supported" not in exc.message.lower():
+            raise
+    opener = os.environ.get("VMLAB_OPEN") or "/usr/bin/open"
+    try:
+        hostproc.run([opener, "-a", "VMware Fusion", str(vm.vmx)], 60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass  # the step below says how to open it by hand
+
+    def running():
+        deadline = time.time() + (WINDOW_START_WAIT if wizard.prompt.interactive else 0)  # nobody to wait for otherwise
+        while not vm.is_running():
+            if time.time() >= deadline:
+                return "%s is not running yet" % vm.name
+            time.sleep(2)
+        return None
+
+    wizard.step("Start the Guest in a Fusion window", START_IN_FUSION % vm.vmx, running, ahead=True)
 
 
 def _desktop_session(vm, channel):

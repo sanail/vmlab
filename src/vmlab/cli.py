@@ -149,6 +149,10 @@ class Terminal:
     def __init__(self, yes=False):
         self.yes = yes  # --yes: confirmations are answered yes
 
+    @property
+    def interactive(self):
+        return sys.stdin.isatty()
+
     def confirm(self, question):
         return self.yes or _ask(question)
 
