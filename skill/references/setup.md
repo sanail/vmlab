@@ -22,7 +22,7 @@ A hypervisor is missing when step 1's `Hypervisors` line says `not found` for it
 - **Tart** (an agent can install it): `brew install openai/tools/tart`. Tart moved from cirruslabs to openai (github.com/cirruslabs/tart redirects to github.com/openai/tart); the old `cirruslabs/cli` tap no longer loads in current Homebrew. Its macOS images stay at `ghcr.io/cirruslabs/`. No `brew`: installing Homebrew is its own host install, asked about separately (https://brew.sh).
 - **VMware Fusion** (only a person can install it): Fusion Pro is free, but the download sits behind a free Broadcom account, and Homebrew has no cask for it. Walk the user through it one step at a time, and verify each step before giving the next:
   1. Sign in or register at https://support.broadcom.com, then find "VMware Fusion" under the free downloads and download the latest Fusion Pro. Verified when the user names the downloaded `VMware-Fusion-*.dmg` (usually in `~/Downloads`) and it is there.
-  2. Open the `.dmg` and drag VMware Fusion to Applications. Verified when `/Applications/VMware Fusion.app/Contents/Public/vmrun` exists.
+  2. Open the `.dmg` and double-click its installer ("Double-click to install"); it asks for an administrator password and puts Fusion in Applications. Verified when `/Applications/VMware Fusion.app/Contents/Public/vmrun` exists.
   3. Open VMware Fusion once and answer what it asks on first launch (its licence terms, macOS permission prompts). Verified when the user confirms Fusion's window is open with no prompt left, and `vmlab doctor` shows `VMware Fusion <version>` on its `Hypervisors` line.
 
 Done when the `Hypervisors` line names every hypervisor the agreed Labs need.

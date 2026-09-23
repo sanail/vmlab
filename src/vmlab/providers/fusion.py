@@ -70,7 +70,7 @@ SESSION_NAMES = {"wayland": "Wayland", "x11": "X11"}
 FUSION_APP = "/Applications/VMware Fusion.app"
 INSTALL_FIX = (
     "install VMware Fusion Pro (free; ask before installing anything on the Host): download it from "
-    "Broadcom's support portal (a free Broadcom account; Homebrew has no cask for it) and drag it to /Applications"
+    "Broadcom's support portal (a free Broadcom account; Homebrew has no cask for it) then open the .dmg and double-click its installer"
 )
 CALL_TIMEOUT = 60  # s for quick vmrun commands
 SEND_FILE_TIMEOUT = 600  # s for one file (a Build artifact) into a Guest
