@@ -99,9 +99,10 @@ class Guest:
         return result
 
     def launch(self, env=None):
-        """Launch the app with the Lab's launch recipe; env adds to the Lab's app.env."""
+        """Launch the app with the Lab's launch recipe; env adds to the Lab's app.env. Waits for the
+        Lab's app.ready condition, if any, on the Scenario's clock; raises when it is not met."""
         self._remaining("launch")
-        self._launch_app(env)
+        self._on_clock("launch", lambda call_timeout: self._launch_app(env, call_timeout))
 
     # The UI contract (vmlab.ui): each method returns what `vmlab ui <command>` prints.
 
@@ -151,11 +152,15 @@ class Guest:
 
     def _ui_call(self, fn):
         self._remaining("a UI command")
+        return self._on_clock("a UI command", lambda call_timeout: fn(ui.UI(self._provider, call_timeout)))
+
+    def _on_clock(self, doing, fn):
+        """fn(call_timeout), whose Guest calls end with the Scenario's clock (see vmlab.ui.UI)."""
         try:
-            return fn(ui.UI(self._provider, lambda doing: min(self._step_timeout, self._remaining(doing))))
+            return fn(lambda what: min(self._step_timeout, self._remaining(what)))
         except GuestTimeout as exc:
             if not isinstance(exc, ScenarioTimeout) and time.time() >= self._deadline:
-                raise ScenarioTimeout("Scenario exceeded its %ss timeout (during a UI command)" % self._limit)
+                raise ScenarioTimeout("Scenario exceeded its %ss timeout (during %s)" % (self._limit, doing))
             raise
 
     def screenshot(self, name):

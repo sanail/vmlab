@@ -276,8 +276,8 @@ class _LabRun:
             state["clean"] = False
             prepare_run(provider, lab, state["guest_artifact"], launch_app=launch_app and bool(lab.app.launch))
 
-        def launch_app(env):
-            launch(provider, lab, state["guest_artifact"], env)
+        def launch_app(env, call_timeout):
+            launch(provider, lab, state["guest_artifact"], env, call_timeout)
 
         results = []
         for path in scenarios:

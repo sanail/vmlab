@@ -1,10 +1,10 @@
 # Scenario API
 
-A Scenario is a Python file defining `scenario(g)`. Before it runs, vmlab quits the app, removes the Lab's `app.state` paths and launches the app (the Lab's `[labs.LAB.app]` recipes).
+A Scenario is a Python file defining `scenario(g)`. Before it runs, vmlab quits the app, removes the Lab's `app.state` paths and launches the app (the Lab's `[labs.LAB.app]` recipes), waiting for its `ready` condition if the Lab has one; that wait is not on the Scenario's clock.
 
 ```python
 FRESH = True     # optional: restore Clean state before this Scenario
-LAUNCH = False   # optional: skip the launch; call g.launch(env={...}) yourself
+LAUNCH = False   # optional: skip the launch; call g.launch(env={...}) yourself: it waits for app.ready too, on the Scenario's clock
 TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
 
 def scenario(g):

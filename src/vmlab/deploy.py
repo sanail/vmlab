@@ -5,23 +5,26 @@
 - deliver + install: once per suite, and again after any restore. The artifact
   is copied to a uniquely named Guest folder (shared-folder caches never serve
   a stale copy), then the install recipe runs.
-- before every Run: quit (exit code ignored), remove the app state paths, launch.
+- before every Run: quit (exit code ignored), remove the app state paths, launch,
+  then wait for the app's ready condition, if it has one.
 
 Guest recipes run in the Guest's shell with the Lab's app.env plus VMLAB_LAB,
 VMLAB_OS, VMLAB_ARCH and VMLAB_ARTIFACT (the Guest path of the delivered copy).
 """
 
 import glob
+import json
 import os
 import subprocess
 import time
 from pathlib import Path
 
-from vmlab import hostproc
+from vmlab import hostproc, ui
 from vmlab.providers.base import GuestError
 
 GUEST_ARTIFACTS = "~/vmlab/artifacts"
 LOG_TAIL_LINES = 20
+ANSWER_CHARS = 1000  # of the last poll's answer in an unmet ready's error
 
 
 class DeployError(GuestError):
@@ -86,10 +89,30 @@ def prepare_run(provider, lab, guest_artifact, launch_app=True):
         launch(provider, lab, guest_artifact)
 
 
-def launch(provider, lab, guest_artifact, env=None):
+def launch(provider, lab, guest_artifact, env=None, call_timeout=None):
+    """Run the launch recipe, then wait until the app is ready.
+
+    call_timeout(doing) bounds each Guest call of the wait (see vmlab.ui.UI); default: step_timeout.
+    """
     if not lab.app.launch:
         raise DeployError("Lab %s has no launch recipe" % lab.name, "set labs.%s.app.launch" % lab.name)
     _recipe(provider, lab, "launch", guest_artifact, lab.step_timeout, extra_env=env)
+    if lab.app.ready is not None:
+        _wait_ready(provider, lab, call_timeout or (lambda doing: lab.step_timeout))
+
+
+def _wait_ready(provider, lab, call_timeout):
+    timeout = lab.app.ready_timeout or lab.step_timeout
+    result = ui.UI(provider, call_timeout).wait_for(lab.app.ready, timeout=timeout)
+    if not result["met"]:
+        key = "labs.%s.app" % lab.name
+        answer = json.dumps({k: v for k, v in result.items() if k not in ("met", "waited_s", "condition")})
+        if len(answer) > ANSWER_CHARS:
+            answer = answer[:ANSWER_CHARS] + "..."
+        raise DeployError(
+            "the app is not ready: %s.ready %s not met within %ss of its launch; last answer: %s" % (key, json.dumps(result["condition"]), timeout, answer),
+            "check that the launch recipe starts the app and what the condition waits for (try it with `vmlab ui wait-for`), or raise %s.ready_timeout" % key,
+        )
 
 
 def _recipe(provider, lab, step, guest_artifact, timeout, check=True, extra_env=None):

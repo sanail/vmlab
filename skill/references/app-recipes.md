@@ -8,10 +8,13 @@ A Lab's `[labs.NAME.app]` tells vmlab how to get the app under test into its Gue
 | `artifact` | Host path or glob (newest match) | copied into a fresh Guest folder; its Guest path is `$VMLAB_ARTIFACT` |
 | `install` (+ `install_timeout`) | Guest shell | once per suite, and again after every restore |
 | `quit`, then `state` removed, then `launch` | Guest shell | before every Run |
+| `ready` (+ `ready_timeout`) | one `wait_for` condition on the Guest | after every `launch` |
 
 The Guest shell is `sh` on macOS and Linux, and PowerShell on Windows (`$env:VMLAB_ARTIFACT`; `%VARS%` and a leading `~` work in `state`). TOML literal strings (`'...'`) hold shell quotes without escaping.
 
-Work out the recipes from what the project already has: its build scripts, its packaging config (which bundle formats it makes, the app's name and bundle id), its CI workflow (the commands it runs per OS), and where the app keeps settings. Done when every agreed Lab has `artifact`, `install`, `quit`, `launch` and `state`, plus `build` unless the user builds by hand, each traced to something in the project or marked to the user as a guess.
+`ready` says when the launched app can be driven, so no Scenario has to wait for it: one condition with `wait_for`'s keywords, e.g. `ready = { process = "MyApp" }`, a tray app's icon `ready = { text = "MyApp", role = "menubaritem", app = "MyApp" }` (its role and name per OS: read `vmlab ui tree` after a launch), a log line `ready = { log = "~/.myapp/app.log", pattern = "listening" }`, or a command `ready = { exec = ["curl", "-fsS", "http://127.0.0.1:8080/health"] }`. `ready_timeout` defaults to the Lab's `step_timeout`. Unmet, the Run errors and `vmlab deploy` exits 1, naming the condition and its last answer.
+
+Work out the recipes from what the project already has: its build scripts, its packaging config (which bundle formats it makes, the app's name and bundle id), its CI workflow (the commands it runs per OS), and where the app keeps settings. Done when every agreed Lab has `artifact`, `install`, `quit`, `launch`, `ready` and `state`, plus `build` unless the user builds by hand, each traced to something in the project or marked to the user as a guess.
 
 ## Per Guest OS
 

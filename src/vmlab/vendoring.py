@@ -53,6 +53,8 @@ TEMPLATE = """\
 # install = 'cp -R "$VMLAB_ARTIFACT" /Applications/'   # Guest shell; $VMLAB_ARTIFACT is the delivered copy
 # quit = "pkill -x MyApp"              # before every Run (exit code ignored)
 # launch = "open -a MyApp"             # before every Run, after the state paths are removed
+# ready = { process = "MyApp" }        # one wait_for condition that says the launched app is ready
+# ready_timeout = 30                   # seconds to wait for ready (default: step_timeout)
 # env = { RUST_LOG = "debug" }         # extra environment for install, quit and launch
 # state = ["~/Library/Application Support/MyApp"]  # Guest paths removed before every Run
 #

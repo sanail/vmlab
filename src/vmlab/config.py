@@ -19,7 +19,10 @@ OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
 LAB_KEYS = ("provider", "os", "arch", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
-APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "env", "state")
+APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "ready", "ready_timeout", "env", "state")
+# [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
+READY_CONDITIONS = ("text", "role", "process", "file", "log", "exec")  # text and role make one: an element
+READY_KEYS = READY_CONDITIONS + ("app", "pattern", "gone")
 DEFAULT_BUILD_TIMEOUT = 1800
 DEFAULT_INSTALL_TIMEOUT = 600
 DEFAULT_MEMORY_GB = 4
@@ -65,6 +68,8 @@ class App:
         self.install_timeout = table.get("install_timeout", DEFAULT_INSTALL_TIMEOUT)
         self.quit = table.get("quit")
         self.launch = table.get("launch")
+        self.ready = table.get("ready")  # a vmlab.ui condition that holds once the launched app is ready, or None
+        self.ready_timeout = table.get("ready_timeout")  # s; None: the Lab's step_timeout
         self.env = table.get("env", {})
         self.state = table.get("state", [])  # Guest paths removed before each Run
 
@@ -236,4 +241,51 @@ def _app(path, key, table):
             raise ConfigError(path, key + ".artifact", "missing (needed by %s.%s)" % (key, field), 'e.g. artifact = "dist/MyApp.dmg"')
     _positive_number(path, table, key, "build_timeout", DEFAULT_BUILD_TIMEOUT)
     _positive_number(path, table, key, "install_timeout", DEFAULT_INSTALL_TIMEOUT)
+    if "ready_timeout" in table:
+        if "ready" not in table:
+            raise ConfigError(path, key + ".ready", "missing (needed by %s.ready_timeout)" % key, READY_EXAMPLE)
+        _positive_number(path, table, key, "ready_timeout", 30)
+    if "ready" in table:
+        if "launch" not in table:
+            raise ConfigError(path, key + ".launch", "missing (needed by %s.ready)" % key, 'e.g. launch = "open -a MyApp"')
+        table = dict(table, ready=_ready(path, key + ".ready", table["ready"]))
     return App(table)
+
+
+READY_EXAMPLE = 'e.g. ready = { process = "MyApp" }, or an element: ready = { text = "MyApp", role = "menubaritem", app = "MyApp" }'
+
+
+def _ready(path, key, ready):
+    """The vmlab.ui condition a ready table describes; ConfigError with wait_for's own errors."""
+    from vmlab import ui  # it imports this module
+
+    if not isinstance(ready, dict):
+        raise ConfigError(path, key, "must be a table holding one wait_for condition", READY_EXAMPLE)
+    for k in sorted(set(ready) - set(READY_KEYS)):
+        raise ConfigError(path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(READY_KEYS))
+    for k in READY_KEYS:
+        if k not in ready:
+            continue
+        value = ready[k]
+        if k == "gone":
+            if not isinstance(value, bool):
+                raise ConfigError(path, key + ".gone", "must be true or false", "e.g. gone = true")
+        elif k == "exec":
+            if not (isinstance(value, list) and value and all(isinstance(a, str) and a for a in value)):
+                raise ConfigError(path, key + ".exec", "must be a command: a non-empty list of strings", 'e.g. exec = ["curl", "-fsS", "http://127.0.0.1:8080/health"]')
+        elif not (isinstance(value, str) and value):
+            raise ConfigError(path, "%s.%s" % (key, k), "must be a non-empty string", 'e.g. %s = "MyApp"' % k)
+    found = []
+    for k in READY_CONDITIONS:
+        if k in ready and not (k == "role" and "text" in ready):
+            found.append("an element (text/role)" if k in ("text", "role") else k)
+    if not found:
+        raise ConfigError(path, key, "holds no condition; it needs one of: text/role (an element), process, file, log, exec", READY_EXAMPLE)
+    if len(found) > 1:
+        raise ConfigError(
+            path, key, "holds several conditions (%s); it takes one" % ", ".join(found), "keep the one that says the app is ready; a Scenario waits for the rest with g.wait_for"
+        )
+    try:
+        return ui.condition(**ready)
+    except UsageError as exc:
+        raise ConfigError(path, key, str(exc), READY_EXAMPLE)
