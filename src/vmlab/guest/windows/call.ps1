@@ -18,9 +18,17 @@ function Write-Result([int]$code, [byte[]]$stdout, [byte[]]$stderr) {
     Move-Item -Force -LiteralPath ($call.result + '.part') -Destination $call.result
 }
 
-# Calls whose Host went away leave their files behind.
+# Calls whose Host went away leave their files behind. Their times do not compare with this
+# Guest's clock: a file the Host sent keeps the Host's time, and a Windows Guest's clock can be
+# hours off (it reads Fusion's clock, the Host's local time, in its own time zone). So files the
+# Host sent age against this call's script, which came the same way, and results, which the
+# Guest wrote, against the Guest's clock. This call's own files are never touched.
+$own = [IO.Path]::GetFileNameWithoutExtension($call.result) + '.'
+$sent = (Get-Item -LiteralPath $PSCommandPath).LastWriteTime.AddHours(-1)
+$written = (Get-Date).AddHours(-1)
 Get-ChildItem -LiteralPath (Split-Path $call.result) -Filter 'vmlab-call-*' -ErrorAction SilentlyContinue |
-    Where-Object { $_.LastWriteTime -lt (Get-Date).AddHours(-1) } | Remove-Item -Force -ErrorAction SilentlyContinue
+    Where-Object { -not $_.Name.StartsWith($own) -and $_.LastWriteTime -lt $(if ($_.Extension -in '.result', '.part') { $written } else { $sent }) } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # Whatever the Host sends as stdin must arrive byte for byte: .NET encodes the command's
 # standard input with the console's encoding, and UTF-8 with a BOM (this Guest's code page)
