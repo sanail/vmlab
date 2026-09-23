@@ -2,7 +2,7 @@
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**. Vocabulary: `CONTEXT.md`. Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
-Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux and Windows Guests) and the UI contract on macOS and Linux (X11 and Wayland; Windows next). UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
+Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux and Windows Guests) and the UI contract on macOS, Linux (X11 and Wayland) and Windows. UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
 ## Build and test
 
@@ -17,7 +17,23 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest d
 
 ## The skill
 
-`skill/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `skill/references/` (setup, Ad-hoc run, regression), and those load on demand the Scenario API, the app recipes (build hooks per stack, cross-building from a Mac, building inside the Guest) and each Guest OS's traps. `tools/build.py` assembles it with the zipapp as `scripts/vmlab.pyz`; copy `dist/skill/vmlab/` into an agent's skills folder (`~/.claude/skills/` or a project's `.claude/skills/`) to install it.
+`skill/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `skill/references/` (setup, Ad-hoc run, regression), and those load on demand the Scenario API, the app recipes (build hooks per stack, cross-building from a Mac, building inside the Guest) and each Guest OS's traps. `tools/build.py` assembles it with the zipapp as `scripts/vmlab.pyz`.
+
+### Install the skill
+
+Build it, then copy `dist/skill/vmlab/` into the agent's skills folder, for every project (your home) or for one project:
+
+```sh
+python3 tools/build.py
+cp -R dist/skill/vmlab ~/.claude/skills/            # Claude Code, every project
+cp -R dist/skill/vmlab ~/.cursor/skills/            # Cursor, every project
+cp -R dist/skill/vmlab PROJECT/.claude/skills/      # Claude Code, one project (commit it to share it)
+cp -R dist/skill/vmlab PROJECT/.cursor/skills/      # Cursor, one project
+```
+
+Create the `skills` folder first if it is missing. Both agents pick the skill up in a new session and use it on their own when a request fits ("test my app on Windows"), or when you ask for it by name: `/vmlab` in either. Cursor also reads `.claude/skills/` and `.agents/skills/`, so one project copy can serve both. Other agents that follow the open SKILL.md standard load the same folder from their own skills location.
+
+To upgrade, copy the new build over the old folder, then run `python3 .vmlab/vmlab.pyz self-update` in each project that uses vmlab: the project keeps its pinned copy until you do.
 
 ## Project layout
 
@@ -268,6 +284,8 @@ Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VM
 - Before every Run, the Lab's `app.state` paths are removed.
 - Labs run one after another. `--parallel` runs them concurrently, starting a Lab only while its `memory_gb` fits in free Host memory (free + inactive pages; override with `VMLAB_FREE_MEMORY_GB`) and queueing the rest. A Guest that is already running needs no memory, and a Lab larger than all free memory runs alone. Each Lab keeps its own Run folder and reports.
 - vmlab stops only Guests it started (recorded in `$VMLAB_HOME/started.json`), including ones an earlier Ad-hoc or `--keep` run left running. A Guest started outside vmlab, or with `vmlab up`, is never stopped by `vmlab run`.
+
+**Measuring a Check.** A new Check is trusted once it has gone red on a Build artifact without the fix and green with it. Take the fix out of the working tree, `vmlab run NAME` (the build hook rebuilds, since files in its `inputs` are now newer than the Build artifact; the Run folder's `build.log` and `report.json`'s `deploy.built` confirm it) and expect exit 1 with that Check failed; put the fix back and expect exit 0. The skill's Regression workflow (`skill/references/regression.md`) walks the agent through it.
 
 ## Architecture
 

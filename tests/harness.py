@@ -71,8 +71,8 @@ class Project:
         path.write_text(textwrap.dedent(body))
         return path
 
-    def vmlab(self, *args, cwd=None, timeout=60, pyz=None, env=None):
-        proc = self.vmlab_background(*args, cwd=cwd, pyz=pyz, env=env)
+    def vmlab(self, *args, cwd=None, timeout=60, pyz=None, env=None, bare=False):
+        proc = self.vmlab_background(*args, cwd=cwd, pyz=pyz, env=env, bare=bare)
         try:
             proc.stdout, proc.stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -81,9 +81,13 @@ class Project:
             raise
         return Result(proc)
 
-    def vmlab_background(self, *args, cwd=None, pyz=None, env=None):
-        """Start vmlab without waiting for it; the caller collects it with communicate()."""
-        env = dict(os.environ, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **dict(NO_HYPERVISORS, **(env or {})))
+    def vmlab_background(self, *args, cwd=None, pyz=None, env=None, bare=False):
+        """Start vmlab without waiting for it; the caller collects it with communicate().
+
+        bare: only PATH from this process's environment, as a terminal or CI job without an agent would have.
+        """
+        inherited = {"PATH": os.environ["PATH"]} if bare else os.environ
+        env = dict(inherited, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **dict(NO_HYPERVISORS, **(env or {})))
         return subprocess.Popen(
             [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),
