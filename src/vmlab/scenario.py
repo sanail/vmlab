@@ -12,11 +12,18 @@ A Scenario is a Python file in .vmlab/scenarios defining:
 
 The timeout is enforced at g.* calls: Python code in a Scenario must not block
 outside them.
+
+While a Scenario loads and runs, its folder is on sys.path, so it imports shared
+helpers from _name.py files next to it; they are re-imported for every Scenario.
 """
 
+import collections
+import contextlib
 import importlib.util
+import os
 import re
 import sys
+import threading
 import time
 import traceback
 
@@ -181,14 +188,15 @@ def run_scenario(path, guest, prepare):
     started = time.time()
     error = None
     try:
-        module = _load(path)
-        fresh = _declared(module, "FRESH", False, _is_bool, "True or False")
-        launch = _declared(module, "LAUNCH", True, _is_bool, "True or False")
-        limit = _declared(module, "TIMEOUT", guest._limit, _is_seconds, "a number of seconds > 0")
-        prepare(fresh, launch)
-        guest._start_clock(limit)
-        module.scenario(guest)
-        guest._remaining("the end of the Scenario")
+        with _folder_on_path(path.parent):
+            module = _load(path)
+            fresh = _declared(module, "FRESH", False, _is_bool, "True or False")
+            launch = _declared(module, "LAUNCH", True, _is_bool, "True or False")
+            limit = _declared(module, "TIMEOUT", guest._limit, _is_seconds, "a number of seconds > 0")
+            prepare(fresh, launch)
+            guest._start_clock(limit)
+            module.scenario(guest)
+            guest._remaining("the end of the Scenario")
         if not guest.checks:
             raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
     except ConfigError:
@@ -240,10 +248,50 @@ def _is_seconds(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
 
 
+# Parallel Labs run Scenarios in threads of one process, sharing sys.path and sys.modules.
+_import_lock = threading.Lock()
+_path_users = collections.Counter()
+_scenario_folders = set()
+
+
+@contextlib.contextmanager
+def _folder_on_path(folder):
+    """Keep folder on sys.path while any Scenario from it is running."""
+    entry = str(folder)
+    with _import_lock:
+        if not _path_users[entry]:
+            sys.path.insert(0, entry)
+        _path_users[entry] += 1
+        _scenario_folders.add(entry)
+    try:
+        yield
+    finally:
+        with _import_lock:
+            _path_users[entry] -= 1
+            if not _path_users[entry]:
+                del _path_users[entry]
+                if entry in sys.path:
+                    sys.path.remove(entry)
+
+
 def _load(path):
     spec = importlib.util.spec_from_file_location("vmlab_scenario_%s" % path.stem, str(path))
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    with _import_lock:
+        _forget_scenario_modules()
+        # Another Lab's Scenario folder may be on sys.path too; this one's helpers come first.
+        entry = str(path.parent)
+        sys.path.remove(entry)
+        sys.path.insert(0, entry)
+        spec.loader.exec_module(module)
     if not callable(getattr(module, "scenario", None)):
         raise ScenarioError("%s does not define scenario(g)" % path)
     return module
+
+
+def _forget_scenario_modules():
+    """Drop modules imported from any Scenario folder, so each Scenario re-imports its own helpers."""
+    prefixes = tuple(os.path.join(folder, "") for folder in _scenario_folders)
+    for name, module in list(sys.modules.items()):
+        if (getattr(module, "__file__", None) or "").startswith(prefixes):
+            del sys.modules[name]

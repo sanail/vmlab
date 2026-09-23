@@ -1,4 +1,5 @@
 import re
+import textwrap
 import xml.etree.ElementTree as ET
 
 from harness import FAKE_LAB, VmlabTestCase
@@ -157,3 +158,57 @@ class RunTest(VmlabTestCase):
         """)
 
         self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_scenarios_import_helpers_from_their_own_folder_without_shared_state(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("_helpers.py", """
+            seen = []
+
+            def greet(g):
+                seen.append(g.os)
+                return g.exec(["echo", "hello"]).stdout.strip()
+        """)
+        body = """
+            import sys
+            from pathlib import Path
+
+            import _helpers
+
+            def scenario(g):
+                g.check("helper greets", _helpers.greet(g) == "hello")
+                g.check("helper state not carried over", _helpers.seen == ["macos"])
+                g.check("folder on sys.path once", sys.path.count(str(Path(__file__).parent)) == 1)
+        """
+        self.project.scenario("first.py", body)
+        self.project.scenario("second.py", body)
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 0)
+        self.assertEqual([s["status"] for s in self.project.report()["scenarios"]], ["passed", "passed"])
+
+    def test_ad_hoc_scenario_imports_its_own_helpers_and_leaves_sys_path_as_it_was(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("_helpers.py", "WHERE = 'saved'\n")
+        self.project.scenario("saved.py", """
+            import sys
+
+            import _helpers
+
+            def scenario(g):
+                g.check("saved helper imported", _helpers.WHERE == "saved")
+                g.check("ad-hoc folder gone from sys.path", not any(p.endswith("ad-hoc") for p in sys.path))
+        """)
+        ad_hoc = self.project.dir / "runs" / "ad-hoc"
+        ad_hoc.mkdir(parents=True)
+        (ad_hoc / "_helpers.py").write_text("WHERE = 'ad-hoc'\n")
+        (ad_hoc / "try.py").write_text(textwrap.dedent("""
+            import _helpers
+
+            def scenario(g):
+                g.check("ad-hoc helper imported", _helpers.WHERE == "ad-hoc")
+        """))
+
+        r = self.project.vmlab("run", "saved", str(ad_hoc / "try.py"), "saved")
+
+        self.assertExit(r, 0)

@@ -8,7 +8,7 @@ The loop for a new or changed Scenario: write → run as CI would → measure �
 
 Start from what already works: an Ad-hoc run's Scenario (`.vmlab/runs/ad-hoc/NAME.py`), or explore first as [ad-hoc-run.md](ad-hoc-run.md) steps 1-3 describe. Then save it as `.vmlab/scenarios/NAME.py`:
 
-- One file per behaviour, named for it (`palette_reads_selection.py`); files starting with `_` are skipped.
+- One file per behaviour, named for it (`palette_reads_selection.py`); files starting with `_` are skipped, so shared helpers go in `_name.py` there and are imported plainly (`import _helpers`; [scenarios.md](scenarios.md)).
 - Only deterministic Checks: the UI tree, `wait_for`, `exec` output, files, logs, processes. Turn a visual Check from an Ad-hoc run into one of these, or drop it and keep the `g.screenshot` as evidence.
 - Name each Check for the behaviour it guards, in words a reader of a red CI job understands: the name is what the `FAIL` line and `junit.xml` show first.
 - `FRESH = True` when the Scenario must not see what earlier Scenarios left in the Guest.

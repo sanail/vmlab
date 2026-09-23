@@ -17,6 +17,8 @@ def scenario(g):
 
 `g.check(name, passed, detail=None, visual=False)` records a Check; a failed Check does not stop the Scenario, and a Scenario records at least one. An exception, a timeout or a call no Channel can carry fails the Run with the Scenario's file and line.
 
+Code shared by several Scenarios lives in `_name.py` next to them (`.vmlab/scenarios/_helpers.py`, or in `.vmlab/runs/ad-hoc/`), imported plainly at the top of the Scenario: `import _helpers`. The Scenario's folder is on `sys.path` while it runs; don't add it yourself. Helpers are re-imported for each Scenario, so their module-level state does not carry over to the next one.
+
 ## UI methods
 
 Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
