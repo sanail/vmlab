@@ -190,6 +190,14 @@ channels = ["ssh", "vmrun"]    # SSH through an interactive Scheduled Task, then
 - Both Channels run a call the same way: a script in the logged-in user's desktop session, unelevated, writing its exit code and raw output to one result file named for that call alone. So a fallback never changes what a command sees, and concurrent calls never mix. SSH is about 1.1 s per call, vmrun about 3 s; vmrun needs neither network nor sshd, which is why provisioning uses it. ADR 0003 has the numbers and the traps behind them.
 - Files (a Build artifact, a call's stdin) travel as files, never through a command's stdin: Windows' sshd stops reading stdin at about 4 KB and the call would hang. `vmlab up` waits until **every** Channel answers, because sshd is up before Windows finishes signing the user in.
 
+The UI helper (`src/vmlab/guest/windows/vmlab-ui.ps1`) is sent with every call, like Linux's, and runs in the logged-in user's session, as every Windows Channel's calls do: UI Automation for the tree, `SendInput` for the pointer and keys. Its work is C# inside the script, which PowerShell would compile at every call (seconds), so the Guest keeps a compiled copy in `C:\ProgramData\vmlab\ui`, named by a hash of the source; provisioning compiles it into the Base guest's snapshot, and a Guest without a copy for this vmlab (a Base guest provisioned by an older one) compiles one on its first UI call after every start or restore (about 10 s; that call gets a minute for it, whatever the Scenario has left). `vmlab base create windows-11 --reprovision` bakes the new one in. A UI call takes about 3 s over SSH. App names are process names, as `Get-Process` shows them (`Notepad`, `explorer`); minimized windows are left out of the tree. The taskbar and the notification area are `explorer`'s: their buttons are in the tree by name (`find --role button --text MyApp --app explorer`), so a Check never needs to crop a screenshot at fixed coordinates. The Windows traps it handles:
+
+- **Focus**: a process that is not in the foreground may not bring a window forward; `SetForegroundWindow` just returns false. The helper joins the foreground window's input queue (`AttachThreadInput`), where the switch is allowed, and checks that it happened. No Alt tap, the usual other trick: in an app with a menu bar Alt enters the menu, and the next chord goes there. Calls run in a console without a window (`conhost --headless`), so a call never takes the focus from the app under test.
+- **Scaling**: a Windows 11 Guest in Fusion on a Retina Mac runs at 200 %. The helper is per-monitor DPI aware, so the tree, clicks and screenshots all use physical pixels; an unaware process gets some answers scaled and others not.
+- **Keyboard layouts**: chords are sent as virtual keys, which keep their meaning on any layout (checked with Ctrl+A and Ctrl+C under a Russian layout); punctuation keys (`slash`, `semicolon`, ...) are the US layout's. Text is sent as Unicode characters, which need no layout at all.
+- **Typing pace**: Notepad (WinUI) dropped characters sent 5 ms apart now and then (one call in three); the helper waits 20 ms between characters.
+- Text areas are `Document` elements in WinUI and rich edits, and so are web pages: an editable one gets the role `textarea`, and its text comes through its text pattern.
+
 A Scenario is a Python file defining `scenario(g)`:
 
 ```python
@@ -206,7 +214,7 @@ def scenario(g):
 
 ## UI contract
 
-Scenarios and the agent read and drive the Guest's UI with the same commands and JSON on every OS (macOS and Linux now; Windows next). `vmlab ui COMMAND [--lab LAB]` prints JSON; each Scenario method returns the same object:
+Scenarios and the agent read and drive the Guest's UI with the same commands and JSON on every OS (macOS, Linux and Windows). `vmlab ui COMMAND [--lab LAB]` prints JSON; each Scenario method returns the same object:
 
 | CLI | Scenario | Result |
 | --- | --- | --- |
@@ -221,7 +229,7 @@ Scenarios and the agent read and drive the Guest's UI with the same commands and
 | `ui wait-for CONDITION [--timeout S]` | `g.wait_for(..., timeout=None)` | `{"met", "waited_s", "condition"[, "matches"]}` |
 | `ui screenshot [--out PATH]` | `g.screenshot(name)` | `{"path"}` (Scenarios: the path in the Run folder) |
 
-Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` in screen points, or null), `focused`, `enabled`, `native_role` (e.g. `AXButton`) and `children`. The root is the `desktop`, with `truncated` true when a size limit cut the tree short; its children are applications (with `pid`), holding their windows and tray items.
+Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` in screen points, pixels on Windows, or null), `focused`, `enabled`, `native_role` (e.g. `AXButton`) and `children`. The root is the `desktop`, with `truncated` true when a size limit cut the tree short; its children are applications (with `pid`), holding their windows and tray items.
 
 - `find` matches `--text` against name, value and description: exact matches win, otherwise substrings. `--role` takes the cross-OS or the native role.
 - `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point.

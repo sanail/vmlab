@@ -225,6 +225,44 @@ class LinuxUiTest(VmlabTestCase):
         self.assertEqual(json.loads(r.out)["app"], "gnome-text-editor")
 
 
+class WindowsUiTest(VmlabTestCase):
+    """Windows helpers report UI Automation control types; the Host maps them like the others."""
+
+    TREE = {
+        "native_role": "desktop",
+        "children": [{"native_role": "application", "name": "Notepad", "children": [{
+            "native_role": "Window", "name": "notes.txt - Notepad", "children": [
+                {"native_role": "Button", "name": "Open"},
+                {"native_role": "Text", "name": "notes.txt"},
+                {"native_role": "Document", "role": "textarea", "value": "hello"},  # the helper tells text areas from pages
+                {"native_role": "CheckBox", "name": "Wrap"},
+                {"native_role": "TabItem", "name": "notes.txt"},
+                {"native_role": "Spinner", "name": "Size"},
+            ],
+        }]}],
+    }  # fmt: skip
+
+    def setUp(self):
+        super().setUp()
+        self.project.config('[labs.win]\nprovider = "fake"\nos = "windows"\n[labs.win.fake]\nui_tree = "tree.json"\n')
+        (self.project.dir / "tree.json").write_text(json.dumps(self.TREE))
+        self.assertExit(self.project.vmlab("up"), 0)
+
+    def test_ui_automation_control_types_map_to_the_cross_os_roles(self):
+        r = self.project.vmlab("ui", "tree")
+        self.assertExit(r, 0)
+        roles = [(n["native_role"], n["role"]) for n in walk(json.loads(r.out))]
+        self.assertEqual(roles, [
+            ("desktop", "desktop"), ("application", "application"), ("Window", "window"), ("Button", "button"),
+            ("Text", "text"), ("Document", "textarea"), ("CheckBox", "checkbox"), ("TabItem", "tab"), ("Spinner", "spinner"),
+        ])  # fmt: skip
+
+    def test_stage_text_opens_notepad(self):
+        r = self.project.vmlab("ui", "stage-text", "Ohm law")
+        self.assertExit(r, 0)
+        self.assertEqual(json.loads(r.out)["app"], "Notepad")
+
+
 class UiScenarioTest(UiTestCase):
     def test_scenario_api_returns_the_cli_shapes(self):
         self.project.scenario("ui.py", """

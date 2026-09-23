@@ -14,8 +14,15 @@ Linux: guest/linux/vmlab-ui.py, sent to the Guest's python3 on stdin with
 every call, so it never lags behind the Host. It reads AT-SPI and acts through
 xdotool in an X11 session or vmlab's GNOME Shell extension (installed when the
 Base guest is provisioned) in a Wayland session, whichever is logged in.
+
+Windows: guest/windows/vmlab-ui.ps1, sent on stdin with every call behind a
+line of parameters and run as a PowerShell script block (a Windows command
+line is too short and too hard to quote for either). It reads UI Automation and
+acts through SendInput, in the logged-in user's session every Windows Channel
+runs in.
 """
 
+import io
 import json
 import os
 import pkgutil
@@ -40,6 +47,8 @@ def for_provider(provider):
         return MacHelper(provider)
     if provider.lab.os == "linux":
         return LinuxHelper(provider)
+    if provider.lab.os == "windows":
+        return WindowsHelper(provider)
     return Unsupported(provider)
 
 
@@ -51,6 +60,29 @@ def _result(result, command, helper):
         return json.loads(result.stdout)
     except ValueError:
         raise GuestError("UI %s: the %s helper printed no JSON: %r" % (command, helper, result.stdout[:200]))
+
+
+# Reads the parameters line from stdin, then runs the rest as a script block. No double
+# quotes: the Channel's command line goes through Windows' quoting rules.
+WINDOWS_BOOTSTRAP = (
+    "$s = [IO.StreamReader]::new([Console]::OpenStandardInput()).ReadToEnd(); $i = $s.IndexOf([char]10); "
+    "& ([ScriptBlock]::Create($s.Substring($i + 1))) '%s' $s.Substring(0, $i).TrimEnd([char]13)"
+)
+# s for a call that may first compile the helper: ~10 s in a Guest that has no copy yet for this
+# vmlab (a Base guest provisioned by an older one; provisioning compiles it into the snapshot)
+WINDOWS_COMPILE_TIMEOUT = 60
+
+
+def windows_call(command, params):
+    """(argv, stdin) that run one command of the Windows helper over any Channel."""
+    stdin = io.BytesIO(json.dumps(params).encode("utf-8") + b"\n" + pkgutil.get_data("vmlab", "guest/windows/vmlab-ui.ps1"))
+    return ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_BOOTSTRAP % command], stdin
+
+
+def windows_helper_info(channel, timeout):
+    """vmlab-ui.ps1's version info over one Channel, compiling it in the Guest if needed."""
+    argv, stdin = windows_call("version", {})
+    return _result(channel.exec(argv, timeout, {}, stdin=stdin), "version", "vmlab-ui.ps1")
 
 
 class MacHelper:
@@ -105,6 +137,26 @@ class LinuxHelper:
         """(ok, detail) for doctor: can the helper reach the desktop session and its input tools?"""
         info = _result(self._exec("version", {}, timeout), "version", "vmlab-ui.py")
         return True, "%s session; input through %s" % (info.get("session"), info.get("input"))
+
+
+class WindowsHelper:
+    def __init__(self, provider):
+        self.provider = provider
+        self.compiled = False  # has a call succeeded, so the Guest has this helper compiled?
+
+    def call(self, command, params, timeout):
+        argv, stdin = windows_call(command, params)
+        # The first call may compile the helper: it gets the time for that, even in a
+        # Scenario that has less left, rather than time out on every try.
+        result = self.provider.exec(argv, timeout if self.compiled else max(timeout, WINDOWS_COMPILE_TIMEOUT), stdin=stdin)
+        self.compiled = self.compiled or result.ok
+        return _result(result, command, "vmlab-ui.ps1")
+
+    def describe(self, timeout):
+        """(ok, detail) for doctor: does the helper compile and reach the desktop?"""
+        info = self.call("version", {}, max(timeout, WINDOWS_COMPILE_TIMEOUT))
+        screen = info.get("screen") or {}
+        return True, "UI Automation; screen %sx%s at %s dpi" % (screen.get("w"), screen.get("h"), info.get("dpi"))
 
 
 class Unsupported:

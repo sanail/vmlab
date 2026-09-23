@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
-from vmlab import bases, hostproc
+from vmlab import bases, hostproc, uihelpers
 from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
@@ -363,6 +363,10 @@ def _provision(wizard, name, vm):
                     "re-run `vmlab base create %s --reprovision`" % name,
                 )
             wizard.out("  Channel %s reaches the desktop session (session %s, UTF-8)" % (each.name, session))
+        # The UI helper compiles itself on first use (~10 s): done here, it is in the snapshot,
+        # and Labs do not pay for it after every restore.
+        info = uihelpers.windows_helper_info(ssh, uihelpers.WINDOWS_COMPILE_TIMEOUT)
+        wizard.out("  UI helper ready (screen %sx%s)" % (info["screen"]["w"], info["screen"]["h"]))
     finally:
         ssh.close()
     vm.stop()

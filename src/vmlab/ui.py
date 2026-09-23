@@ -117,7 +117,39 @@ LINUX_ROLES = {
     "heading": "heading",
     "progress bar": "progressbar",
 }
-NATIVE_ROLES = {"macos": MACOS_ROLES, "linux": LINUX_ROLES}
+# UI Automation control types, without "ControlType.". The helper sets text areas' role itself (Edit, Document).
+WINDOWS_ROLES = {
+    "Window": "window",
+    "Button": "button",
+    "SplitButton": "button",
+    "CheckBox": "checkbox",
+    "RadioButton": "radiobutton",
+    "Edit": "textfield",
+    "Text": "text",
+    "Hyperlink": "link",
+    "Image": "image",
+    "MenuBar": "menubar",
+    "Menu": "menu",
+    "MenuItem": "menuitem",
+    "ComboBox": "combobox",
+    "List": "list",
+    "ListItem": "row",
+    "DataGrid": "table",
+    "Table": "table",
+    "DataItem": "row",
+    "Tree": "tree",
+    "TreeItem": "row",
+    "Tab": "tabs",
+    "TabItem": "tab",
+    "Group": "group",
+    "Pane": "group",
+    "ScrollBar": "scrollbar",
+    "Slider": "slider",
+    "ToolBar": "toolbar",
+    "Document": "document",
+    "ProgressBar": "progressbar",
+}
+NATIVE_ROLES = {"macos": MACOS_ROLES, "linux": LINUX_ROLES, "windows": WINDOWS_ROLES}
 
 MODIFIERS = {
     "ctrl": "ctrl", "control": "ctrl",

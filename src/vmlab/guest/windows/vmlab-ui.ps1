@@ -1,0 +1,711 @@
+# vmlab-ui for Windows Guests: the Windows side of vmlab's UI contract.
+#
+# vmlab sends this script with every call, so it is never out of step with the
+# Host: stdin is one line of JSON parameters, then this script, which the call's
+# command line runs as a script block with the command name and that line
+# (vmlab.uihelpers.WindowsHelper). It prints one JSON object; on failure it
+# exits 1 with a message on stderr. Commands and parameters are those of the
+# macOS helper (guest/macos/vmlab-ui.swift); the Host maps native roles to
+# vmlab's cross-OS roles and does all matching (vmlab.ui).
+#
+# The work is done in C# below: UI Automation for the tree, SendInput for the
+# pointer and keys, user32 for windows and focus. Add-Type would compile it on
+# every call (seconds), so it is compiled once per Guest into
+# C:\ProgramData\vmlab\ui, named by a hash of its source.
+#
+# Traps (README: "Windows Guests with VMware Fusion"):
+# - A process that is not in the foreground may not take it: SetForegroundWindow
+#   quietly returns false. The helper joins the foreground window's input queue
+#   (AttachThreadInput) first, where the switch is allowed. No Alt tap: in an
+#   app with a menu bar it enters the menu, and the next chord goes there.
+# - The helper is per-monitor DPI aware, so the tree, clicks and screenshots
+#   all use physical pixels. Unaware, Windows scales some answers and not others.
+# - Chords are sent as virtual keys, which keep their meaning on any keyboard
+#   layout (Ctrl+C copies under a Cyrillic layout too); punctuation keys are the
+#   US layout's. Text is sent as Unicode characters, which need no layout at all.
+# - Plain ASCII on purpose: Windows PowerShell reads a script in the system code page.
+param([string]$Command, [string]$Params)
+$ErrorActionPreference = 'Stop'
+
+$source = @'
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Threading;
+using System.Web.Script.Serialization;
+using System.Windows.Automation;
+using System.Windows.Automation.Text;
+
+namespace VmlabUi {
+
+public class Fail : Exception {
+    public Fail(string message) : base(message) { }
+}
+
+public class Win {
+    public IntPtr Handle;
+    public int Pid;
+    public string Title;
+}
+
+static class Native {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT { public uint type; public INPUTUNION u; }
+    [StructLayout(LayoutKind.Explicit)]
+    public struct INPUTUNION {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT { public int dx, dy; public uint mouseData, dwFlags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT { public ushort wVk, wScan; public uint dwFlags, time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct RECT { public int Left, Top, Right, Bottom; }
+
+    public delegate bool EnumProc(IntPtr hwnd, IntPtr param);
+
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern uint SendInput(uint count, INPUT[] inputs, int size);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern uint MapVirtualKey(uint code, uint mapType);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr hwnd, int index);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out int pid);
+    [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr param);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+    [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hwnd);
+    [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
+    [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+}
+
+public static class Helper {
+    const int VERSION = 1;
+    const int MAX_NODES = 5000;
+    const int MAX_TEXT = 100000;
+    const int DEFAULT_DEPTH = 60;
+    const double POLL = 0.1;
+    // Between typed characters. Faster, Notepad (WinUI) lost characters now and then: 5 ms
+    // dropped some in one call of three, 15 and 30 ms none in eleven.
+    const int TYPE_PAUSE_MS = 20;
+
+    static int nodes;
+    static bool truncated;
+    static Dictionary<int, string> names = new Dictionary<int, string>();
+    static JavaScriptSerializer json = new JavaScriptSerializer();
+
+    // Key names (vmlab.ui) to virtual keys; extended keys set KEYEVENTF_EXTENDEDKEY.
+    static Dictionary<string, ushort> VK = new Dictionary<string, ushort>();
+    static HashSet<string> EXTENDED = new HashSet<string>(new string[] {
+        "delete", "up", "down", "left", "right", "home", "end", "pageup", "pagedown", "cmd" });
+
+    static Helper() {
+        json.MaxJsonLength = int.MaxValue;
+        for (char c = 'a'; c <= 'z'; c++) VK[c.ToString()] = (ushort)char.ToUpper(c);
+        for (char c = '0'; c <= '9'; c++) VK[c.ToString()] = (ushort)c;
+        for (int n = 1; n <= 12; n++) VK["f" + n] = (ushort)(0x6F + n);
+        string[] keyNames = { "space", "enter", "tab", "escape", "backspace", "delete", "up", "down", "left", "right",
+            "home", "end", "pageup", "pagedown", "minus", "equal", "comma", "period", "slash", "semicolon", "quote",
+            "backslash", "grave", "leftbracket", "rightbracket", "ctrl", "alt", "shift", "cmd" };
+        ushort[] codes = { 0x20, 0x0D, 0x09, 0x1B, 0x08, 0x2E, 0x26, 0x28, 0x25, 0x27,
+            0x24, 0x23, 0x21, 0x22, 0xBD, 0xBB, 0xBC, 0xBE, 0xBF, 0xBA, 0xDE,
+            0xDC, 0xC0, 0xDB, 0xDD, 0x11, 0x12, 0x10, 0x5B };
+        for (int i = 0; i < keyNames.Length; i++) VK[keyNames[i]] = codes[i];
+    }
+
+    public static int Run(string command, string parameters) {
+        try {
+            DpiAware();
+            Dictionary<string, object> p = string.IsNullOrEmpty(parameters)
+                ? new Dictionary<string, object>()
+                : json.DeserializeObject(parameters) as Dictionary<string, object>;
+            if (p == null) throw new Fail("parameters are not a JSON object: " + parameters);
+            Emit(Dispatch(command, p));
+            return 0;
+        } catch (Fail f) {
+            Write(Console.OpenStandardError(), "vmlab-ui: " + f.Message + "\n");
+        } catch (Exception e) {
+            Write(Console.OpenStandardError(), "vmlab-ui: " + e.GetType().Name + ": " + e.Message + "\n");
+        }
+        return 1;
+    }
+
+    static object Dispatch(string command, Dictionary<string, object> p) {
+        switch (command) {
+            case "version": return Version();
+            case "tree": return Tree(p);
+            case "click": return Click(p);
+            case "press": {
+                string key = Str(p, "key");
+                List<string> modifiers = Strings(p, "modifiers");
+                Press(key, modifiers);
+                return Obj("key", key, "modifiers", modifiers);
+            }
+            case "type": {
+                string text = Str(p, "text");
+                if (text == null) throw new Fail("type needs text");
+                return Obj("typed", Type(text));
+            }
+            case "clipboard":
+                if (p.ContainsKey("set")) SetClipboard(Str(p, "set") ?? "");
+                return Obj("text", Clipboard());
+            case "focus": return Focus(p);
+            case "stage-text": return StageText(p);
+        }
+        throw new Fail("unknown command " + command);
+    }
+
+    // MARK: - Plumbing
+
+    static void Write(Stream stream, string text) {
+        byte[] bytes = new UTF8Encoding(false).GetBytes(text);
+        stream.Write(bytes, 0, bytes.Length);
+        stream.Flush();
+    }
+
+    static void Emit(object value) {
+        Write(Console.OpenStandardOutput(), json.Serialize(value) + "\n");
+    }
+
+    static Dictionary<string, object> Obj(params object[] pairs) {
+        Dictionary<string, object> d = new Dictionary<string, object>();
+        for (int i = 0; i < pairs.Length; i += 2) d[(string)pairs[i]] = pairs[i + 1];
+        return d;
+    }
+
+    static string Str(Dictionary<string, object> p, string key) {
+        object v;
+        return p.TryGetValue(key, out v) && v != null ? Convert.ToString(v) : null;
+    }
+
+    static double Num(Dictionary<string, object> p, string key, double fallback) {
+        object v;
+        return p.TryGetValue(key, out v) && v != null ? Convert.ToDouble(v) : fallback;
+    }
+
+    static List<string> Strings(Dictionary<string, object> p, string key) {
+        List<string> list = new List<string>();
+        object v;
+        if (p.TryGetValue(key, out v) && v is IEnumerable && !(v is string))
+            foreach (object item in (IEnumerable)v) list.Add(Convert.ToString(item));
+        return list;
+    }
+
+    static void DpiAware() {
+        // -4: DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 (Windows 10 1703 and later)
+        try { if (Native.SetProcessDpiAwarenessContext(new IntPtr(-4))) return; } catch (EntryPointNotFoundException) { }
+        Native.SetProcessDPIAware();
+    }
+
+    static T WaitFor<T>(DateTime deadline, Func<T> what) where T : class {
+        while (true) {
+            T value = what();
+            if (value != null) return value;
+            if (DateTime.UtcNow >= deadline) return null;
+            Thread.Sleep(TimeSpan.FromSeconds(POLL));
+        }
+    }
+
+    static DateTime Deadline(Dictionary<string, object> p) {
+        return DateTime.UtcNow.AddSeconds(Num(p, "timeout", 30));
+    }
+
+    static Dictionary<string, object> Version() {
+        return Obj("helper", "windows", "version", VERSION, "trusted", true,
+            "screen", Screen(), "dpi", (int)Math.Round(96.0 * Scale()));
+    }
+
+    static Dictionary<string, object> Screen() {
+        // SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN
+        return Obj("x", Native.GetSystemMetrics(76), "y", Native.GetSystemMetrics(77),
+            "w", Native.GetSystemMetrics(78), "h", Native.GetSystemMetrics(79));
+    }
+
+    static double Scale() {
+        using (System.Drawing.Graphics g = System.Drawing.Graphics.FromHwnd(IntPtr.Zero)) return g.DpiX / 96.0;
+    }
+
+    // MARK: - Windows and apps
+
+    /// The app name of a process: its process name, as Get-Process shows it (e.g. "Notepad", "explorer").
+    static string AppName(int pid) {
+        string name;
+        if (names.TryGetValue(pid, out name)) return name;
+        try { name = Process.GetProcessById(pid).ProcessName; } catch (ArgumentException) { name = ""; }
+        names[pid] = name;
+        return name;
+    }
+
+    static bool IsApp(int pid, string wanted) {
+        return string.Equals(AppName(pid), wanted, StringComparison.OrdinalIgnoreCase);
+    }
+
+    static string Title(IntPtr hwnd) {
+        StringBuilder text = new StringBuilder(Native.GetWindowTextLength(hwnd) + 1);
+        Native.GetWindowText(hwnd, text, text.Capacity);
+        return text.ToString();
+    }
+
+    /// Top-level windows a user can see and switch to, frontmost first.
+    static List<Win> Windows() {
+        List<Win> found = new List<Win>();
+        Native.EnumWindows(delegate(IntPtr hwnd, IntPtr param) {
+            if (!Native.IsWindowVisible(hwnd) || Native.GetWindow(hwnd, 4) != IntPtr.Zero) return true;  // GW_OWNER
+            if ((Native.GetWindowLong(hwnd, -20) & 0x80) != 0) return true;  // GWL_EXSTYLE: WS_EX_TOOLWINDOW
+            int cloaked;
+            if (Native.DwmGetWindowAttribute(hwnd, 14, out cloaked, 4) == 0 && cloaked != 0) return true;  // DWMWA_CLOAKED
+            string title = Title(hwnd);
+            if (title.Length == 0) return true;
+            int pid;
+            Native.GetWindowThreadProcessId(hwnd, out pid);
+            Win w = new Win();
+            w.Handle = hwnd; w.Pid = pid; w.Title = title;
+            found.Add(w);
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    static string Frontmost() {
+        IntPtr hwnd = Native.GetForegroundWindow();
+        if (hwnd == IntPtr.Zero) return "";
+        int pid;
+        Native.GetWindowThreadProcessId(hwnd, out pid);
+        return AppName(pid);
+    }
+
+    /// Make hwnd the foreground window, or fail. Only the foreground's own input queue may hand it over,
+    /// so the helper joins that queue for the switch.
+    static void BringToFront(IntPtr hwnd, string app, DateTime deadline) {
+        string done = WaitFor<string>(deadline, delegate() {
+            IntPtr front = Native.GetForegroundWindow();
+            if (front == hwnd) return "done";
+            if (Native.IsIconic(hwnd)) Native.ShowWindow(hwnd, 9);  // SW_RESTORE, only when minimized: it would un-maximize
+            int pid;
+            uint thread = front == IntPtr.Zero ? 0 : Native.GetWindowThreadProcessId(front, out pid);
+            uint mine = Native.GetCurrentThreadId();
+            bool attached = thread != 0 && thread != mine && Native.AttachThreadInput(mine, thread, true);
+            Native.BringWindowToTop(hwnd);
+            Native.SetForegroundWindow(hwnd);
+            if (attached) Native.AttachThreadInput(mine, thread, false);
+            return null;
+        });
+        if (done != null) return;
+        string frontmost = Frontmost();
+        throw new Fail(app + " did not come to the front in time; frontmost is " + (frontmost.Length > 0 ? frontmost : "nothing"));
+    }
+
+    static Dictionary<string, object> Focus(Dictionary<string, object> p) {
+        string wanted = Str(p, "app");
+        if (string.IsNullOrEmpty(wanted)) throw new Fail("focus needs an app");
+        DateTime deadline = Deadline(p);
+        List<Win> windows = Windows().FindAll(delegate(Win w) { return IsApp(w.Pid, wanted); });
+        if (windows.Count == 0) {
+            bool running = Process.GetProcessesByName(wanted).Length > 0;
+            throw new Fail(running ? wanted + " has no windows" : wanted + " is not running");
+        }
+        Win target = windows[0];
+        string raised = null;
+        string title = Str(p, "window");
+        if (title != null) {
+            target = windows.Find(delegate(Win w) { return w.Title.Contains(title); });
+            if (target == null) {
+                List<string> titles = windows.ConvertAll(delegate(Win w) { return w.Title; });
+                throw new Fail(wanted + " has no window titled like \"" + title + "\"; its windows: " + json.Serialize(titles));
+            }
+            raised = target.Title;
+        }
+        BringToFront(target.Handle, AppName(target.Pid), deadline);
+        return Obj("app", AppName(target.Pid), "window", raised, "frontmost", Frontmost());
+    }
+
+    // MARK: - Reading the tree
+
+    static CacheRequest Request() {
+        CacheRequest request = new CacheRequest();
+        request.TreeScope = TreeScope.Subtree;
+        request.TreeFilter = Automation.ControlViewCondition;
+        AutomationProperty[] properties = {
+            AutomationElement.NameProperty, AutomationElement.ControlTypeProperty, AutomationElement.BoundingRectangleProperty,
+            AutomationElement.HasKeyboardFocusProperty, AutomationElement.IsEnabledProperty, AutomationElement.HelpTextProperty,
+            AutomationElement.NativeWindowHandleProperty,
+            ValuePattern.ValueProperty, ValuePattern.IsReadOnlyProperty, RangeValuePattern.ValueProperty, WindowPattern.IsModalProperty,
+        };
+        foreach (AutomationProperty property in properties) request.Add(property);
+        request.Add(ValuePattern.Pattern);
+        request.Add(RangeValuePattern.Pattern);
+        request.Add(TextPattern.Pattern);
+        request.Add(WindowPattern.Pattern);
+        return request;
+    }
+
+    static Dictionary<string, object> Bounds(System.Windows.Rect r) {
+        if (r.IsEmpty || double.IsInfinity(r.Width) || r.Width <= 0 || r.Height <= 0) return null;
+        if (r.X <= -30000 || r.Y <= -30000) return null;  // a minimized window's parking place
+        return Obj("x", (int)Math.Round(r.X), "y", (int)Math.Round(r.Y), "w", (int)Math.Round(r.Width), "h", (int)Math.Round(r.Height));
+    }
+
+    static T Cached<T>(AutomationElement e, AutomationProperty property, T fallback) {
+        try {
+            object v = e.GetCachedPropertyValue(property, true);
+            return v is T ? (T)v : fallback;
+        } catch (Exception) {
+            return fallback;
+        }
+    }
+
+    /// Text as the other OSes give it: \n line breaks.
+    static string Lines(string text) {
+        return text == null ? null : text.Replace("\r\n", "\n").Replace('\r', '\n');
+    }
+
+    static string RangeText(TextPatternRange range) {
+        return Lines(range.GetText(MAX_TEXT));
+    }
+
+    static string Text(AutomationElement e) {
+        try {
+            object pattern;
+            if (!e.TryGetCachedPattern(TextPattern.Pattern, out pattern)) return null;
+            return RangeText(((TextPattern)pattern).DocumentRange);
+        } catch (Exception) {
+            return null;
+        }
+    }
+
+    static Dictionary<string, object> Node(AutomationElement e, int depth, int maxDepth) {
+        nodes++;
+        ControlType type = Cached<ControlType>(e, AutomationElement.ControlTypeProperty, ControlType.Custom);
+        string native = type.ProgrammaticName.Replace("ControlType.", "");
+        string name = Cached<string>(e, AutomationElement.NameProperty, "");
+        string help = Cached<string>(e, AutomationElement.HelpTextProperty, "");
+        Dictionary<string, object> node = Obj(
+            "native_role", native, "name", name, "value", null, "description", help.Length > 0 ? help : null,
+            "bounds", Bounds(Cached<System.Windows.Rect>(e, AutomationElement.BoundingRectangleProperty, System.Windows.Rect.Empty)),
+            "focused", Cached<bool>(e, AutomationElement.HasKeyboardFocusProperty, false),
+            "enabled", Cached<bool>(e, AutomationElement.IsEnabledProperty, true));
+        object pattern;
+        bool editable = false;
+        if (e.TryGetCachedPattern(ValuePattern.Pattern, out pattern)) {
+            node["value"] = Lines(Cached<string>(e, ValuePattern.ValueProperty, null));
+            editable = !Cached<bool>(e, ValuePattern.IsReadOnlyProperty, true);
+        } else if (e.TryGetCachedPattern(RangeValuePattern.Pattern, out pattern)) {
+            double value = Cached<double>(e, RangeValuePattern.ValueProperty, double.NaN);
+            if (!double.IsNaN(value)) node["value"] = value == Math.Floor(value) ? ((long)value).ToString() : value.ToString("G6", System.Globalization.CultureInfo.InvariantCulture);
+        }
+        if (type == ControlType.Edit || type == ControlType.Document) {
+            // Rich edits and documents give their text through TextPattern; Value is empty or cut short.
+            string text = Text(e);
+            if (text != null && (node["value"] == null || text.Length > ((string)node["value"]).Length)) node["value"] = text;
+            if (type == ControlType.Document && editable) node["role"] = "textarea";
+            if (type == ControlType.Edit && Multiline(e)) node["role"] = "textarea";
+        }
+        if (type == ControlType.Window && Cached<bool>(e, WindowPattern.IsModalProperty, false)) node["role"] = "dialog";
+        List<object> children = new List<object>();
+        node["children"] = children;
+        AutomationElementCollection kids;
+        try { kids = e.CachedChildren; } catch (Exception) { return node; }
+        if (kids.Count > 0 && depth >= maxDepth) { truncated = true; return node; }
+        foreach (AutomationElement child in kids) {
+            if (nodes >= MAX_NODES) { truncated = true; break; }
+            children.Add(Node(child, depth + 1, maxDepth));
+        }
+        return node;
+    }
+
+    static bool Multiline(AutomationElement e) {
+        int hwnd = Cached<int>(e, AutomationElement.NativeWindowHandleProperty, 0);
+        return hwnd != 0 && (Native.GetWindowLong(new IntPtr(hwnd), -16) & 0x4) != 0;  // GWL_STYLE: ES_MULTILINE
+    }
+
+    static Dictionary<string, object> Tree(Dictionary<string, object> p) {
+        string wanted = Str(p, "app");
+        int maxDepth = (int)Num(p, "depth", DEFAULT_DEPTH);
+        IntPtr front = Native.GetForegroundWindow();
+        int frontPid = 0;
+        if (front != IntPtr.Zero) Native.GetWindowThreadProcessId(front, out frontPid);
+        CacheRequest top = new CacheRequest();
+        top.Add(AutomationElement.ProcessIdProperty);
+        top.Add(AutomationElement.IsOffscreenProperty);
+        AutomationElementCollection windows;
+        using (top.Activate()) windows = AutomationElement.RootElement.FindAll(TreeScope.Children, Condition.TrueCondition);
+        CacheRequest request = Request();
+        List<object> apps = new List<object>();
+        Dictionary<int, Dictionary<string, object>> byPid = new Dictionary<int, Dictionary<string, object>>();
+        foreach (AutomationElement window in windows) {
+            int pid = Cached<int>(window, AutomationElement.ProcessIdProperty, 0);
+            if (Cached<bool>(window, AutomationElement.IsOffscreenProperty, false)) continue;  // minimized or cloaked
+            if (wanted != null && !IsApp(pid, wanted)) continue;
+            if (nodes >= MAX_NODES) { truncated = true; break; }
+            AutomationElement full;
+            try { full = window.GetUpdatedCache(request); } catch (ElementNotAvailableException) { continue; }
+            Dictionary<string, object> app;
+            if (!byPid.TryGetValue(pid, out app)) {
+                app = Obj("native_role", "application", "name", AppName(pid), "value", null, "description", null, "bounds", null,
+                    "focused", pid == frontPid, "enabled", true, "pid", pid, "children", new List<object>());
+                byPid[pid] = app;
+                apps.Add(app);
+            }
+            ((List<object>)app["children"]).Add(Node(full, 1, maxDepth));
+        }
+        return Obj("native_role", "desktop", "name", "", "value", null, "description", null, "bounds", Screen(),
+            "focused", false, "enabled", true, "truncated", truncated, "children", apps);
+    }
+
+    // MARK: - Acting
+
+    static string Label(AutomationElement e) {
+        try {
+            AutomationElement.AutomationElementInformation c = e.Current;
+            if (!string.IsNullOrEmpty(c.Name) && c.Name.Trim().Length > 0) return c.Name.Trim();
+            object pattern;
+            if (e.TryGetCurrentPattern(ValuePattern.Pattern, out pattern)) {
+                string value = Lines(((ValuePattern)pattern).Current.Value);
+                if (!string.IsNullOrEmpty(value) && value.Trim().Length > 0) return value.Trim();
+            }
+            if (e.TryGetCurrentPattern(TextPattern.Pattern, out pattern)) {
+                string text = RangeText(((TextPattern)pattern).DocumentRange);
+                if (text.Trim().Length > 0) return text.Trim();
+            }
+            return (c.HelpText ?? "").Trim();
+        } catch (Exception) {
+            return "";
+        }
+    }
+
+    static Dictionary<string, object> Click(Dictionary<string, object> p) {
+        if (!p.ContainsKey("x") || !p.ContainsKey("y")) throw new Fail("click needs x and y");
+        int x = (int)Num(p, "x", 0), y = (int)Num(p, "y", 0);
+        Dictionary<string, object> screen = Screen();
+        int sx = (int)screen["x"], sy = (int)screen["y"], sw = (int)screen["w"], sh = (int)screen["h"];
+        if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
+            throw new Fail("(" + x + ", " + y + ") is off the screen (" + sw + "x" + sh + ")");
+        // The chain from the deepest element at the point up to its window, as (label, bounds).
+        List<KeyValuePair<string, Dictionary<string, object>>> chain = new List<KeyValuePair<string, Dictionary<string, object>>>();
+        try {
+            AutomationElement e = AutomationElement.FromPoint(new System.Windows.Point(x, y));
+            TreeWalker walker = TreeWalker.ControlViewWalker;
+            while (e != null && chain.Count < 12 && !Automation.Compare(e, AutomationElement.RootElement)) {
+                chain.Add(new KeyValuePair<string, Dictionary<string, object>>(Label(e), Bounds(e.Current.BoundingRectangle)));
+                e = walker.GetParent(e);
+            }
+        } catch (ElementNotAvailableException) { }
+        object expect;
+        if (p.TryGetValue("expect", out expect) && expect is Dictionary<string, object>) {
+            // Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
+            Dictionary<string, object> want = (Dictionary<string, object>)expect;
+            string label = Str(want, "label") ?? "";
+            object wb;
+            want.TryGetValue("bounds", out wb);
+            bool hit = chain.Count > 0 && (
+                (label.Length > 0 && chain[0].Key == label)
+                || (wb is Dictionary<string, object> && chain.Exists(delegate(KeyValuePair<string, Dictionary<string, object>> link) {
+                    return SameBounds(link.Value, (Dictionary<string, object>)wb); }))
+                || (label.Length == 0 && wb == null));
+            if (!hit) {
+                string what = chain.Count > 0 ? "\"" + chain[0].Key + "\"" : "nothing";
+                throw new Fail("something else is at (" + x + ", " + y + "): " + what + "; the element may be covered or scrolled out of view");
+            }
+        }
+        Native.SetCursorPos(x, y);
+        Thread.Sleep(50);
+        Mouse(0x0002);  // MOUSEEVENTF_LEFTDOWN
+        Thread.Sleep(30);
+        Mouse(0x0004);  // MOUSEEVENTF_LEFTUP
+        Thread.Sleep(100);
+        return Obj("x", x, "y", y, "under", chain.Count > 0 ? chain[0].Key : null);
+    }
+
+    static bool SameBounds(Dictionary<string, object> a, Dictionary<string, object> b) {
+        if (a == null || b == null) return false;
+        foreach (string k in new string[] { "x", "y", "w", "h" })
+            if (!b.ContainsKey(k) || Convert.ToInt32(a[k]) != Convert.ToInt32(b[k])) return false;
+        return true;
+    }
+
+    static void Send(List<Native.INPUT> inputs) {
+        Native.INPUT[] array = inputs.ToArray();
+        if (Native.SendInput((uint)array.Length, array, Marshal.SizeOf(typeof(Native.INPUT))) != array.Length)
+            throw new Fail("SendInput was refused (error " + Marshal.GetLastWin32Error() + "); is a window of an elevated app in front?");
+    }
+
+    static void Mouse(uint flags) {
+        Native.INPUT input = new Native.INPUT();
+        input.type = 0;  // INPUT_MOUSE
+        input.u.mi.dwFlags = flags;
+        Send(new List<Native.INPUT> { input });
+    }
+
+    static Native.INPUT Key(ushort vk, ushort scan, uint flags) {
+        Native.INPUT input = new Native.INPUT();
+        input.type = 1;  // INPUT_KEYBOARD
+        input.u.ki.wVk = vk;
+        input.u.ki.wScan = scan;
+        input.u.ki.dwFlags = flags;
+        return input;
+    }
+
+    static Native.INPUT VirtualKey(string name, bool up) {
+        ushort vk = VK[name];
+        uint flags = (EXTENDED.Contains(name) ? 0x1u : 0u) | (up ? 0x2u : 0u);  // KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP
+        return Key(vk, (ushort)Native.MapVirtualKey(vk, 0), flags);  // MAPVK_VK_TO_VSC
+    }
+
+    static void Press(string key, List<string> modifiers) {
+        if (key == null) throw new Fail("press needs a key");
+        List<string> all = new List<string>(modifiers);
+        all.Add(key);
+        foreach (string name in all)
+            if (!VK.ContainsKey(name)) throw new Fail("unknown key " + name);
+        List<Native.INPUT> inputs = new List<Native.INPUT>();
+        foreach (string m in modifiers) inputs.Add(VirtualKey(m, false));
+        inputs.Add(VirtualKey(key, false));
+        inputs.Add(VirtualKey(key, true));
+        for (int i = modifiers.Count - 1; i >= 0; i--) inputs.Add(VirtualKey(modifiers[i], true));
+        Send(inputs);
+        Thread.Sleep(100);  // let the target handle it before the next call looks
+    }
+
+    /// Types text as Unicode characters (line breaks and tabs as keys); returns how many code points were typed.
+    static int Type(string text) {
+        int typed = 0;
+        for (int i = 0; i < text.Length; i++) {
+            char c = text[i];
+            List<Native.INPUT> inputs = new List<Native.INPUT>();
+            if (c == '\r' && i + 1 < text.Length && text[i + 1] == '\n') {
+                typed++;  // CRLF is one Enter, but two characters of the text
+                continue;
+            }
+            if (c == '\n' || c == '\r' || c == '\t') {
+                string name = c == '\t' ? "tab" : "enter";
+                inputs.Add(VirtualKey(name, false));
+                inputs.Add(VirtualKey(name, true));
+            } else {
+                inputs.Add(Key(0, c, 0x4));  // KEYEVENTF_UNICODE
+                inputs.Add(Key(0, c, 0x4 | 0x2));
+                if (char.IsHighSurrogate(c) && i + 1 < text.Length) {
+                    char low = text[++i];
+                    inputs.Insert(1, Key(0, low, 0x4));
+                    inputs.Add(Key(0, low, 0x4 | 0x2));
+                }
+            }
+            Send(inputs);
+            typed++;
+            Thread.Sleep(TYPE_PAUSE_MS);
+        }
+        Thread.Sleep(100);
+        return typed;
+    }
+
+    // MARK: - Clipboard
+
+    static T Retry<T>(Func<T> what) {
+        // The clipboard is busy while another app reads or writes it.
+        for (int attempt = 0; ; attempt++) {
+            try { return what(); } catch (ExternalException) { if (attempt >= 20) throw; }
+            Thread.Sleep(100);
+        }
+    }
+
+    static string Clipboard() {
+        return Retry(delegate() {
+            return System.Windows.Forms.Clipboard.ContainsText() ? Lines(System.Windows.Forms.Clipboard.GetText()) : null;
+        });
+    }
+
+    static void SetClipboard(string text) {
+        // Copied out of this process, so it outlives the call. Not SetText, which refuses "".
+        Retry(delegate() {
+            System.Windows.Forms.Clipboard.SetDataObject(new System.Windows.Forms.DataObject(System.Windows.Forms.DataFormats.UnicodeText, text), true);
+            return true;
+        });
+    }
+
+    // MARK: - Staging
+
+    /// The selected text in the app's focused element, or null.
+    static string Selection(int pid) {
+        try {
+            AutomationElement focused = AutomationElement.FocusedElement;
+            if (focused == null || focused.Current.ProcessId != pid) return null;
+            object pattern;
+            if (!focused.TryGetCurrentPattern(TextPattern.Pattern, out pattern)) return null;
+            TextPatternRange[] ranges = ((TextPattern)pattern).GetSelection();
+            return ranges.Length == 0 ? null : RangeText(ranges[0]);
+        } catch (Exception) {
+            return null;
+        }
+    }
+
+    static Dictionary<string, object> StageText(Dictionary<string, object> p) {
+        string text = Str(p, "text"), app = Str(p, "app");
+        if (text == null || string.IsNullOrEmpty(app)) throw new Fail("stage-text needs text and app");
+        DateTime deadline = Deadline(p);
+        string stem = "vmlab-stage-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        string path = Path.Combine(Path.GetTempPath(), stem + ".txt");
+        File.WriteAllText(path, text, new UTF8Encoding(false));
+        try {
+            ProcessStartInfo start = new ProcessStartInfo(app, "\"" + path + "\"");
+            start.UseShellExecute = true;
+            Process.Start(start);
+        } catch (System.ComponentModel.Win32Exception e) {
+            throw new Fail("cannot start " + app + ": " + e.Message + "; is it installed?");
+        }
+        List<Win> seen = new List<Win>();
+        Win window = WaitFor<Win>(deadline, delegate() {
+            seen = Windows();
+            return seen.Find(delegate(Win w) { return w.Title.Contains(stem); });
+        });
+        if (window == null)
+            throw new Fail(app + " showed no window for " + Path.GetFileName(path) + " in time; windows: "
+                + json.Serialize(seen.ConvertAll(delegate(Win w) { return w.Title; })));
+        string name = AppName(window.Pid);
+        BringToFront(window.Handle, name, deadline);
+        Press("a", new List<string> { "ctrl" });
+        string selected = WaitFor<string>(deadline, delegate() { return Selection(window.Pid) == text ? text : null; }) ?? Selection(window.Pid);
+        string frontmost = Frontmost();  // what the trigger lands on, recorded before it is pressed
+        object pressed = null;
+        object then;
+        if (p.TryGetValue("then", out then) && then is Dictionary<string, object>) {
+            Dictionary<string, object> chord = (Dictionary<string, object>)then;
+            List<string> modifiers = Strings(chord, "modifiers");
+            Press(Str(chord, "key"), modifiers);
+            pressed = Obj("key", Str(chord, "key"), "modifiers", modifiers);
+        }
+        return Obj("app", name, "file", path, "frontmost", frontmost, "selected", selected, "pressed", pressed);
+    }
+}
+}
+'@
+
+$dir = Join-Path $env:ProgramData 'vmlab\ui'
+$sha = [Security.Cryptography.SHA1]::Create()
+$hash = -join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($source))[0..5] | ForEach-Object { $_.ToString('x2') })
+$dll = Join-Path $dir "vmlab-ui-$hash.dll"
+if (-not (Test-Path -LiteralPath $dll)) {
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    # Compiled aside and renamed: a concurrent call never loads half a file.
+    $part = "$dll.$PID.part"
+    Add-Type -TypeDefinition $source -OutputAssembly $part -OutputType Library -ReferencedAssemblies @(
+        'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions', 'System.Core')
+    try { Move-Item -LiteralPath $part -Destination $dll -ErrorAction Stop } catch { Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $part }
+    # Other vmlab versions' copies; one a running call has loaded stays until next time.
+    Get-ChildItem -LiteralPath $dir -Filter 'vmlab-ui-*.dll' | Where-Object { $_.FullName -ne $dll } |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+}
+Add-Type -Path $dll
+exit [VmlabUi.Helper]::Run($Command, $Params)

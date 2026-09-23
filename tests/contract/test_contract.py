@@ -31,7 +31,7 @@ from pathlib import Path
 
 from harness import zipapp_path
 
-UI_OSES = ("macos", "linux")  # Guest OSes with a UI helper (vmlab.uihelpers)
+UI_OSES = ("macos", "linux", "windows")  # Guest OSes with a UI helper (vmlab.uihelpers)
 
 FAKE_LAB = """
 [labs.contract]
@@ -258,7 +258,7 @@ def scenario(g):
     g.check("wait-for gone", g.wait_for(text="no such element " + tag, gone=True, timeout=1)["met"])
     g.exec(cmd(g, "touch ~/contract-ui-" + tag, "New-Item -Force (Join-Path $HOME contract-ui-" + tag + ")"))
     g.check("wait-for a file", g.wait_for(file="~/contract-ui-" + tag, timeout=10)["met"])
-    title = os.path.basename(staged["file"])
+    title = staged["file"].replace("\\\\", "/").rsplit("/", 1)[-1]  # a Windows path too
     focused = g.focus(app, window=title)
     g.check("focus raises the window and fronts the app", (focused["app"], focused["frontmost"]) == (app, app) and (focused["window"] == title if g.os == "macos" else title in focused["window"]), detail=focused)
 """))
