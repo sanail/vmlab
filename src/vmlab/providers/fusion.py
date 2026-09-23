@@ -566,9 +566,15 @@ class FusionProvider(Provider):
         if not record or record.get("provider") != "fusion" or not record.get("provisioned") or not FusionVM(record["vmx"]).exists():
             raise GuestError(
                 "Base guest %s has not been created on this Host" % self.base_name,
-                "vmlab base create %s   (downloads its installer the first time, after asking)" % self.base_name,
+                self._create_fix(),
             )
         return record
+
+    def _create_fix(self):
+        if self.windows:
+            return ('make a Windows 11 VM with Fusion\'s "Get Windows from Microsoft", then run `vmlab base create %s` in a terminal window: '
+                    "a wizard that adopts a copy of it" % self.base_name)
+        return "vmlab base create %s   (downloads its installer the first time, after asking)" % self.base_name
 
     @classmethod
     def hypervisor(cls):
@@ -587,7 +593,7 @@ class FusionProvider(Provider):
         except GuestError as exc:
             return [(check, FAIL, exc.message, exc.fix)]
         if not record or record.get("provider") != "fusion":
-            return [(check, FAIL, "not created on this Host", "vmlab base create %s   (downloads its installer the first time, after asking)" % name)]
+            return [(check, FAIL, "not created on this Host", self._create_fix())]
         if not record.get("provisioned"):
             return [(check, FAIL, "created, but its install or provisioning did not finish", "vmlab base create %s   (it resumes where it failed)" % name)]
         base_vm = record.get("vm", bases.vm_name(name))

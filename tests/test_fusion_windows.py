@@ -74,6 +74,8 @@ class WindowsLabConfigTest(WindowsTestCase):
 
         self.assertExit(r, 1)
         self.assertIn("vmlab base create windows-11", r.out)
+        self.assertNotIn("downloads", r.out, "Fusion gets Windows; vmlab downloads nothing")
+        self.assertIn("Get Windows from Microsoft", r.out)
 
     def test_the_session_is_for_linux_labs_only(self):
         self.project.config(WINDOWS_LAB + '[labs.win.fusion]\nsession = "x11"\n')
@@ -254,7 +256,8 @@ class WindowsBaseWizardTest(WindowsTestCase):
         self.assertIn("Get Windows from Microsoft", r.out)
         self.assertIn("Only the files\n     needed to support a TPM", r.out)
         self.assertIn("no Windows VM in Fusion's folders", r.err)
-        self.assertIn("in a terminal", r.err)
+        self.assertIn("in a terminal window of your own", r.err)
+        self.assertIn("Claude Code's `!`", r.err, "an agent's shell cannot answer it either")
 
     def test_a_vm_that_is_not_windows_is_refused(self):
         vmx = self.windows_vm(self.project.root, name="Ubuntu", guest_os="arm-ubuntu-64")

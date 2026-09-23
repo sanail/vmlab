@@ -124,7 +124,8 @@ class Wizard:
                 shown = True
             self.out("  not yet: %s" % problem)
             if not self.prompt.pause("Press Enter to check again (Ctrl-C stops; re-running continues from here)"):
-                raise GuestError("%s: %s" % (title, problem), "do the steps above, then run `vmlab base create %s` in a terminal" % self.name)
+                raise GuestError("%s: %s" % (title, problem), "do the steps above, then run `vmlab base create %s` in a terminal window of your own: "
+                                 "it waits for you and asks for passwords, which Claude Code's `!` cannot answer" % self.name)  # fmt: skip
 
     def _show(self, title, instructions):
         self.out("\n%s\n%s" % (title, instructions))
