@@ -85,6 +85,44 @@ class WindowsLabConfigTest(WindowsTestCase):
         self.assertIn("unknown key for a Windows Lab", r.err)
 
 
+class WindowsDoctorTest(WindowsTestCase):
+    def setUp(self):
+        super().setUp()
+        self.project.config(WINDOWS_LAB)
+        self.windows_base()
+        ssh = self.project.home / "ssh"
+        ssh.mkdir(exist_ok=True)
+        (ssh / "known_hosts").write_text("vmlab-base-windows-11 ssh-ed25519 AAAA\n")
+
+    def set_record(self, **fields):
+        path = self.project.home / "bases.json"
+        records = json.loads(path.read_text())
+        records["windows-11"].update(fields)
+        path.write_text(json.dumps(records))
+
+    def test_a_ready_windows_base_guest(self):
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v1\)")
+
+    def test_a_guest_that_asks_for_elevation_is_a_warning(self):
+        self.set_record(elevated=False)
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+win: Elevation: ")
+        self.assertIn("vmlab base create windows-11", r.out)
+
+    def test_missing_credentials_fail_since_vmrun_cannot_open_the_vm(self):
+        (self.project.home / "fusion" / "vmlab-base-windows-11.credentials.json").unlink()
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+win: Guest credentials: .*missing")
+
+
 class WindowsCloneTest(WindowsTestCase):
     """A Windows Lab runs in an APFS copy of its Base guest: vmrun cannot clone an encrypted VM."""
 

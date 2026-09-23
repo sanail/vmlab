@@ -162,7 +162,8 @@ class TartDoctorTest(TartTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 1)
-        self.assertRegex(r.out, r"FAIL\s+mac: Provider tart")
+        self.assertRegex(r.out, r"ok\s+mac: Provider tart: tart 2.37.0")
+        self.assertRegex(r.out, r"FAIL\s+mac: Base guest macos-tahoe")
         self.assertIn("vmlab base create macos-tahoe", r.out)
 
     def test_missing_tart_fails_with_the_install_command(self):
@@ -172,6 +173,98 @@ class TartDoctorTest(TartTestCase):
 
         self.assertExit(r, 1)
         self.assertIn("brew install cirruslabs/cli/tart", r.out)
+
+    def ready_base(self, **record):
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])
+        self.base_record()
+        if record:
+            path = self.project.home / "bases.json"
+            records = json.loads(path.read_text())
+            records["macos-tahoe"].update(record)
+            path.write_text(json.dumps(records))
+        ssh = self.project.home / "ssh"
+        ssh.mkdir(exist_ok=True)
+        (ssh / "known_hosts").write_text("vmlab-base-macos-tahoe ssh-ed25519 AAAA\n")
+
+    def test_a_ready_base_guest_and_no_clone_yet(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+mac: Base guest macos-tahoe: provisioned \(v5\)")
+        self.assertRegex(r.out, r"info\s+mac: Clone: none yet")
+
+    def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
+        self.project.config(TART_LAB)
+        self.ready_base(provisioned=4)
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"warn\s+mac: Base guest macos-tahoe: provisioned by an older vmlab \(v4; this one provisions v5\)")
+        self.assertIn("vmlab base create macos-tahoe", r.out)
+
+    def test_a_base_guest_whose_provisioning_did_not_finish_fails(self):
+        self.project.config(TART_LAB)
+        self.ready_base(provisioned=None)
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+mac: Base guest macos-tahoe: .*provisioning did not finish")
+
+    def test_a_registered_base_guest_whose_vm_is_gone_fails(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+        self.tart_state(local=[], oci=[], running=[])
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+mac: Base guest macos-tahoe: .*Tart VM vmlab-base-macos-tahoe is gone")
+
+    def test_a_running_base_guest_is_a_warning_since_labs_cannot_clone_it(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=["vmlab-base-macos-tahoe"])
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+mac: Base guest macos-tahoe: running")
+        self.assertIn("tart stop vmlab-base-macos-tahoe", r.out)
+
+    def test_an_unpinned_host_key_is_a_warning(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+        (self.project.home / "ssh" / "known_hosts").write_text("")
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+mac: SSH host key: ")
+        self.assertIn("vmlab base create macos-tahoe --reprovision", r.out)
+
+    def test_a_clone_of_an_earlier_provisioning_is_made_again_at_the_next_up(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+        self.vmlab("up")  # the fake tart never boots a VM; the clone is made
+        self.base_record("second")
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"info\s+mac: Clone: made from an earlier provisioning")
+        self.assertIn("vmlab up mac", r.out)
+
+    def test_two_running_macos_vms_leave_no_room_for_the_lab(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+        self.tart_state(local=["vmlab-base-macos-tahoe", "one", "two"], oci=[], running=["one", "two"])
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+mac: Tart VMs: 2 Tart VMs are running \(one, two\)")
+        self.assertIn("tart stop one", r.out)
 
     def test_up_without_a_base_guest_names_the_create_command(self):
         self.project.config(TART_LAB)

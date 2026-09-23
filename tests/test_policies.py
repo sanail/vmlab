@@ -261,6 +261,15 @@ class GuestLockTest(VmlabTestCase):
         self.assertEqual(self.project.report(sorted(self.project.run_dirs())[-1])["status"], "error")
         self.finish(holder)
 
+    def test_doctor_names_the_vmlab_holding_the_guest(self):
+        holder = self.hold_guest()
+
+        r = self.project.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"warn\s+mac: Guest lock: in use by another vmlab \(pid %d" % holder.pid)
+        self.finish(holder)
+
     def test_deploy_on_a_guest_in_use_fails(self):
         holder = self.hold_guest()
 

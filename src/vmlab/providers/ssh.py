@@ -63,6 +63,13 @@ def pin_host_key(alias, host_key):
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def is_pinned(alias):
+    """Is a host key pinned for alias?"""
+    path = ssh_dir() / "known_hosts"
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    return any(line.split(" ", 1)[0] == alias for line in lines)
+
+
 def unpin_host_key(alias):
     """Forget alias's pinned host key, e.g. when its Base guest is deleted."""
     path = ssh_dir() / "known_hosts"

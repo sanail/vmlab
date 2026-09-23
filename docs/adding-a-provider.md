@@ -12,7 +12,8 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | --- | --- |
 | `validate_options(config_path, key, options, os_name)` (classmethod) | Check the Lab's `[labs.<lab>.<name>]` table (`os_name` is the Lab's `os`). Raise `ConfigError(config_path, "<key>.<option>", problem, fix)` for anything wrong, including unknown keys. |
 | `SUPPORTED_OS` (class attribute) | The Lab OSes it runs, e.g. `("macos",)`, or `None` for all. Config load rejects other Labs. |
-| `detect()` | `(ok, detail, fix)`: is the hypervisor installed and usable? `doctor` shows this first. |
+| `HYPERVISOR` (class attribute) and `hypervisor()` (classmethod) | The hypervisor's name, and `(found, detail, fix)`: is it installed and usable on this Host? Needs no Lab: `doctor`'s Host section lists every registered Provider's. |
+| `detect()` | `(ok, detail, fix)` for this Lab's hypervisor, usually `hypervisor()`. `doctor` shows it first. Only the hypervisor: Base guests belong in `diagnose()`. |
 | `is_running()` | Is this Lab's Guest powered on? Must be cheap; the Runner calls it often. |
 | `start()` | Power the Guest on and return **without** waiting for boot. |
 | `stop()` | Power it off. The base `down()` calls it only when the Guest is running. |
@@ -27,7 +28,9 @@ These are built on the methods above; override them only when the Guest needs so
 - `up()`, `down()` and `exec()` (Channel fallback).
 - `shell_argv(command)`: `sh -c`, or PowerShell on Windows.
 - `remove_paths(paths, timeout)`: app state reset.
-- `probe_argv()`: the command `doctor` sends down each Channel.
+- `probe_argv()`: the command `doctor` sends down each Channel (and `doctor --bench` times).
+- `diagnose()`: `doctor`'s checks of what the Guest is made from, answerable while it is stopped (its Base guest, its clone), as `[(check, status, detail, fix)]` with a status from `vmlab.providers.base` (`OK`, `INFO`, `WARN`, `FAIL`). A `FAIL` means the Guest cannot start, and doctor checks nothing further for the Lab. The default has none.
+- `diagnose_guest()`: the same for a running Guest whose Channels work, for what only this Provider's Guests can get wrong (Tart: a TCC consent dialog blocking Apple Events; Fusion: a Linux Guest logged into the wrong desktop session). Channels, screenshots and the UI helper are checked for every Provider.
 - `wrap_argv(argv, env)`: how every command is run; the default runs it as is. The Fusion Provider wraps Linux commands so they get the desktop session's environment.
 - `ui_call(command, params, timeout)`: the UI contract. It runs the Guest OS's UI helper (`vmlab.uihelpers`) over the Guest's Channels, so a Provider gets the UI contract for free once exec works. Only a Provider whose Guests need no helper overrides it, as the Fake Provider does.
 

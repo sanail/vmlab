@@ -10,6 +10,7 @@ editor for stage-text (ui_call). Options, under [labs.<name>.fake]:
     channels = ["ssh", "exec"]      # Channel names, preferred first
     broken_channels = ["ssh"]       # these Channels fail every call (fault injection)
     hung_channels = ["ssh"]         # these Channels hang until the call times out
+    latency = {ssh = 0.2}           # seconds each call over a Channel takes on top (doctor --bench)
     boot_seconds = 0                # how long the Guest takes to become reachable
 """
 
@@ -28,7 +29,7 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
-OPTIONS = ("ui_tree", "channels", "broken_channels", "hung_channels", "boot_seconds")
+OPTIONS = ("ui_tree", "channels", "broken_channels", "hung_channels", "latency", "boot_seconds")
 
 
 class FakeProvider(Provider):
@@ -136,6 +137,14 @@ class FakeProvider(Provider):
                 raise ConfigError(
                     config_path, "%s.%s" % (key, fault), "unknown Channel %r" % unknown[0], "use names from channels: %s" % ", ".join(channels)
                 )
+        latency = options.get("latency", {})
+        if not isinstance(latency, dict):
+            raise ConfigError(config_path, key + ".latency", "must be a table of Channel = seconds", "e.g. latency = {ssh = 0.2}")
+        for name, seconds in sorted(latency.items()):
+            if name not in channels:
+                raise ConfigError(config_path, "%s.latency.%s" % (key, name), "unknown Channel %r" % name, "use names from channels: %s" % ", ".join(channels))
+            if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
+                raise ConfigError(config_path, "%s.latency.%s" % (key, name), "must be a number of seconds >= 0", "e.g. latency = {ssh = 0.2}")
         boot = options.get("boot_seconds", 0)
         if isinstance(boot, bool) or not isinstance(boot, (int, float)) or boot < 0:
             raise ConfigError(config_path, key + ".boot_seconds", "must be a number >= 0", "e.g. boot_seconds = 2")
@@ -252,6 +261,7 @@ class FakeChannel(Channel):
         if not p.is_reachable():
             raise ChannelError("Guest %s is still booting" % p.lab.name)
         p._record("exec", argv=argv, channel=self.name)
+        time.sleep(options.get("latency", {}).get(self.name, 0))
         if self.name in options.get("hung_channels", []):
             time.sleep(timeout)
             raise _timeout(argv, timeout, self.name)

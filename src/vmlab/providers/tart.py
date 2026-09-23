@@ -34,8 +34,8 @@ import uuid
 from vmlab import bases, hostproc, uihelpers
 from vmlab.config import ConfigError
 from vmlab.home import vmlab_home
-from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
-from vmlab.providers.ssh import SshChannel, pin_host_key, public_key
+from vmlab.providers.base import FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "macos-tahoe", "cpu": 4, "display": "1920x1080", "channels": ["ssh", "exec"]}
 CHANNELS = ("ssh", "exec")
@@ -64,6 +64,16 @@ SERVICE_SUFFIXES = (CLONE_RECORD, LEGACY_CLONE_STATE, ".log")
 
 def tart_binary():
     return os.environ.get("VMLAB_TART") or shutil.which("tart") or "tart"
+
+
+def hypervisor():
+    """(found, detail, fix): can this Host run Tart?"""
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        return False, "Tart runs macOS Guests on Apple Silicon Macs only", "run macOS Labs on an Apple Silicon Mac"
+    try:
+        return True, "tart %s" % tart_ok(["--version"], CALL_TIMEOUT).strip(), None
+    except GuestError as exc:
+        return False, exc.message, exc.fix
 
 
 def tart(args, timeout, stdin=None):
@@ -189,6 +199,7 @@ class TartExecChannel(Channel):
 
 class TartProvider(Provider):
     SUPPORTED_OS = ("macos",)
+    HYPERVISOR = "Tart"
 
     def __init__(self, project, lab):
         super().__init__(project, lab)
@@ -229,15 +240,69 @@ class TartProvider(Provider):
             )
         return record
 
+    @classmethod
+    def hypervisor(cls):
+        return hypervisor()
+
     def detect(self):
-        if platform.system() != "Darwin" or platform.machine() != "arm64":
-            return False, "Tart runs macOS Guests on Apple Silicon Macs only", "run this Lab on an Apple Silicon Mac"
+        return hypervisor()
+
+    def diagnose(self):
+        name, base_vm = self.base_name, bases.vm_name(self.base_name)
+        check = "Base guest %s" % name
         try:
-            version = tart_ok(["--version"], CALL_TIMEOUT).strip()
-            self._base()
+            record = bases.Registry().get(name)
+            vms = list_vms("local")
         except GuestError as exc:
-            return False, exc.message, exc.fix
-        return True, "tart %s; Base guest %s" % (version, self.base_name), None
+            return [(check, FAIL, exc.message, exc.fix)]
+        if not record:
+            return [(check, FAIL, "not created on this Host", "vmlab base create %s   (downloads its image the first time, after asking)" % name)]
+        if not record.get("provisioned"):
+            return [(check, FAIL, "created, but its provisioning did not finish", "vmlab base create %s   (it resumes where it failed)" % name)]
+        if base_vm not in vms:
+            return [(check, FAIL, "registered, but its Tart VM %s is gone" % base_vm, "vmlab base create %s" % name)]
+        findings = []
+        if record["provisioned"] != PROVISION_VERSION:
+            findings.append((check, WARN, "provisioned by an older vmlab (v%s; this one provisions v%s)" % (record["provisioned"], PROVISION_VERSION),
+                             "vmlab base create %s   (provisions it again; Lab clones are then made again)" % name))  # fmt: skip
+        if vms[base_vm].get("Running"):
+            findings.append((check, WARN, "running: Labs cannot clone it while it runs", "tart stop %s" % base_vm))
+        if not findings:
+            findings.append((check, OK, "provisioned (v%s), Tart VM %s" % (record["provisioned"], base_vm), None))
+        if "ssh" in self.options["channels"] and not is_pinned(base_vm):
+            findings.append(("SSH host key", WARN, "none pinned for %s: the ssh Channel refuses its Guests" % base_vm, "vmlab base create %s --reprovision" % name))
+
+        if self.guest_id not in vms:
+            findings.append(("Clone", INFO, "none yet; `vmlab up %s` clones Base guest %s" % (self.lab.name, name), None))
+        elif _made_from(self.guest_id) != bases.provisioning(record):
+            findings.append(("Clone", INFO, "made from an earlier provisioning of %s; `vmlab up %s` makes it again" % (name, self.lab.name), None))
+        else:
+            findings.append(("Clone", OK, self.guest_id, None))
+        others = sorted(vm for vm, row in vms.items() if row.get("Running") and vm != self.guest_id)
+        if len(others) >= 2 and not vms.get(self.guest_id, {}).get("Running"):
+            findings.append(("Tart VMs", WARN, "%d Tart VMs are running (%s); macOS runs at most two macOS VMs at once, so if both run macOS this Guest cannot start"
+                             % (len(others), ", ".join(others)), "stop one: tart stop %s" % others[0]))  # fmt: skip
+        return findings
+
+    def diagnose_guest(self):
+        """Apple Events over each Channel: a TCC consent dialog nobody can click hangs them."""
+        findings = []
+        for channel in self.channels():
+            check = "Apple Events over %s" % channel.name
+            reprovision = "vmlab base create %s --reprovision" % self.base_name
+            try:
+                result = channel.exec(SYSTEM_EVENTS_PROBE, SYSTEM_EVENTS_TIMEOUT, {})
+            except GuestTimeout:
+                findings.append((check, WARN, "System Events did not answer within %ss: a TCC consent dialog is probably waiting in the Guest" % SYSTEM_EVENTS_TIMEOUT,
+                                 "look at its screen (vmlab ui screenshot --lab %s), then %s" % (self.lab.name, reprovision)))  # fmt: skip
+                continue
+            except ChannelError:
+                continue  # doctor reports the Channel itself
+            if result.ok:
+                findings.append((check, OK, "System Events answers", None))
+            else:
+                findings.append((check, WARN, "System Events refused: %s" % _tail(result.stderr, 1), reprovision))
+        return findings
 
     def is_running(self):
         return self.vm.is_running()

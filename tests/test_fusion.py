@@ -214,6 +214,85 @@ class FusionDoctorTest(FusionTestCase):
         self.assertExit(r, 1)
         self.assertIn("vmlab base create ubuntu-26.04", r.out)
 
+    def ready_base(self, credentials=True, **record):
+        self.base_guest("first")
+        path = self.project.home / "bases.json"
+        records = json.loads(path.read_text())
+        records["ubuntu-26.04"].update(dict({"provisioned": 2}, **record))
+        path.write_text(json.dumps(records))
+        if credentials:
+            (self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.credentials.json").write_text('{"user": "vmlab", "password": "pw"}')
+        ssh = self.project.home / "ssh"
+        ssh.mkdir(exist_ok=True)
+        (ssh / "known_hosts").write_text("vmlab-base-ubuntu-26.04 ssh-ed25519 AAAA\n")
+
+    def test_a_ready_base_guest_and_no_clone_yet(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+linux: Provider fusion")
+        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v2\)")
+        self.assertRegex(r.out, r"info\s+linux: Clone: none yet")
+
+    def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base(provisioned=1)
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v2\)")
+
+    def test_a_base_guest_without_its_provisioned_snapshot_fails(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        state = json.loads(self.state_path.read_text())
+        for vm in state["vms"].values():
+            vm["snapshots"] = []
+        self.state_path.write_text(json.dumps(state))
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+linux: Base guest ubuntu-26.04: .*snapshot vmlab-provisioned-first is missing")
+        self.assertIn("vmlab base create ubuntu-26.04 --reprovision", r.out)
+
+    def test_missing_guest_credentials_break_the_vmrun_channel(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base(credentials=False)
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"warn\s+linux: Guest credentials: .*missing")
+
+    def test_a_running_base_guest_is_a_warning_since_labs_cannot_clone_it(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        state = json.loads(self.state_path.read_text())
+        for vm in state["vms"].values():
+            vm["running"] = True
+        self.state_path.write_text(json.dumps(state))
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: running")
+        self.assertIn("-T fusion stop '%s" % self.project.home, r.out)
+
+    def test_a_clone_for_another_session_is_made_again_at_the_next_up(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        self.vmlab("up")  # no Guest really boots here; the clone is made
+        self.vmlab("down")
+        self.project.config(FUSION_LAB + '[labs.linux.fusion]\nsession = "x11"\n')
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"info\s+linux: Clone: made for the Wayland session")
+        self.assertIn("vmlab up linux", r.out)
+
     def test_up_without_a_base_guest_names_the_create_command(self):
         self.project.config(FUSION_LAB)
 

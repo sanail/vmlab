@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import threading
+import time
 from pathlib import Path
 
 try:
@@ -13,6 +14,7 @@ except ImportError:  # Windows Hosts (not supported in v1): threads are still se
     fcntl = None
 
 _lock = threading.Lock()
+ACQUIRE_TRIES, ACQUIRE_PAUSE = 5, 0.05  # s
 
 
 def vmlab_home():
@@ -73,18 +75,34 @@ class GuestLock:
         self.path.parent.mkdir(mode=0o700, exist_ok=True)
         lock_file = self.path.open("a+")
         if fcntl:
-            try:
-                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                lock_file.seek(0)
-                holder = lock_file.read().strip() or "unknown"
-                lock_file.close()
-                raise GuestInUse(holder)
+            # A few tries: `vmlab doctor` holds it for a moment to see who has it (holder).
+            for attempt in range(ACQUIRE_TRIES):
+                try:
+                    fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if attempt == ACQUIRE_TRIES - 1:
+                        lock_file.seek(0)
+                        holder = lock_file.read().strip() or "unknown"
+                        lock_file.close()
+                        raise GuestInUse(holder)
+                    time.sleep(ACQUIRE_PAUSE)
         lock_file.seek(0)
         lock_file.truncate()
         lock_file.write("pid %d: %s" % (os.getpid(), " ".join(["vmlab"] + sys.argv[1:])))
         lock_file.flush()
         self._file = lock_file
+
+    def holder(self):
+        """Who holds the lock now, or None, without taking it for longer than a moment."""
+        if not (fcntl and self.path.exists()):
+            return None
+        with self.path.open("r") as lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except OSError:
+                return lock_file.read().strip() or "unknown"
+        return None
 
     def release(self):
         if self._file:

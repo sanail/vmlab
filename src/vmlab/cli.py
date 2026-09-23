@@ -60,9 +60,11 @@ def main(argv=None):
         p = sub.add_parser(name, help=help_text + " (default: all Labs)")
         p.add_argument("labs", nargs="*", metavar="LAB")
 
-    p = sub.add_parser("doctor", help="check Providers, Guests and Channels (default: all Labs)")
+    p = sub.add_parser("doctor", help="check the Host, Providers, Base guests, Guests, Channels and UI helpers (default: all Labs)")
     p.add_argument("labs", nargs="*", metavar="LAB")
     p.add_argument("--json", action="store_true", help="print JSON")
+    p.add_argument("--bench", action="store_true", help="also time each Channel of running Guests")
+    p.add_argument("--calls", type=int, default=doctor.BENCH_CALLS, metavar="N", help="calls per Channel for --bench (default: %(default)s)")
 
     _ui_parser(sub)
 
@@ -96,7 +98,11 @@ def main(argv=None):
         if args.command == "status":
             return _status(project, args.json)
         if args.command == "doctor":
-            return _doctor(project, args.labs, args.json)
+            if args.calls != doctor.BENCH_CALLS and not args.bench:
+                raise UsageError("--calls goes with --bench")
+            if args.calls < 1:
+                raise UsageError("--calls must be at least 1")
+            return _doctor(project, args.labs, args.json, args.calls if args.bench else 0)
         if args.command == "ui":
             return _ui(project, args)
     except (ConfigError, UsageError) as exc:
@@ -288,8 +294,8 @@ def _up_down(project, command, names):
     return EXIT_OK
 
 
-def _doctor(project, names, as_json):
-    findings = doctor.diagnose(project, project.select_labs(names))
+def _doctor(project, names, as_json, bench_calls):
+    findings = doctor.diagnose(project, project.select_labs(names), bench_calls)
     if as_json:
         print(json.dumps(findings, indent=2))
     else:

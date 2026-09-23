@@ -287,7 +287,9 @@ vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
 vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
-vmlab doctor [LAB...] [--json]           # arch coverage, Provider, Guest, per-Channel and UI helper checks with fixes; exit 1 on FAIL
+vmlab doctor [LAB...] [--json] [--bench [--calls N]]
+                                         # Host, arch coverage, Provider, Base guest, clone, Guest, per-Channel, screenshot and
+                                         # UI helper checks with fixes; exit 1 on FAIL. --bench times each Channel of running Guests
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab version
 ```

@@ -39,6 +39,7 @@ import json
 import os
 import pkgutil
 import platform
+import plistlib
 import re
 import secrets
 import shlex
@@ -55,8 +56,8 @@ from vmlab import bases, hostproc
 from vmlab.config import ConfigError, host_arch
 from vmlab.home import vmlab_home
 from vmlab.providers import windows
-from vmlab.providers.base import BOOT_POLL_SECONDS, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
-from vmlab.providers.ssh import SshChannel, pin_host_key, public_key
+from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"], "session": "wayland"}
 WINDOWS_DEFAULTS = {"base": "windows-11", "cpu": 4, "channels": ["ssh", "vmrun"]}
@@ -178,6 +179,21 @@ def _without_noise(text):
     """vmrun and vmcli print harmless warnings about Fusion never having been opened."""
     noise = ("LocationGetRoot", "Cannot determine message file", "ServiceImpl_Opener")
     return "\n".join(line for line in text.splitlines() if not any(n in line for n in noise))
+
+
+def hypervisor():
+    """(found, detail, fix): can this Host run VMware Fusion?"""
+    if platform.system() != "Darwin":
+        return False, "VMware Fusion runs on macOS Hosts only", "run Linux and Windows Labs on a Mac"
+    try:
+        running_vmx()
+    except GuestError as exc:
+        return False, exc.message, exc.fix
+    try:
+        with open(FUSION_APP + "/Contents/Info.plist", "rb") as f:
+            return True, "VMware Fusion %s" % plistlib.load(f)["CFBundleShortVersionString"], None
+    except (OSError, ValueError, KeyError):
+        return True, "VMware Fusion", None  # vmrun from elsewhere (VMLAB_VMRUN, PATH)
 
 
 def running_vmx():
@@ -350,6 +366,11 @@ def _credentials_path(base_vm):
     return fusion_dir() / (base_vm + CREDENTIALS)
 
 
+def credential_files():
+    """Every Base guest's credentials file on this Host."""
+    return sorted(fusion_dir().glob("*" + CREDENTIALS))
+
+
 def credentials(base_vm):
     """{"user", "password"} of a Base guest's user, shared by its clones."""
     path = _credentials_path(base_vm)
@@ -496,6 +517,7 @@ def defaults(os_name):
 
 class FusionProvider(Provider):
     SUPPORTED_OS = ("linux", "windows")
+    HYPERVISOR = "VMware Fusion"
 
     def __init__(self, project, lab):
         super().__init__(project, lab)
@@ -543,15 +565,86 @@ class FusionProvider(Provider):
             )
         return record
 
+    @classmethod
+    def hypervisor(cls):
+        return hypervisor()
+
     def detect(self):
-        if platform.system() != "Darwin":
-            return False, "VMware Fusion runs on macOS Hosts only", "run this Lab on a Mac"
+        return hypervisor()
+
+    def diagnose(self):
+        from vmlab.providers import fusion_windows
+
+        name = self.base_name
+        check = "Base guest %s" % name
         try:
-            running_vmx()
-            self._base()
+            record = bases.Registry().get(name)
         except GuestError as exc:
-            return False, exc.message, exc.fix
-        return True, "VMware Fusion; Base guest %s" % self.base_name, None
+            return [(check, FAIL, exc.message, exc.fix)]
+        if not record or record.get("provider") != "fusion":
+            return [(check, FAIL, "not created on this Host", "vmlab base create %s   (downloads its installer the first time, after asking)" % name)]
+        if not record.get("provisioned"):
+            return [(check, FAIL, "created, but its install or provisioning did not finish", "vmlab base create %s   (it resumes where it failed)" % name)]
+        base_vm = record.get("vm", bases.vm_name(name))
+        base = FusionVM(record["vmx"], secrets=base_vm)
+        if not base.exists():
+            return [(check, FAIL, "registered, but its VM %s is gone" % record["vmx"], "vmlab base create %s" % name)]
+        findings = []
+        try:
+            credentials(base_vm)
+        except GuestError as exc:
+            if self.windows:  # its VM is encrypted: vmrun cannot even open it
+                return [("Guest credentials", FAIL, "%s: vmrun cannot open the encrypted VM without them" % exc.message, "vmlab base create %s --reprovision" % name)]
+            if "vmrun" in self.options["channels"]:
+                findings.append(("Guest credentials", WARN, "%s: the vmrun Channel needs them" % exc.message, "vmlab base create %s --reprovision" % name))
+        version = fusion_windows.PROVISION_VERSION if self.windows else PROVISION_VERSION
+        problems = []
+        if record["provisioned"] != version:
+            again = "vmlab base create %s   (provisions it again%s; Lab clones are then made again)" % (name, ", after one click on Windows' UAC prompt" if self.windows else "")
+            problems.append((check, WARN, "provisioned by an older vmlab (v%s; this one provisions v%s)" % (record["provisioned"], version), again))
+        try:
+            snapshots, running = base.snapshots(), base.is_running()
+        except GuestError as exc:
+            return findings + problems + [(check, FAIL, exc.message, exc.fix)]
+        if record["snapshot"] not in snapshots:
+            problems.append((check, FAIL, "its snapshot %s is missing: Labs are cloned from it" % record["snapshot"], "vmlab base create %s --reprovision" % name))
+        if running:
+            stop = "shut Windows down from its Start menu" if self.windows else "'%s' -T fusion stop '%s'" % (vmrun_binary(), base.vmx)
+            problems.append((check, WARN, "running: Labs cannot clone it while it runs", stop))
+        findings += problems or [(check, OK, "provisioned (v%s), VM %s" % (record["provisioned"], base.vmx), None)]
+        if self.windows and not record.get("elevated"):
+            findings.append(("Elevation", WARN, "the Guest asks before elevating (UAC), which nothing can answer unattended",
+                             "vmlab base create %s   (asks for one click on the UAC prompt)" % name))  # fmt: skip
+        if "ssh" in self.options["channels"] and not is_pinned(base_vm):
+            findings.append(("SSH host key", WARN, "none pinned for %s: the ssh Channel refuses its Guests" % base_vm, "vmlab base create %s --reprovision" % name))
+        return findings + self._diagnose_clone(record)
+
+    def _diagnose_clone(self, record):
+        up = "`vmlab up %s` makes it again" % self.lab.name
+        clone = _clone_record(self.guest_id)
+        if not self.vm.exists():
+            return [("Clone", INFO, "none yet; `vmlab up %s` clones Base guest %s" % (self.lab.name, self.base_name), None)]
+        if clone.get("made_from") != bases.provisioning(record):
+            return [("Clone", INFO, "made from an earlier provisioning of %s; %s" % (self.base_name, up), None)]
+        made_for = clone.get("session", DEFAULTS["session"])
+        if made_for != self.session:
+            return [("Clone", INFO, "made for the %s session; %s for %s" % (SESSION_NAMES.get(made_for, made_for), up, SESSION_NAMES[self.session]), None)]
+        try:
+            clean = CLEAN_SNAPSHOT in self.vm.snapshots()
+        except GuestError as exc:
+            return [("Clone", WARN, exc.message, exc.fix)]
+        if not clean:
+            return [("Clone", INFO, "has no Clean state: making it did not finish; %s" % up, None)]
+        return [("Clone", OK, str(self.vm.vmx), None)]
+
+    def diagnose_guest(self):
+        if not self.session:
+            return []
+        if self._seen_session != self.session:
+            seen = SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")
+            return [("Desktop session", FAIL, "the Lab asks for %s, but the Guest logged into %s" % (SESSION_NAMES[self.session], seen),
+                     "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again" % ((self.lab.name,) * 3))]  # fmt: skip
+        return [("Desktop session", OK, SESSION_NAMES[self.session], None)]
 
     def is_running(self):
         return self.vm.is_running()

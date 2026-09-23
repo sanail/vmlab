@@ -13,6 +13,8 @@ import tempfile
 import time
 
 BOOT_POLL_SECONDS = 0.2
+# How bad a doctor finding is (vmlab.doctor). Only FAIL makes doctor fail.
+OK, INFO, WARN, FAIL = "ok", "info", "warn", "FAIL"
 
 
 class GuestError(Exception):
@@ -74,6 +76,7 @@ class Provider:
     """
 
     NOT_IMPLEMENTED = None  # set by stubs: the fix shown when a Lab selects this Provider
+    HYPERVISOR = None  # its hypervisor's name, for doctor's list of what this Host has
     SUPPORTED_OS = None  # the Lab OSes this Provider can run, or None for all
 
     def __init__(self, project, lab):
@@ -93,9 +96,24 @@ class Provider:
         slug = re.sub(r"[^a-z0-9]+", "-", self.project.root.name.lower()).strip("-") or "project"
         return "vmlab-%s-%s-%s" % (slug, digest, self.lab.name)
 
+    @classmethod
+    def hypervisor(cls):
+        """(found, detail, fix) for the hypervisor named HYPERVISOR, without a Lab."""
+        raise NotImplementedError
+
     def detect(self):
         """(ok, detail, fix): is the hypervisor behind this Provider installed and usable?"""
         raise NotImplementedError
+
+    def diagnose(self):
+        """doctor's checks of what the Guest is made from, answerable while it is stopped: its
+        Base guest, its clone. [(check, status, detail, fix)]; a FAIL means the Guest cannot start."""
+        return []
+
+    def diagnose_guest(self):
+        """doctor's checks of the running Guest beyond its Channels and UI helper, which work by now:
+        [(check, status, detail, fix)]."""
+        return []
 
     def is_running(self):
         raise NotImplementedError

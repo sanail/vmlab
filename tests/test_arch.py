@@ -40,7 +40,7 @@ class ArchTest(VmlabTestCase):
                 [finding] = [f for f in json.loads(r.out) if f["check"] == "Architecture"]
                 self.assertEqual(finding["status"], "warn" if mode == "uncovered" else "ok")
                 if mode == "uncovered":  # nothing else is checked for a Lab that cannot run here
-                    self.assertEqual([f["check"] for f in json.loads(r.out)], ["Architecture"])
+                    self.assertEqual([f["check"] for f in json.loads(r.out) if f["lab"] == "l"], ["Architecture"])
                 self.assertIn(mode if mode != "uncovered" else "not covered", finding["detail"])
                 if mode == "uncovered":
                     self.assertTrue(finding["fix"])
