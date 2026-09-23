@@ -34,7 +34,7 @@ A web view reads the Windows theme (`AppsUseLightTheme`) once, when it is create
 
 Whether a window has a taskbar button cannot be read from its styles: frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched. Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`. Tray icons are `explorer`'s buttons too, and `g.click` reaches them. The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the old icon (install the old version, show its window), or it never goes red.
 
-A new app's tray icon waits among the hidden icons: `g.press("win+b")` focuses their chevron in any display language, `g.press("space")` opens it, and then the icon is on screen to click. The menu it opens belongs to the app's process: its items are `menuitem`s under `--app` with the process name, and a submenu opens on a click on its item. Opening the tray makes the taskbar the foreground window, as a user's click does: an app that reads "the foreground app" from its tray menu sees the taskbar.
+A new app's tray icon waits among the hidden icons. Bring it onto the taskbar without keys (a stray Win key opens Start and spoils the Scenario's input): Windows 11 keeps each icon under `HKCU:\Control Panel\NotifyIconSettings\*`, with the app's `ExecutablePath`, from the icon's first appearance; setting that key's `IsPromoted` to 1 (DWord) moves the icon at once. The menu it opens belongs to the app's process: its items are `menuitem`s under `--app` with the process name, and a submenu opens on a click on its item. Opening the tray makes the taskbar the foreground window, as a user's click does: an app that reads "the foreground app" from its tray menu sees the taskbar.
 
 ## Notifications
 
