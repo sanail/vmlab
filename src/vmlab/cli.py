@@ -66,6 +66,11 @@ def main(argv=None):
     p.add_argument("--bench", action="store_true", help="also time each Channel of running Guests")
     p.add_argument("--calls", type=int, default=doctor.BENCH_CALLS, metavar="N", help="calls per Channel for --bench (default: %(default)s)")
 
+    p = sub.add_parser("exec", help="run one command in a running Guest; its output and exit code are vmlab's")
+    p.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
+    p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
+    p.add_argument("argv", nargs=argparse.REMAINDER, metavar="-- COMMAND ...")
+
     _ui_parser(sub)
 
     p = sub.add_parser("status", help="show whether each Lab's Guest is running")
@@ -105,6 +110,8 @@ def main(argv=None):
             return _doctor(project, args.labs, args.json, args.calls if args.bench else 0)
         if args.command == "ui":
             return _ui(project, args)
+        if args.command == "exec":
+            return _exec(project, args)
     except (ConfigError, UsageError) as exc:
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
@@ -239,9 +246,10 @@ def _ui_parser(sub):
     p.add_argument("--out", help="where to save it (default: .vmlab/runs/<time>-<lab>-screenshot.png)")
 
 
-def _ui(project, args):
-    if args.lab:
-        lab = project.lab(args.lab)
+def _running_guest(project, lab_name):
+    """(lab, provider) for --lab, or the only Lab; its Guest must be running."""
+    if lab_name:
+        lab = project.lab(lab_name)
     elif len(project.labs) == 1:
         [lab] = project.labs.values()
     else:
@@ -249,6 +257,24 @@ def _ui(project, args):
     provider = provider_for(project, lab)
     if not provider.is_running():
         raise GuestError("Guest %s is not running" % lab.name, "vmlab up %s   (or vmlab deploy %s)" % (lab.name, lab.name))
+    return lab, provider
+
+
+def _exec(project, args):
+    argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+    if not argv:
+        raise UsageError("no command given; e.g. vmlab exec -- cat ~/app.log")
+    if args.timeout is not None and args.timeout <= 0:
+        raise UsageError("--timeout must be more than 0 seconds")
+    lab, provider = _running_guest(project, args.lab)
+    result = provider.exec(argv, timeout=lab.step_timeout if args.timeout is None else args.timeout)
+    sys.stdout.write(result.stdout)
+    sys.stderr.write(result.stderr)
+    return result.code
+
+
+def _ui(project, args):
+    lab, provider = _running_guest(project, args.lab)
     contract = ui.UI(provider, lambda doing: lab.step_timeout)
     c = args.ui_command
     if c == "tree":

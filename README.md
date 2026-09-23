@@ -9,11 +9,15 @@ Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMwar
 Python 3.9+ and the standard library only.
 
 ```sh
-python3 tools/build.py                   # -> dist/vmlab.pyz
+python3 tools/build.py                   # -> dist/vmlab.pyz, and the skill in dist/skill/vmlab/
 python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a subprocess
 # Seam 2, the Provider/Channel contract against a real Lab (docs/adding-a-provider.md):
 VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest discover -s tests -p 'test_contract.py' -v
 ```
+
+## The skill
+
+`skill/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `skill/references/` (setup, Ad-hoc run, regression) and those load the Scenario API reference on demand. `tools/build.py` assembles it with the zipapp as `scripts/vmlab.pyz`; copy `dist/skill/vmlab/` into an agent's skills folder (`~/.claude/skills/` or a project's `.claude/skills/`) to install it.
 
 ## Project layout
 
@@ -291,6 +295,7 @@ vmlab doctor [LAB...] [--json] [--bench [--calls N]]
                                          # Host, arch coverage, Provider, Base guest, clone, Guest, per-Channel, screenshot and
                                          # UI helper checks with fixes; exit 1 on FAIL. --bench times each Channel of running Guests
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
+vmlab exec [--lab LAB] [--timeout S] -- COMMAND ...   # one command in a running Guest; its output and exit code
 vmlab version
 ```
 

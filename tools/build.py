@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Build the vmlab zipapp: python3 tools/build.py [--out dist/vmlab.pyz]"""
+"""Build the vmlab zipapp and the skill package: python3 tools/build.py [--out dist/vmlab.pyz]
+
+The skill lands next to the zipapp, in skill/vmlab/: the documents from skill/ plus
+the zipapp as scripts/vmlab.pyz. Install it by copying that folder into an agent's
+skills folder (e.g. ~/.claude/skills/).
+"""
 
 import argparse
 import shutil
@@ -25,7 +30,19 @@ def build(out):
     return out
 
 
+def build_skill(pyz):
+    skill = Path(pyz).parent / "skill" / "vmlab"
+    if skill.exists():
+        shutil.rmtree(skill)
+    shutil.copytree(REPO / "skill", skill)
+    (skill / "scripts").mkdir()
+    shutil.copy2(pyz, skill / "scripts" / "vmlab.pyz")
+    return skill
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=str(REPO / "dist" / "vmlab.pyz"))
-    print(build(parser.parse_args().out))
+    pyz = build(parser.parse_args().out)
+    print(pyz)
+    print(build_skill(pyz))
