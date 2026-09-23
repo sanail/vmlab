@@ -76,6 +76,8 @@ FAKE_VMRUN = textwrap.dedent(
         state["vms"][os.path.realpath(dest)] = {"running": False, "snapshots": [], "reverted": 0}
         save()
     elif command == "deleteVM":
+        if state.get("open_in_fusion"):
+            fail("Insufficient permissions")  # Fusion's window or library has the VM open
         shutil.rmtree(os.path.dirname(args[1]), ignore_errors=True)
         del state["vms"][vmx]
         save()
@@ -369,6 +371,20 @@ class FusionCloneTest(FusionTestCase):
         self.assertEqual(len(self.calls("deleteVM")), 1)
         self.assertIn("-snapshot=vmlab-provisioned-second", self.calls("clone")[-1])
         self.assertEqual(len(self.clones()), 1)
+
+    def test_a_clone_open_in_fusion_says_how_to_let_it_go(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.base_guest("second")
+        state = json.loads(self.state_path.read_text())
+        state["open_in_fusion"] = True
+        self.state_path.write_text(json.dumps(state))
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("Insufficient permissions", r.err)
+        self.assertIn("Remove from Library", r.err)
 
     def test_an_x11_lab_gets_clean_state_only_once_its_session_is_switched(self):
         # The session is switched in the booted clone, before vmlab-clean is taken; no Guest boots here.

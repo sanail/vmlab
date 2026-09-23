@@ -337,7 +337,11 @@ class FusionVM:
             self.stop()
         code, out = vmrun(["deleteVM", self.vmx], timeout, self.auth)
         if code and self.exists():
-            raise GuestError("`vmrun deleteVM %s` failed: %s" % (self.vmx, out.strip()), "delete it in Fusion, then retry")
+            fix = "delete it in Fusion, then retry"
+            if "insufficient permissions" in out.lower():  # Fusion's window or its library holds it open
+                fix = ("VMware Fusion has it open: close its window, or right-click it in Fusion's Virtual Machine Library, "
+                       "choose Delete and then Remove from Library (Keep File: vmlab deletes the files), then retry")
+            raise GuestError("`vmrun deleteVM %s` failed: %s" % (self.vmx, out.strip()), fix)
         if self.vmx.parent.exists():  # vmrun leaves logs behind, and knows nothing of a VM that never started
             shutil.rmtree(str(self.vmx.parent), ignore_errors=True)
 
