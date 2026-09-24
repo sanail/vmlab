@@ -71,6 +71,14 @@ def main(argv=None):
     p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
     p.add_argument("argv", nargs=argparse.REMAINDER, metavar="-- COMMAND ...")
 
+    p = sub.add_parser("put", help="write a file into a running Guest from stdin (or --from); prints its absolute Guest path")
+    p.add_argument("guest_path", metavar="GUEST_PATH", help="its folders are made; ~ is the Guest user's home, %%VARS%% expand on Windows")
+    p.add_argument("--from", dest="source", metavar="HOSTFILE", help="copy this Host file instead of reading stdin")
+    p.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
+    p = sub.add_parser("get", help="print a file of a running Guest to stdout, byte for byte")
+    p.add_argument("guest_path", metavar="GUEST_PATH", help="~ is the Guest user's home, %%VARS%% expand on Windows")
+    p.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
+
     _ui_parser(sub)
 
     p = sub.add_parser("status", help="show whether each Lab's Guest is running")
@@ -117,6 +125,10 @@ def main(argv=None):
             return _ui(project, args)
         if args.command == "exec":
             return _exec(project, args)
+        if args.command == "put":
+            return _put(project, args)
+        if args.command == "get":
+            return _get(project, args)
     except (ConfigError, UsageError) as exc:
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_USAGE
@@ -295,6 +307,28 @@ def _exec(project, args):
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
     return result.code
+
+
+def _put(project, args):
+    if args.source is None:
+        data = sys.stdin.buffer.read()
+    else:
+        try:
+            data = Path(args.source).read_bytes()
+        except OSError as exc:
+            raise UsageError("--from %s: %s" % (args.source, exc.strerror or exc))
+    lab, provider = _running_guest(project, args.lab)
+    print(provider.put_file(args.guest_path, data, lab.step_timeout))
+    return EXIT_OK
+
+
+def _get(project, args):
+    lab, provider = _running_guest(project, args.lab)
+    data = provider.read_file(args.guest_path, lab.step_timeout)
+    sys.stdout.flush()
+    sys.stdout.buffer.write(data)
+    sys.stdout.buffer.flush()
+    return EXIT_OK
 
 
 def _ui(project, args):

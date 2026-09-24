@@ -142,7 +142,7 @@ class WindowsSshChannel(SshChannel):
         return parse_result(argv, result.stdout, self.name)
 
 
-def copy_in(provider, src, guest_dir):
+def copy_in(provider, src, guest_dir, timeout=None):
     """Provider.copy_in for Windows Guests: the Host file or folder src as a tar archive,
     carried in as a file (a Channel's own transfer, not exec's stdin, which Windows' sshd
     cannot stream), then unpacked by tar.exe, which Windows has."""
@@ -158,7 +158,8 @@ def copy_in(provider, src, guest_dir):
         "Remove-Item -Force -ErrorAction SilentlyContinue '%s'; if ($code) { exit $code }; (Get-Item -LiteralPath $d).FullName"
         % (guest_dir.replace("'", "''"), archive, archive)
     )
-    result = provider.exec(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], provider.lab.app.install_timeout)
+    timeout = provider.lab.app.install_timeout if timeout is None else timeout
+    result = provider.exec(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout)
     if not result.ok:
         detail = "\n".join(result.stderr.strip().splitlines()[-15:]) or "(no output)"
         raise GuestError("copying %s into the Guest failed: %s" % (src, detail), "check free disk space in the Guest")

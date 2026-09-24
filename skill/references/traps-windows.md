@@ -44,7 +44,7 @@ Read the app's toasts from the Action Center's history rather than the screen: i
 
 ## PowerShell parses twice
 
-`g.exec(["powershell", "-Command", ...])` hands PowerShell a string it parses again: unquoted spaces split arguments, and a comma turns a value into an array. Pass arguments as argv items to a script file (`-File`), or put test data in a file and pass its path. For the clipboard, `g.clipboard()` and `g.set_clipboard()`.
+`g.exec(["powershell", "-Command", ...])` hands PowerShell a string it parses again: unquoted spaces split arguments, and a comma turns a value into an array. Pass arguments as argv items to a script file (`-File`), or write test data to a file with `g.put` and pass its path (`g.exec` has no stdin: Windows' sshd cannot stream it). For the clipboard, `g.clipboard()` and `g.set_clipboard()`.
 
 ## x64 builds under emulation
 

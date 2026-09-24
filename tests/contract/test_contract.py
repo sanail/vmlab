@@ -261,6 +261,56 @@ def scenario(g):
     g.exec(cmd(g, 'rm -f ~/%s "${TMPDIR:-/tmp}/%s"' % (flag, name), "Remove-Item -Force (Join-Path $HOME %s), (Join-Path $env:TEMP %s.exe)" % (flag, name)))
 """))
 
+    def test_06c_put_and_get_round_trip_files(self):
+        self.assertPassed(*self.target.scenario("files.py", COMMANDS + """
+import os
+import uuid
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:6]
+    text = "caf\\u00e9 \\u0417\\u0430\\u043a\\u043e\\u043d \\u2713 " + tag + "\\n"
+    path = g.put("~/contract-files-%s/sub/text.txt" % tag, text)
+    g.check("put returns the absolute Guest path", path.endswith("text.txt") and "~" not in path, detail=path)
+    g.check("text round trip", g.get("~/contract-files-%s/sub/text.txt" % tag) == text)
+    shown = g.exec(cmd(g, 'cat "$HOME/contract-files-%s/sub/text.txt"' % tag, "Get-Content -Raw -Encoding UTF8 (Join-Path $HOME contract-files-%s/sub/text.txt)" % tag))
+    g.check("written as UTF-8 where the Guest's tools read it", shown.stdout.strip() == text.strip(), detail=repr(shown.stdout + shown.stderr))
+    big = os.urandom(1 << 20)
+    g.put("~/contract-files-%s/big.bin" % tag, big)
+    g.check("a 1 MB binary file round trips", g.get("~/contract-files-%s/big.bin" % tag, binary=True) == big)
+    if g.os == "windows":
+        temp = g.put("%%TEMP%%\\\\contract-files-%s.txt" % tag, text)
+        g.check("%%TEMP%% expands", "%%" not in temp and temp.lower().endswith("contract-files-%s.txt" % tag), detail=temp)
+        g.check("%%TEMP%% round trip", g.get("%%TEMP%%\\\\contract-files-%s.txt" % tag) == text)
+    try:
+        g.get("~/contract-files-%s/missing.txt" % tag)
+        g.check("a missing file raises", False)
+    except Exception as exc:
+        g.check("a missing file raises, naming it", "missing.txt" in str(exc), detail=str(exc))
+    g.exec(cmd(g, 'rm -rf "$HOME/contract-files-%s"' % tag,
+               "Remove-Item -Recurse -Force (Join-Path $HOME contract-files-%s), (Join-Path $env:TEMP contract-files-%s.txt)" % (tag, tag)))
+"""))
+
+    def test_06d_put_and_get_on_the_cli(self):
+        data = bytes(range(256)) * 16 + "é✓".encode("utf-8")
+        path = "~/contract-cli-%d.bin" % os.getpid()
+        put = subprocess.run(
+            [sys.executable, str(zipapp_path()), "put", path, "--lab", self.target.lab],
+            cwd=str(self.target.root), env=self.target.env, input=data, capture_output=True, timeout=300,
+        )  # fmt: skip
+        self.assertEqual(put.returncode, 0, put.stderr)
+        got = subprocess.run(
+            [sys.executable, str(zipapp_path()), "get", path, "--lab", self.target.lab],
+            cwd=str(self.target.root), env=self.target.env, capture_output=True, timeout=300,
+        )  # fmt: skip
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertEqual(got.stdout, data)
+        self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
+
+    def remove_argv(self, guest_path):
+        if self.target.os == "windows":
+            return ["powershell", "-NoProfile", "-Command", "Remove-Item -Force -LiteralPath '%s'" % guest_path]
+        return ["rm", "-f", guest_path]
+
     @ui
     def test_07_ui_tree_and_find_share_one_shape(self):
         self.assertPassed(*self.target.scenario("ui_tree.py", UI + """

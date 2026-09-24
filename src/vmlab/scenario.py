@@ -104,6 +104,21 @@ class Guest:
         self._remaining("launch")
         self._on_clock("launch", lambda call_timeout: self._launch_app(env, call_timeout))
 
+    def put(self, guest_path, content):
+        """Write content (str, written as UTF-8, or bytes) to the Guest file guest_path, making its
+        folders; ~ is the Guest user's home and, on Windows, %VARS% expand. Returns the absolute
+        Guest path. The file stays after the Scenario."""
+        data = encode_content(content)
+        self._remaining("put")
+        return self._on_clock("put %s" % guest_path, lambda call_timeout: self._provider.put_file(guest_path, data, call_timeout("put")))
+
+    def get(self, guest_path, binary=False):
+        """The Guest file guest_path's content: str (decoded as UTF-8), or bytes with binary=True.
+        Raises if the file is not there."""
+        self._remaining("get")
+        data = self._on_clock("get %s" % guest_path, lambda call_timeout: self._provider.read_file(guest_path, call_timeout("get")))
+        return data if binary else decode_content(guest_path, data)
+
     # The UI contract (vmlab.ui): each method returns what `vmlab ui <command>` prints.
 
     def tree(self, app=None):
@@ -183,6 +198,22 @@ class Guest:
         kind = VISUAL if visual else DETERMINISTIC
         self.checks.append({"name": name, "passed": bool(passed), "detail": detail, "kind": kind})
         return bool(passed)
+
+
+def encode_content(content):
+    """g.put's content as bytes: str as UTF-8."""
+    if isinstance(content, str):
+        return content.encode("utf-8")
+    if isinstance(content, (bytes, bytearray)):
+        return bytes(content)
+    raise UsageError("put takes str or bytes content, not %s" % type(content).__name__)
+
+
+def decode_content(guest_path, data):
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise UsageError("%s is not UTF-8 text (%s); read it with binary=True" % (guest_path, exc.reason))
 
 
 def run_scenario(path, guest, prepare):

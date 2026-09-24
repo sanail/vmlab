@@ -10,10 +10,14 @@ TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's 
 def scenario(g):
     r = g.exec(["cat", "/tmp/myapp.log"])      # r.code, r.stdout, r.stderr, r.ok, r.channel; timeout=, env=
     g.check("the app logged its start", "started" in r.stdout, detail=r.stdout[-500:])
+    path = g.put("~/Documents/input.txt", "Ohm's law\n")  # str (UTF-8) or bytes; folders made; returns the absolute Guest path
+    settings = g.get("~/.config/myapp/settings.json")   # str; g.get(path, binary=True) for bytes
     g.screenshot("after start")                 # saved in the Run folder as evidence
     g.check("the icon looks right", True, visual=True)  # a judgement from a screenshot: "visual, unverified"
     # g.lab, g.os ("macos" | "windows" | "linux"), g.arch (the Build artifact's), g.guest_arch
 ```
+
+`g.put(guest_path, content)` writes a file into the Guest and `g.get(guest_path, binary=False)` reads one back, with no quoting or shell in between: `~` is the Guest user's home, and on Windows `%VARS%` expand (`g.put(r"%TEMP%\input.txt", data)`). `get` raises when the file is not there; both count against the Scenario's timeout, each call against the Lab's `step_timeout`. Files stay after the Run, so "put a file, restart the app, it reads it" works; `app.state`, `FRESH` and nonces keep leftovers out of later Runs. The CLI has the same: `vmlab put GUEST_PATH [--from HOSTFILE]` (stdin when no `--from`; prints the Guest path) and `vmlab get GUEST_PATH` (to stdout).
 
 `g.check(name, passed, detail=None, visual=False)` records a Check; a failed Check does not stop the Scenario, and a Scenario records at least one. An exception, a timeout or a call no Channel can carry fails the Run with the Scenario's file and line.
 
@@ -66,7 +70,7 @@ def scenario(g):
 
 - **Prove the precondition.** An empty read cannot tell "the app is wrong" from "the window is not up yet": every read-based Check first `wait_for`s the window or element it reads, and fails with that as its reason when it never comes.
 - **Nonces.** Test data carries a value unique to the Run (`uuid.uuid4().hex[:8]`), so leftovers of an earlier Run (a log line, a notification, a file) never pass a Check.
-- **Argv, not shell strings.** `g.exec` takes a list; each shell a string passes through parses it again (Host, Guest shell, `osascript` or PowerShell). Put longer test data in a file in the Guest and pass its path.
+- **Argv, not shell strings.** `g.exec` takes a list; each shell a string passes through parses it again (Host, Guest shell, `osascript` or PowerShell). Put longer test data in a Guest file with `g.put` and pass its path; `g.exec` takes no stdin.
 - **Look before concluding.** Input that does nothing usually means something else holds the screen (a consent prompt, a dialog): `g.screenshot` and look.
 
 Per OS: [macOS](traps-macos.md), [Windows](traps-windows.md), [Linux](traps-linux.md).

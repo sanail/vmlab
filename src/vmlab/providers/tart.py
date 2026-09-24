@@ -411,8 +411,8 @@ class TartProvider(Provider):
             tart_ok(["delete", self.guest_id], CALL_TIMEOUT)
         self.up()
 
-    def copy_in(self, src, guest_dir):
-        return self.copy_in_by_tar(src, guest_dir)
+    def copy_in(self, src, guest_dir, timeout=None):
+        return self.copy_in_by_tar(src, guest_dir, timeout)
 
     def screenshot(self, dest):
         shot = "/tmp/vmlab-shot-%s.png" % uuid.uuid4().hex

@@ -6,15 +6,20 @@ fails (cannot connect, dropped session) hands the call to the next one; a
 command that exits non-zero, or a call that times out, does not (ADR 0003).
 """
 
+import base64
 import hashlib
 import re
 import tarfile
 import tempfile
 import time
+from pathlib import Path
+
+from vmlab.config import UsageError
 
 BOOT_POLL_SECONDS = 0.2
 # How bad a doctor finding is (vmlab.doctor). Only FAIL makes doctor fail.
 OK, INFO, WARN, FAIL = "ok", "info", "warn", "FAIL"
+NO_FILE = 3  # read_file's exit code in the Guest when the path is not a file
 
 
 class GuestError(Exception):
@@ -137,12 +142,48 @@ class Provider:
         """Return the running Guest to its Clean state; it is reachable again afterwards."""
         raise NotImplementedError
 
-    def copy_in(self, src, guest_dir):
-        """Copy the Host file or folder src into guest_dir (created; ~ is the Guest user's home).
+    def copy_in(self, src, guest_dir, timeout=None):
+        """Copy the Host file or folder src into guest_dir (created; ~ is the Guest user's home),
+        within timeout seconds (default: the Lab's app.install_timeout).
 
         Returns the absolute Guest path of the copy.
         """
         raise NotImplementedError
+
+    def put_file(self, guest_path, data, timeout):
+        """Write the bytes data to guest_path, making its folders; ~ is the Guest user's home and,
+        on Windows, %VARS% expand. Returns the absolute Guest path. Built on copy_in."""
+        folder, name = split_guest_path(guest_path, self.lab.os)
+        with tempfile.TemporaryDirectory() as tmp:
+            local = Path(tmp) / name
+            local.write_bytes(data)
+            return self.copy_in(local, folder, timeout)
+
+    def read_file(self, guest_path, timeout):
+        """The bytes of the Guest file guest_path (same path rules as put_file); GuestError if it is
+        not there. They travel base64-encoded on exec's stdout, which carries text."""
+        return self._read_file(guest_path, guest_path, timeout)
+
+    def _read_file(self, guest_path, path, timeout):
+        """read_file of path in the Guest, named guest_path in errors."""
+        if self.lab.os == "windows":
+            script = (
+                "$p = %s; if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { exit %d }; "
+                "[Convert]::ToBase64String([IO.File]::ReadAllBytes((Get-Item -LiteralPath $p).FullName))" % (ps_path(path), NO_FILE)
+            )
+            argv = self.shell_argv(script)
+        else:
+            script = 'p=$1; case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; [ -f "$p" ] || exit %d; base64 < "$p"' % NO_FILE
+            argv = ["sh", "-c", script, "sh", path]
+        result = self.exec(argv, timeout)
+        if result.code == NO_FILE:
+            raise GuestError("no file %s in Guest %s" % (guest_path, self.lab.name), "check the path; ~ is the Guest user's home")
+        if not result.ok:
+            raise GuestError("reading %s in the Guest failed: %s" % (guest_path, result.stderr.strip() or "exit %d" % result.code))
+        try:
+            return base64.b64decode(result.stdout)
+        except ValueError:
+            raise GuestError("reading %s in the Guest returned no base64: %r" % (guest_path, result.stdout[:200]))
 
     def send_file(self, local, guest_path):
         """Copy the Host file local into the Guest over the first Channel that can carry it."""
@@ -158,7 +199,7 @@ class Provider:
             "run `vmlab doctor %s`" % self.lab.name,
         )
 
-    def copy_in_by_tar(self, src, guest_dir):
+    def copy_in_by_tar(self, src, guest_dir, timeout=None):
         """copy_in for POSIX Guests: a tar stream over exec's stdin keeps bundles intact
         (symlinks, modes); the Guest-side script expands ~ and prints the absolute folder."""
         script = 'd=$1; case $d in "~"|"~/"*) d="$HOME${d#"~"}";; esac; mkdir -p "$d" && tar -xf - -C "$d" && cd "$d" && pwd'
@@ -166,7 +207,7 @@ class Provider:
         with tempfile.TemporaryFile() as archive:
             with tarfile.open(fileobj=archive, mode="w") as tar_file:
                 tar_file.add(str(src), arcname=src.name)
-            result = self.exec(argv, self.lab.app.install_timeout, stdin=archive)
+            result = self.exec(argv, self.lab.app.install_timeout if timeout is None else timeout, stdin=archive)
         if not result.ok:
             detail = "\n".join(result.stderr.strip().splitlines()[-15:]) or "(no output)"
             raise GuestError("copying %s into the Guest failed: %s" % (src, detail), "check free disk space in the Guest")
@@ -271,3 +312,22 @@ class Provider:
             % (self.lab.name, argv, "; ".join("%s: %s" % (name, exc.message) for name, exc in failures)),
             "run `vmlab doctor %s`" % self.lab.name,
         )
+
+
+def split_guest_path(guest_path, os_name):
+    """(folder, name) of a Guest file path; a bare name is in the Guest user's home."""
+    seps = "\\/" if os_name == "windows" else "/"
+    cut = max(guest_path.rfind(sep) for sep in seps)
+    folder, name = guest_path[:cut], guest_path[cut + 1 :]
+    if not name or name in (".", "..", "~"):
+        raise UsageError("%r is not a file path; give the file's name, e.g. ~/notes.txt" % guest_path)
+    if cut < 0:
+        folder = "~"
+    elif not folder or folder.endswith(":"):
+        folder = guest_path[: cut + 1]  # the root, / or C:\
+    return folder, name
+
+
+def ps_path(path):
+    """A PowerShell expression for path, with %VARS% and a leading ~ expanded."""
+    return "([Environment]::ExpandEnvironmentVariables('%s') -replace '^~', $env:USERPROFILE)" % path.replace("'", "''")

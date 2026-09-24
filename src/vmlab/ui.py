@@ -21,7 +21,7 @@ import re
 import time
 
 from vmlab.config import UsageError
-from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
+from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path
 
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
 POLL_SECONDS = 0.25  # between checks of a wait_for condition; the condition and timeout decide when it ends
@@ -397,10 +397,10 @@ class PowerShellProbes:
         return provider.shell_argv("if (Get-Process -Name '%s' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % name.replace("'", "''"))
 
     def exists_argv(self, provider, path):
-        return provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % _ps_path(path))
+        return provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % ps_path(path))
 
     def read_argv(self, provider, path):
-        return provider.shell_argv("Get-Content -Raw -LiteralPath %s" % _ps_path(path))
+        return provider.shell_argv("Get-Content -Raw -LiteralPath %s" % ps_path(path))
 
 
 class UI:
@@ -512,8 +512,3 @@ class UI:
                     result["error"] = error  # why the last poll got no answer
                 return result
             time.sleep(min(POLL_SECONDS, deadline - now))
-
-
-def _ps_path(path):
-    """A PowerShell expression for path, with %VARS% and a leading ~ expanded."""
-    return "([Environment]::ExpandEnvironmentVariables('%s') -replace '^~', $env:USERPROFILE)" % path.replace("'", "''")

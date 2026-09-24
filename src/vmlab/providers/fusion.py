@@ -845,8 +845,8 @@ class FusionProvider(Provider):
             self.vm.revert(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self.up()
 
-    def copy_in(self, src, guest_dir):
-        return windows.copy_in(self, src, guest_dir) if self.windows else self.copy_in_by_tar(src, guest_dir)
+    def copy_in(self, src, guest_dir, timeout=None):
+        return windows.copy_in(self, src, guest_dir, timeout) if self.windows else self.copy_in_by_tar(src, guest_dir, timeout)
 
     def screenshot(self, dest):
         self.vm.screenshot(dest, self.lab.step_timeout)

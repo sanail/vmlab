@@ -96,7 +96,7 @@ class FakeProvider(Provider):
     def shell_argv(self, command):
         return ["sh", "-c", command]  # Guest commands run on the Host, whatever the Lab's os
 
-    def copy_in(self, src, guest_dir):
+    def copy_in(self, src, guest_dir, timeout=None):
         self._record("copy_in", src=str(src), guest_dir=guest_dir)
         dest = self._host_path(guest_dir, "labs.%s.app" % self.lab.name) / src.name
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +105,14 @@ class FakeProvider(Provider):
         else:
             shutil.copy2(str(src), str(dest))
         return str(dest)
+
+    def read_file(self, guest_path, timeout):
+        # Commands run on the Host: read where copy_in (and so put_file) writes, over the Channels.
+        try:
+            path = self._host_path(guest_path, "the Guest path")
+        except ConfigError as exc:
+            raise GuestError("%s: %s" % (guest_path, exc.problem))
+        return self._read_file(guest_path, str(path), timeout)
 
     def remove_paths(self, paths, timeout):
         self._record("remove_paths", paths=list(paths))

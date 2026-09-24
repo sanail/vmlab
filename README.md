@@ -251,6 +251,8 @@ TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's 
 def scenario(g):
     r = g.exec(["echo", "hello"])          # r.code, r.stdout, r.stderr, r.ok, r.channel; timeout=, env=
     g.check("echo prints hello", r.stdout.strip() == "hello", detail=r.stderr)
+    g.put("~/input.txt", "data\n")         # str (UTF-8) or bytes; makes folders; returns the absolute Guest path
+    g.check("read back", g.get("~/input.txt") == "data\n")  # binary=True for bytes; a missing file raises
     g.screenshot("after echo")             # saved in the Run folder as evidence
     g.check("icon looks right", True, visual=True)  # a judgement from a screenshot: reported "visual, unverified"
     # g.lab, g.os, g.arch (the Build artifact's) and g.guest_arch (the Guest's: the Host's)
@@ -340,6 +342,8 @@ vmlab doctor [LAB...] [--json] [--bench [--calls N]]
                                          # Outside a project: the Host only (which OSes it can test, which hypervisors it has)
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab exec [--lab LAB] [--timeout S] -- COMMAND ...   # one command in a running Guest; its output and exit code
+vmlab put GUEST_PATH [--from HOSTFILE] [--lab LAB]    # write a Guest file from stdin (or HOSTFILE); prints its Guest path
+vmlab get GUEST_PATH [--lab LAB]                      # print a Guest file to stdout, byte for byte
 vmlab version
 ```
 
