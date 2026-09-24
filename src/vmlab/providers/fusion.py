@@ -83,6 +83,7 @@ PROVISION_VERSION = 4  # bump when provision.sh or the Shell extension changes; 
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
+RUNNING_TTL = 1.0  # s a VM found running counts as running without asking vmrun again
 DISK_OP_TIMEOUT = 600  # s for clone, snapshot, revert and delete while creating a Base guest
 CLEAN_SNAPSHOT = "vmlab-clean"
 # The graphical session is up (autologin done) and has published its environment: a Run
@@ -214,6 +215,7 @@ class FusionVM:
         self.secrets = secrets
         self.password = password
         self._ip = None
+        self._seen_running = None  # when is_running last found it running
 
     def _password(self):
         return self.password or (vm_password(self.secrets) if self.secrets else None)
@@ -234,12 +236,20 @@ class FusionVM:
         return self.vmx.is_file()
 
     def is_running(self):
-        return self.exists() and os.path.realpath(str(self.vmx)) in running_vmx()
+        # A Run asks several times in a row, and `vmrun list` takes ~0.2 s. Only a yes is
+        # remembered, briefly, and only until vmlab itself stops or reverts the VM: a loop
+        # waiting for a stop sees it at most that much later.
+        if self._seen_running is not None and time.time() - self._seen_running < RUNNING_TTL:
+            return True
+        running = self.exists() and os.path.realpath(str(self.vmx)) in running_vmx()
+        self._seen_running = time.time() if running else None
+        return running
 
     def start(self, timeout=CALL_TIMEOUT, gui=False):
         """Power on, without a window unless gui (for steps a person does in the Guest);
         returns once the VM runs, not once it has booted."""
         self._ip = None
+        self._seen_running = None
         # Not through pipes: vmrun leaves a process behind that holds them open.
         log = self.vmx.parent / "vmlab-start.log"
         try:
@@ -258,12 +268,14 @@ class FusionVM:
     def stop(self, timeout=STOP_GRACE):
         """Shut down through VMware Tools, or power off when that fails or hangs."""
         self._ip = None
+        self._seen_running = None
         try:
             if vmrun(["stop", self.vmx, "soft"], timeout, self.auth)[0] == 0:
                 return
         except GuestTimeout:
             pass
         if self.is_running():
+            self._seen_running = None
             vmrun_ok(["stop", self.vmx, "hard"], CALL_TIMEOUT, self.auth)
 
     def ip(self):
@@ -302,6 +314,7 @@ class FusionVM:
         vmrun_ok(["snapshot", self.vmx, name], timeout, self.auth)
 
     def revert(self, name, timeout):
+        self._seen_running = None
         vmrun_ok(["revertToSnapshot", self.vmx, name], timeout, self.auth)
 
     def clone_linked(self, dest, snapshot, timeout):
@@ -531,6 +544,7 @@ class FusionProvider(Provider):
         self.vm = FusionVM(vmx_path(self.guest_id), secrets=bases.vm_name(self.base_name))
         self._channels = None
         self._seen_session = None  # the session type the desktop probe last found
+        self._booting = False  # started by this process and not reachable yet
 
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
@@ -740,6 +754,7 @@ class FusionProvider(Provider):
             self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
         self._configure()
+        self._booting = True
         self.vm.start(self.lab.boot_timeout)
 
     def _write_clone_record(self, made_from):
@@ -778,6 +793,7 @@ class FusionProvider(Provider):
 
     def up(self):
         super().up()
+        self._booting = False
         if self.session and self._seen_session != self.session:
             raise GuestError(
                 "Lab %s asks for the %s session, but its Guest logged into %s" % (self.lab.name, SESSION_NAMES[self.session], SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")),
@@ -801,10 +817,12 @@ class FusionProvider(Provider):
         self.vm.forget_ip()  # a stale address must not stick while the Guest boots
         # A probe, not a Run's call: trying the next Channel after a timeout is safe here.
         if self.windows:
-            # Every Channel, not the first that answers: sshd and its Scheduled Task are up
-            # before vmrun agrees that someone is logged in ("The specified guest user must be
-            # logged in interactively"), and a Run must not start while a Channel still refuses.
-            return all(self._probes(channel, self.probe_argv()) for channel in self.channels())
+            probes = (self._probes(channel, self.probe_argv()) for channel in self.channels())
+            # While it boots, every Channel, not the first that answers: sshd and vmlab's call server
+            # are up before vmrun agrees that someone is logged in ("The specified guest user must
+            # be logged in interactively"), and a Run must not start while a Channel still refuses.
+            # A Guest that was already running has passed that: probing vmrun again costs seconds.
+            return all(probes) if self._booting else any(probes)
         for channel in self.channels():
             result = self._probes(channel, DESKTOP_PROBE)
             if result:

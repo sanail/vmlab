@@ -101,9 +101,18 @@ class SshChannel(Channel):
         digest = hashlib.sha1(guest.encode("utf-8")).hexdigest()[:16]
         control = ssh_dir() / ("cm-%s" % digest)
         self._control = control if len(str(control)) <= MAX_SOCKET_PATH else None
+        self._sessions = self._control  # the master connection that sessions (commands, scp) ride on, or None
 
     def _options(self):
-        options = [
+        """ssh's options for sessions (commands, scp), over the master connection where they may use it."""
+        return self._common_options() + ["-o", "ControlPath=%s" % (self._sessions or "none")]
+
+    def _master_options(self):
+        """ssh's options for the master connection itself, and for what rides on it."""
+        return self._common_options() + ["-o", "ControlPath=%s" % (self._control or "none")]
+
+    def _common_options(self):
+        return [
             "-F", "/dev/null",
             "-i", str(key_path()),
             "-o", "IdentitiesOnly=yes",
@@ -117,7 +126,6 @@ class SshChannel(Channel):
             "-o", "ServerAliveInterval=5",
             "-o", "ServerAliveCountMax=3",
         ]  # fmt: skip
-        return options + ["-o", "ControlPath=%s" % (self._control or "none")]
 
     def _target(self):
         host = self._host()
@@ -145,7 +153,7 @@ class SshChannel(Channel):
             # Its own session and no pipes: -f leaves the master running in the background,
             # holding whatever it was given.
             subprocess.run(
-                ["ssh"] + self._options() + ["-o", "ControlMaster=yes", "-o", "ControlPersist=%d" % MASTER_PERSIST, "-f", "-N", target],
+                ["ssh"] + self._master_options() + ["-o", "ControlMaster=yes", "-o", "ControlPersist=%d" % MASTER_PERSIST, "-f", "-N", target],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -173,7 +181,7 @@ class SshChannel(Channel):
         if not self._control or not self._control.exists():
             return
         try:
-            hostproc.run(["ssh"] + self._options() + ["-O", "exit", "vmlab-guest"], 10)
+            hostproc.run(["ssh"] + self._master_options() + ["-O", "exit", "vmlab-guest"], 10)
         except subprocess.TimeoutExpired:
             pass
         if self._control.exists():
@@ -185,15 +193,20 @@ class SshChannel(Channel):
     def run_command(self, remote, argv, timeout, stdin):
         """Run the command line remote in the Guest's login shell; argv is what the result reports."""
         target = self._target()
-        self._ensure_master(target)
+        if self._sessions:
+            self._ensure_master(target)
         command = ["ssh"] + self._options() + ["-o", "ControlMaster=no", target, remote]
         try:
             code, out, err = hostproc.run(command, timeout, stdin=stdin)
         except subprocess.TimeoutExpired:
             raise GuestTimeout("%s timed out after %ss on Channel ssh and was killed" % (list(argv), timeout))
+        self.raise_ssh_failure(code, err)
+        return ExecResult(list(argv), code, out, err)
+
+    def raise_ssh_failure(self, code, err):
+        """ChannelError if ssh itself failed (exit 255 and its own message), not the command."""
         if code == 255 and SSH_FAILURE.search(err):
             raise ChannelError(
-                "ssh %s failed: %s" % (target, err.strip().splitlines()[-1]),
+                "ssh %s failed: %s" % (self._target(), err.strip().splitlines()[-1]),
                 "check that the Guest booted and runs sshd; `vmlab doctor` tests every Channel",
             )
-        return ExecResult(list(argv), code, out, err)

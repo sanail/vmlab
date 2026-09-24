@@ -1,4 +1,5 @@
-# One command for a vmlab Channel, run in the Guest user's desktop session.
+# One command for the vmrun Channel, run in the Guest user's desktop session. The ssh
+# Channel's call server (call-server.ps1) runs commands the same way.
 #
 # The Host prepends $Request, base64 of the call's JSON:
 #   {"file", "args", "env", "timeout", "stdin", "result"}
@@ -34,7 +35,7 @@ Get-ChildItem -LiteralPath (Split-Path $call.result) -Filter 'vmlab-call-*' -Err
 # standard input with the console's encoding, and UTF-8 with a BOM (this Guest's code page)
 # puts that BOM in front of the first byte the command reads. .NET Framework has no
 # StandardInputEncoding, so the console's own encoding is what decides it.
-# Only when there is input: setting it hangs in a Scheduled Task's console (the ssh Channel).
+# Only when there is input: setting it once hung in a Scheduled Task's console.
 if ($call.stdin) { try { [Console]::InputEncoding = New-Object Text.UTF8Encoding $false } catch { } }
 $info = New-Object Diagnostics.ProcessStartInfo
 $info.FileName = $call.file

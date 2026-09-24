@@ -1,14 +1,15 @@
 """Running commands in Windows Guests, for any Provider.
 
 Every Windows Channel runs a call the same way, so falling back from one to
-another never changes what a command sees: guest/windows/call.ps1 starts it
-in the logged-in user's desktop session, not elevated, in the user's profile
-folder, and writes its exit code and raw output to a result file. A Channel
-only delivers the call and fetches that file (ADR 0003):
+another never changes what a command sees: it starts in the logged-in user's
+desktop session, not elevated, in the user's profile folder, and its exit
+code and raw output come back as one JSON result (ADR 0003):
 
-- a Provider's native guest exec (Fusion: vmrun -interactive), and
-- SSH, whose sessions cannot reach the desktop, so its calls hop through an
-  interactive Scheduled Task (guest/windows/ssh-call.ps1).
+- a Provider's native guest exec (Fusion: vmrun -interactive) runs a script,
+  guest/windows/call.ps1, that writes the result to a file the Channel fetches;
+- SSH, whose sessions cannot reach the desktop, reaches vmlab's call server there
+  (guest/windows/call-server.ps1), which an interactive Scheduled Task starts once
+  per boot, through a forwarded connection.
 
 Output is decoded as UTF-8, the code page provisioning gives Windows Guests.
 """
@@ -24,7 +25,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from vmlab.providers.base import ChannelError, ExecResult, GuestError
+from vmlab import hostproc
+from vmlab.providers.base import ChannelError, ExecResult, GuestError, GuestTimeout
 from vmlab.providers.ssh import SshChannel
 
 # Where a call's script, stdin and result live. Not C:\Windows\Temp: a Scheduled Task's
@@ -33,7 +35,9 @@ from vmlab.providers.ssh import SshChannel
 # read and write, both Channels reach it; each Channel makes the folder.
 CALL_DIR = r"C:\ProgramData\vmlab\calls"
 CALL_DIRS = (r"C:\ProgramData\vmlab", CALL_DIR)  # made in order: vmrun creates no parents
-NO_RESULT = 3  # ssh-call.ps1's exit code when the Scheduled Task wrote no result
+SERVER_PORTS = (40000, 49000)  # the server's port is in this range, by its version
+SERVER_START_TIMEOUT = 75  # s to start the server; in the Guest, call-server.ps1 -Start gives up after 60
+SERVER_FIX = "`vmlab doctor` tests every Channel; restarting the Guest restarts the server (vmlab down, then vmlab up)"
 MKDIR_TIMEOUT = 30  # s to make the call folder
 
 
@@ -81,65 +85,115 @@ def _hashed(data):
     return hashlib.sha1(data).hexdigest()[:12]
 
 
-class WindowsSshChannel(SshChannel):
-    """SSH to a Windows Guest; each call runs as an interactive Scheduled Task (ssh-call.ps1).
+def server_version():
+    """call-server.ps1's version: a hash of it, which names its file, its compiled copy and its port."""
+    return _hashed(pkgutil.get_data("vmlab", "guest/windows/call-server.ps1"))
 
-    Everything but the short command line travels as files over scp: Windows' sshd stops
-    reading a command's stdin after about 4 KB and the call then hangs, so nothing rides on
-    it. That also gives Build artifacts a way in (send_file)."""
+
+def server_port(version):
+    """The Guest port (127.0.0.1) the server of this version listens on; another version has its own."""
+    return SERVER_PORTS[0] + int(version, 16) % (SERVER_PORTS[1] - SERVER_PORTS[0])
+
+
+def call_request(argv, env, timeout, stdin_length):
+    """The lines that ask the server for one call (guest/windows/call-server.ps1); stdin_length bytes follow them."""
+    b64 = lambda text: base64.b64encode(text.encode("utf-8")).decode("ascii")  # noqa: E731
+    lines = ["file " + b64(argv[0]), "args " + b64(subprocess.list2cmdline(argv[1:])), "timeout %d" % int(timeout)]
+    lines += ["env %s %s" % (b64(name), b64(str(value))) for name, value in sorted(env.items())]
+    lines += ["stdin %d" % stdin_length, "", ""]
+    return "\n".join(lines).encode("ascii")
+
+
+class WindowsSshChannel(SshChannel):
+    """SSH to a Windows Guest, whose calls vmlab's call server runs in the desktop session (call-server.ps1).
+
+    A call is `ssh -W` to the server's port over the master connection (~40 ms), not a session:
+    Windows' sshd stops reading a command's stdin after about 4 KB, while a forwarded
+    connection carries any size. The server starts at the first call after a boot, through an
+    interactive Scheduled Task, over a plain SSH session; files (send_file) go over scp."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._helper = None  # the Guest path of ssh-call.ps1, once this Channel has sent it
-        # No multiplexing: Windows' sshd refuses a second session on one connection
-        # ("Session open refused by peer"), so every call would pay for a failed try first.
-        self._control = None
+        # Sessions connect on their own: Windows' sshd may refuse a second session on one
+        # connection ("Session open refused by peer"). Forwarded calls share the master.
+        self._sessions = None
+        self._version = server_version()
+        self._port = server_port(self._version)
+        # Known to be gone: the Guest stopped since (close). A try would first wait ~2 s for
+        # Windows to refuse the connection.
+        self._server_gone = False
 
-    def _ready(self):
-        """The Guest path of ssh-call.ps1, sent once per Channel; its name carries its version."""
-        if self._helper is None:
-            script = pkgutil.get_data("vmlab", "guest/windows/ssh-call.ps1")
-            helper = r"%s\vmlab-ssh-call-%s.ps1" % (CALL_DIR, _hashed(script))
-            result = self.run_command(
-                "powershell -NoProfile -NonInteractive -Command \"New-Item -ItemType Directory -Force -Path '%s' | Out-Null\"" % CALL_DIR,
-                ["mkdir", CALL_DIR], MKDIR_TIMEOUT, None,
-            )  # fmt: skip
-            if not result.ok:
-                raise ChannelError("the Guest's call folder %s could not be made: %s" % (CALL_DIR, result.stderr.strip()), "check the Guest's disk")
-            with tempfile.NamedTemporaryFile(suffix=".ps1") as local:
-                local.write(script)
-                local.flush()
-                self.send_file(local.name, helper)
-            self._helper = helper
-        return self._helper
+    def close(self):
+        super().close()
+        self._server_gone = True
 
-    def exec(self, argv, timeout, env, stdin=None):
-        helper = self._ready()
-        call = new_call()
-        with tempfile.TemporaryDirectory() as tmp:
-            script = Path(tmp) / "call.ps1"
-            script.write_text(call_script(call, argv, env, timeout, stdin is not None), encoding="ascii")
-            self.send_file(script, call + ".ps1")
-            if stdin is not None:
-                data = Path(tmp) / "call.in"
-                with data.open("wb") as f:
-                    shutil.copyfileobj(stdin, f)
-                self.send_file(data, call + ".in")
-            command = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%s" -Id %s -Dir "%s" -Timeout %d' % (
-                helper, call.rsplit("-", 1)[1], CALL_DIR, int(timeout),
-            )  # fmt: skip
-            result = self.run_command(command, argv, timeout, None)
-        if result.code == NO_RESULT:
-            raise ChannelError(
-                "ssh reached the Guest, but its Scheduled Task did not run the call: %s" % (result.stderr.strip().splitlines() or ["no output"])[-1],
-                "check that the Guest user is logged in to the desktop (autologin); `vmlab doctor` tests every Channel",
-            )
+    def _start_server(self):
+        """Send call-server.ps1 and have it start its Scheduled Task; ChannelError if it does not listen."""
+        script = pkgutil.get_data("vmlab", "guest/windows/call-server.ps1")
+        path = r"%s\vmlab-call-server-%s.ps1" % (CALL_DIR, self._version)
+        result = self.run_command(
+            "powershell -NoProfile -NonInteractive -Command \"New-Item -ItemType Directory -Force -Path '%s' | Out-Null\"" % CALL_DIR,
+            ["mkdir", CALL_DIR], MKDIR_TIMEOUT, None,
+        )  # fmt: skip
+        if not result.ok:
+            raise ChannelError("the Guest's call folder %s could not be made: %s" % (CALL_DIR, result.stderr.strip()), "check the Guest's disk")
+        with tempfile.NamedTemporaryFile(suffix=".ps1") as local:
+            local.write(script)
+            local.flush()
+            self.send_file(local.name, path)
+        command = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%s" -Port %d -Start' % (path, self._port)
+        result = self.run_command(command, ["vmlab-call-server", "-Start"], SERVER_START_TIMEOUT, None)
         if result.code:
             raise ChannelError(
-                "the ssh Channel's PowerShell failed (exit %s): %s" % (result.code, (result.stderr.strip().splitlines() or ["no output"])[-1]),
-                "re-provision the Base guest: vmlab base create NAME --reprovision",
+                "ssh reached the Guest, but vmlab's call server did not start in its desktop session: %s" % (result.stderr.strip().splitlines() or ["exit %s" % result.code])[-1],
+                "check that the Guest user is logged in to the desktop (autologin); `vmlab doctor` tests every Channel",
             )
-        return parse_result(argv, result.stdout, self.name)
+
+    def _forward(self, request, timeout):
+        """(code, stdout, stderr) of one connection to the server, fed the file request."""
+        target = self._target()
+        self._ensure_master(target)
+        command = ["ssh"] + self._master_options() + ["-o", "ControlMaster=no", "-W", "127.0.0.1:%d" % self._port, target]
+        request.seek(0)
+        return hostproc.run(command, timeout, stdin=request)
+
+    def exec(self, argv, timeout, env, stdin=None):
+        with tempfile.TemporaryFile() as data, tempfile.TemporaryFile() as request:
+            if stdin is not None:
+                shutil.copyfileobj(stdin, data)
+            request.write(call_request(argv, env, timeout, data.tell()))
+            data.seek(0)
+            shutil.copyfileobj(data, request)
+            if self._server_gone:
+                self._start_server()
+                self._server_gone = False
+            answer = self._call(argv, request, timeout)
+            if answer is None:
+                # Nothing answered on the server's port, so the call never ran: start the server, then try again.
+                self._start_server()
+                answer = self._call(argv, request, timeout)
+        if answer is None:
+            raise ChannelError("vmlab's call server in the Guest does not answer on port %d although it started" % self._port, SERVER_FIX)
+        try:
+            return parse_result(argv, answer, self.name)
+        except ChannelError:
+            # Not a ChannelError: the server took the call, so the command may have run, and another
+            # Channel must not run it again (ADR 0003).
+            raise GuestError("vmlab's call server in the Guest took %s but gave no result: %r" % (list(argv), answer[:300]), SERVER_FIX)
+
+    def _call(self, argv, request, timeout):
+        """The server's answer to one call, or None if no server took it."""
+        try:
+            code, out, err = self._forward(request, timeout)
+        except subprocess.TimeoutExpired:
+            raise GuestTimeout("%s timed out after %ss on Channel ssh and was killed" % (list(argv), timeout))
+        greeting = "vmlab-call-server %s\n" % self._version
+        if out.startswith(greeting):
+            return out[len(greeting):]
+        self.raise_ssh_failure(code, err)
+        if out:
+            raise ChannelError("something other than vmlab's call server answered on Guest port %d: %r" % (self._port, out[:300]), SERVER_FIX)
+        return None
 
 
 def copy_in(provider, src, guest_dir, timeout=None):

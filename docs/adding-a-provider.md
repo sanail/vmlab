@@ -54,7 +54,7 @@ Subclass `vmlab.providers.base.Channel`. Set a short `name` (it appears in repor
 - Use a unique output file per call if the Channel captures output through files. Never use a shared one: concurrent calls would race.
 - Implement `send_file(local, guest_path)` if the Channel can carry a file of any size (scp, the hypervisor's own file copy). Windows Guests need it: their `exec` cannot take much on stdin.
 
-Typical Channels: SSH with vmlab's own key and known_hosts (multiplexed; reuse `vmlab.providers.ssh.SshChannel`), the hypervisor's guest-exec (`tart exec`, `vmrun runProgramInGuest`), and SSH plus an interactive Scheduled Task on Windows. ADR 0003 has the defaults per OS.
+Typical Channels: SSH with vmlab's own key and known_hosts (multiplexed; reuse `vmlab.providers.ssh.SshChannel`), the hypervisor's guest-exec (`tart exec`, `vmrun runProgramInGuest`), and on Windows SSH to vmlab's call server in the desktop session (`vmlab.providers.windows.WindowsSshChannel`). ADR 0003 has the defaults per OS.
 
 ## 3. Register it
 

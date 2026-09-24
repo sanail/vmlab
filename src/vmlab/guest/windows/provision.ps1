@@ -101,10 +101,11 @@ $codepages = 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'
 foreach ($name in 'ACP', 'OEMCP', 'MACCP') { Set-Value $codepages $name '65001' String }
 
 Say 'native code for PowerShell (NGEN; about a minute)'
-# Every call starts PowerShell two or three times. A new Windows has no native images for its
-# own architecture yet, so each start compiles PowerShell's assemblies (~1 s more per start).
+# Most calls start PowerShell (recipes, the UI helper, the vmrun Channel's runner, vmlab's call server
+# once per boot). A new Windows has no native images for its own architecture yet, so each
+# start compiles PowerShell's assemblies (~1 s more per start).
 # Windows makes them in idle maintenance, which a Guest loses when it is restored to its Clean
-# state: they go in the Base guest. First load what the calls use (call.ps1, ssh-call.ps1, the
+# state: they go in the Base guest. First load what the calls use (call.ps1, the call server, the
 # UI helper), then compile every assembly this session has loaded from the GAC.
 $null = '{}' | ConvertFrom-Json | ConvertTo-Json
 $null = New-Object -ComObject Schedule.Service

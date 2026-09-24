@@ -1,7 +1,8 @@
 """Seam 1 harness: drive the built vmlab zipapp as a subprocess against a temp project.
 
 Tests only use what a user or CI would see: exit codes, stdout/stderr and the
-files vmlab writes into the project. Nothing here imports vmlab itself.
+files vmlab writes into the project. Nothing here imports vmlab itself; the few tests that
+load one part directly say so (test_linux_ui_helper, test_windows_ssh).
 """
 
 import atexit
