@@ -12,6 +12,10 @@ _Avoid_: local machine, runner
 One virtual machine running one operating system, in which the application is tested.
 _Avoid_: VM (in prose), box, target
 
+**Guest OS**:
+The operating system a **Guest** runs: macOS, Linux or Windows. It decides how vmlab runs commands, names paths and drives the UI inside the **Guest**.
+_Avoid_: platform, target OS
+
 **Provider**:
 An adapter for one hypervisor (e.g. Tart, VMware Fusion, UTM) that knows how to start, stop, reset and talk to its **Guests**.
 _Avoid_: backend, driver, hypervisor (when meaning the adapter)
@@ -86,7 +90,7 @@ _Avoid_: test suite, smoke tests
 - A **Regression suite** restores **Clean state** once at its start; a **Scenario** may demand its own restore
 - A **Suite run** holds one **Run** per **Scenario** it executes; what a **Scenario** starts in the **Guest** ends with its **Run**, not with the **Suite run**
 - A **Scenario** closes each **Staged document** it opened; one it leaves open is closed at the end of its **Run**
-- A **Guest**'s architecture follows the **Host**'s; the other architecture is covered only where the guest OS emulates it
+- A **Guest**'s architecture follows the **Host**'s; the other architecture is covered only where the **Guest OS** emulates it
 
 ## Flagged ambiguities
 
