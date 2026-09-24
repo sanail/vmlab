@@ -118,6 +118,27 @@ class WindowsDoctorTest(WindowsTestCase):
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v3\)")
 
+    def test_a_running_base_guest_is_a_warning_that_base_create_fixes_without_a_window(self):
+        # A Base guest runs headless, with no Start menu to click; vmrun stops it with the VM password vmlab keeps.
+        base = self.windows_base()
+        state = json.loads(self.state_path.read_text())
+        state["vms"][str(base.resolve())] = {"running": True, "snapshots": ["clean", "vmlab-provisioned-first"], "reverted": 0}
+        self.state_path.write_text(json.dumps(state))
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+win: Base guest windows-11: running: Labs cannot clone it while it runs")
+        self.assertIn("fix: vmlab base create windows-11", r.out)
+        self.assertNotIn("Start menu", r.out)
+
+        r = self.vmlab("base", "create", "windows-11")
+
+        self.assertExit(r, 0)
+        self.assertIn("shutting vmlab-base-windows-11 down", r.out)
+        [stop] = [c for c in self.calls_on(str(base)) if "stop" in c]
+        self.assertIn(VM_PASSWORD, stop, "an encrypted VM opens in vmrun only with its password")
+        self.assertNotIn("Base guest windows-11: running", self.vmlab("doctor").out)
+
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
         self.set_record(provisioned=2)
 

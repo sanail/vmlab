@@ -34,7 +34,7 @@ def main(argv=None):
     base_sub = p.add_subparsers(dest="base_command", metavar="BASE_COMMAND")
     base_sub.required = True
     base_sub.add_parser("list", help="list this Host's Base guests")
-    p = base_sub.add_parser("create", help="create and provision a Base guest (idempotent)")
+    p = base_sub.add_parser("create", help="create and provision a Base guest (idempotent); shuts a running Fusion one down")
     p.add_argument("name", metavar="NAME", help="e.g. %s" % ", ".join(sorted(bases.CATALOG)))
     p.add_argument("--image", help="image to create it from (default: the known image for NAME); windows-*: the Fusion VM to copy")
     p.add_argument("--yes", action="store_true", help="answer yes: download the image, delete earlier snapshots no Lab needs (Fusion)")

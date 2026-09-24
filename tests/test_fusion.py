@@ -300,18 +300,35 @@ class FusionDoctorTest(FusionTestCase):
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"warn\s+linux: Guest credentials: .*missing")
 
-    def test_a_running_base_guest_is_a_warning_since_labs_cannot_clone_it(self):
+    def test_a_running_base_guest_is_a_warning_that_base_create_fixes_without_a_window(self):
+        # A Base guest runs headless: its fix must not need its desktop.
         self.project.config(FUSION_LAB)
         self.ready_base()
-        state = json.loads(self.state_path.read_text())
-        for vm in state["vms"].values():
-            vm["running"] = True
-        self.state_path.write_text(json.dumps(state))
+        self.set_state(self.base_vmx_path(), running=True)
 
         r = self.vmlab("doctor")
 
-        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: running")
-        self.assertIn("-T fusion stop '%s" % self.project.home, r.out)
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: running: Labs cannot clone it while it runs")
+        self.assertIn("fix: vmlab base create ubuntu-26.04", r.out)
+
+        r = self.vmlab("base", "create", "ubuntu-26.04")
+
+        self.assertExit(r, 0)
+        self.assertIn("shutting vmlab-base-ubuntu-26.04 down", r.out)
+        self.assertEqual(len(self.calls("stop")), 1)
+        self.assertNotIn("Base guest ubuntu-26.04: running", self.vmlab("doctor").out)
+
+    def test_a_running_base_guest_is_not_cloned_and_up_says_how_to_stop_it(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        self.set_state(self.base_vmx_path(), running=True)
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("Base guest ubuntu-26.04 is running", r.err)
+        self.assertIn("vmlab base create ubuntu-26.04", r.err)
+        self.assertEqual(self.clones(), {})
 
     def test_a_clone_for_another_session_is_made_again_at_the_next_up(self):
         self.project.config(FUSION_LAB)
@@ -616,6 +633,17 @@ class FusionCleanTest(FusionTestCase):
         self.assertTrue((self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.vmwarevm").exists(), "still used by this project's Lab")
         self.assertNotIn("ubuntu-24.04", json.loads((self.project.home / "bases.json").read_text()))
 
+    def test_a_running_unused_base_guest_is_left_alone_with_a_fix_that_needs_no_window(self):
+        self.clone_for()
+        self.base_guest(name="ubuntu-24.04")
+        self.set_state(self.base_vmx_path("ubuntu-24.04"), running=True)
+
+        r = self.vmlab("clean", "--yes", "--bases")
+
+        self.assertExit(r, 0)
+        self.assertIn("running: left alone (vmlab base create ubuntu-24.04", r.out)
+        self.assertTrue(self.base_vmx_path("ubuntu-24.04").exists())
+
     def test_service_files_without_their_vm_are_removed(self):
         for name in ("vmlab-gone-1-linux.json", "vmlab-base-gone.credentials.json"):
             (self.project.home / "fusion" / name).write_text("{}")
@@ -769,16 +797,25 @@ class FusionOldSnapshotsTest(FusionTestCase):
         self.assertExit(r, 0)
         self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second", "vmlab-provisioned-third"])
 
-    def test_a_running_base_guest_is_left_alone(self):
+    def test_base_create_shuts_a_running_base_guest_down_before_deleting_them(self):
         self.reprovisioned()
         self.set_state(self.base_vmx_path(), running=True)
 
         r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
 
         self.assertExit(r, 0)
+        self.assertIn("shutting vmlab-base-ubuntu-26.04 down", r.out)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second"])
+
+    def test_clean_leaves_them_alone_while_the_base_guest_runs_and_says_how_to_stop_it(self):
+        self.reprovisioned()
+        self.set_state(self.base_vmx_path(), running=True)
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
         self.assertEqual(len(self.snapshots(self.base_vmx_path())), 2)
-        self.assertIn("running", r.out)
-        self.assertIn("-T fusion stop", r.out)
+        self.assertIn("running: left alone (vmlab base create ubuntu-26.04", r.out)
 
     def test_doctor_warns_and_clean_deletes_them(self):
         self.reprovisioned()

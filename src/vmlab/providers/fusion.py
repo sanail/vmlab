@@ -448,16 +448,25 @@ def provisioned_snapshot(provisioned_id):
     return PROVISIONED_PREFIX + provisioned_id[:12]
 
 
-def stop_hint(vm):
-    """How the person stops vm: an encrypted (Windows) VM opens in vmrun only with its password."""
-    return "shut Windows down from its Start menu" if _encrypted(vm.vmx) else "'%s' -T fusion stop '%s'" % (vmrun_binary(), vm.vmx)
+def stop_hint(name):
+    """How the person stops Base guest name. It runs without a window, and an encrypted (Windows)
+    VM opens in vmrun only with the password vmlab keeps: `base create` shuts it down."""
+    return "vmlab base create %s   (shuts it down)" % name
+
+
+def shut_down_for_labs(vm, out):
+    """`base create` on a ready Base guest: a running one is shut down, since Labs cannot clone it."""
+    if vm.is_running():
+        out("  shutting %s down: Labs cannot clone a running Base guest" % vm.name)
+        vm.stop()
 
 
 class OldSnapshot:
     """A provisioned snapshot of a Base guest that is not the one Labs are cloned from now."""
 
-    def __init__(self, vm, owner, name, running, held_by):
-        self.vm, self.owner, self.name, self.running = vm, owner, name, running
+    def __init__(self, vm, base, name, running, held_by):
+        self.vm, self.base, self.name, self.running = vm, base, name, running
+        self.owner = "Base guest %s" % base
         self.held_by = held_by  # [(who, how to let it go)]: the linked clones that still need it
         # Fusion 26's vmrun and vmcli only drop an encrypted VM's snapshot from its list: neither can
         # merge its disks (offline they never do; a running VM refuses them the key), Fusion's window can.
@@ -465,7 +474,7 @@ class OldSnapshot:
 
     @property
     def stop_hint(self):
-        return stop_hint(self.vm)
+        return stop_hint(self.base)
 
     def why_kept(self):
         """Why vmlab does not delete it, or "" when it does."""
@@ -504,7 +513,7 @@ def old_snapshots(vms=None, only=None):
         except GuestError:
             continue
         holders = _linked_clones(name, vm, vms) if names else {}
-        found += [OldSnapshot(vm, "Base guest %s" % name, s, running, holders.get(s, [])) for s in names]
+        found += [OldSnapshot(vm, name, s, running, holders.get(s, [])) for s in names]
     return found
 
 
@@ -578,7 +587,7 @@ def delete_old_snapshots(name, vm, confirm, out):
         out("  kept %s, which no Lab needs: vmlab cannot delete an encrypted VM's snapshots; to free their disk space, %s" % (names, in_fusion(vm, names)))
         return
     if unneeded[0].running:
-        out("  kept %s, which no Lab needs: %s is running; stop it (%s), then run `vmlab clean`" % (names, vm.name, stop_hint(vm)))
+        out("  kept %s, which no Lab needs: %s is running; stop it (%s), then run `vmlab clean`" % (names, vm.name, stop_hint(name)))
         return
     if not (os.environ.get(DELETE_OLD_SNAPSHOTS) == "1" or confirm("Delete %s's earlier snapshots that no Lab needs (%s)?" % (vm.name, names))):
         out("  kept %s, which no Lab needs: `vmlab clean` or `vmlab base create %s --yes` deletes them; "
@@ -865,7 +874,7 @@ class FusionProvider(Provider):
         if record["snapshot"] not in snapshots:
             problems.append((check, FAIL, "its snapshot %s is missing: Labs are cloned from it" % record["snapshot"], "vmlab base create %s --reprovision" % name))
         if running:
-            problems.append((check, WARN, "running: Labs cannot clone it while it runs", stop_hint(base)))
+            problems.append((check, WARN, "running: Labs cannot clone it while it runs", stop_hint(name)))
         findings += problems or [(check, OK, "provisioned (v%s), VM %s" % (record["provisioned"], base.vmx), None)]
         if self.windows and not record.get("elevated"):
             findings.append(("Elevation", WARN, "the Guest asks before elevating (UAC), which nothing can answer unattended",
@@ -995,7 +1004,7 @@ class FusionProvider(Provider):
         if not self.vm.exists():
             base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
             if base_vm.is_running():
-                raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, "vmrun stop '%s'" % base_vm.vmx)
+                raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, stop_hint(self.base_name))
             if self.windows:
                 base_vm.clone_copy(self.vm)
                 self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
@@ -1174,7 +1183,8 @@ class HostVMs:
         )
 
     def stop_hint(self, name):
-        return "vmrun stop '%s'" % vmx_path(name)
+        base = {r.get("vm") or bases.vm_name(b): b for b, r in bases.Registry().all().items() if r.get("provider") == "fusion"}.get(name)
+        return stop_hint(base) if base else "vmrun stop '%s'" % vmx_path(name)
 
     def old_snapshots(self, vms):
         return old_snapshots(vms)
@@ -1215,6 +1225,7 @@ def create_base(name, image, confirm, reprovision, out):
         record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots()
         and not reprovision
     ):  # fmt: skip
+        shut_down_for_labs(vm, out)
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
     else:
         if not (record.get("installed") and vm.exists()):

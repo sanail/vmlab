@@ -34,7 +34,7 @@ from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
     BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
-    save_credentials, sound_off, vm_password, vmrun, vmx_path,
+    save_credentials, shut_down_for_labs, sound_off, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
@@ -105,6 +105,7 @@ def create_base(name, image, prompt, reprovision, out):
     other_image = bool(image and record.get("image") and _image_vmx(image) != Path(record["image"]).resolve())
     sound_off(vm, out)
     if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not (reprovision or other_image):
+        shut_down_for_labs(vm, out)
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
     else:
         wizard = Wizard(name, prompt, out)
