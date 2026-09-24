@@ -60,6 +60,14 @@ _Avoid_: Run (for the whole suite), run folder (for one **Scenario**)
 A document `stage_text` opened in a third-party editor, with the given text selected in it. It is a file vmlab wrote to the **Guest**'s temp folder, and it is known by that exact path, never by its name alone.
 _Avoid_: stage (as a noun), staging file
 
+**Tray icon**:
+An application's icon in the operating system's always-visible area (the macOS menu bar, the Windows notification area, a Linux StatusNotifierItem), with its **Tray menu**.
+_Avoid_: status item, menu bar extra, systray
+
+**Notification**:
+A message an application hands the operating system to show outside its windows. It is posted once the operating system has recorded it, whether or not a banner appeared.
+_Avoid_: toast, banner (in prose)
+
 **Ad-hoc run**:
 A **Run** of a **Scenario** that is not saved in the project — a one-off request from the user.
 
