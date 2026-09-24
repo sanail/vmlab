@@ -72,6 +72,8 @@ CHANNELS = ("ssh", "vmrun")
 # The autologin session (name of its .desktop file) for each session type. Base guests boot into Wayland.
 SESSIONS = {"wayland": "ubuntu", "x11": "xfce"}
 SESSION_NAMES = {"wayland": "Wayland", "x11": "X11"}
+# Prints (true,) when the session's panel hosts Tray icons: GNOME's AppIndicator extension, Xfce's Status Tray
+TRAY_WATCHER = "gdbus call --session -d org.freedesktop.DBus -o /org/freedesktop/DBus -m org.freedesktop.DBus.NameHasOwner org.kde.StatusNotifierWatcher"
 FUSION_APP = "/Applications/VMware Fusion.app"
 INSTALL_FIX = (
     "install VMware Fusion Pro (free; ask before installing anything on the Host): download it from "
@@ -915,7 +917,19 @@ class FusionProvider(Provider):
             seen = SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")
             return [("Desktop session", FAIL, "the Lab asks for %s, but the Guest logged into %s" % (SESSION_NAMES[self.session], seen),
                      "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again" % ((self.lab.name,) * 3))]  # fmt: skip
-        return [("Desktop session", OK, SESSION_NAMES[self.session], None)] + (self._diagnose_extensions() if self.session == "wayland" else [])
+        extensions = self._diagnose_extensions() if self.session == "wayland" else []
+        return [("Desktop session", OK, SESSION_NAMES[self.session], None)] + extensions + [self._diagnose_tray()]
+
+    def _diagnose_tray(self):
+        """Tray icons (and so `ui tray`) need a StatusNotifierWatcher on the session bus: the panel's."""
+        try:
+            result = self.exec(["sh", "-c", TRAY_WATCHER], CALL_TIMEOUT)
+        except GuestError as exc:
+            return ("Tray icons", WARN, "cannot ask the session bus: %s" % exc.message, exc.fix)
+        if result.stdout.strip() == "(true,)":
+            return ("Tray icons", OK, "the panel shows them (a StatusNotifierWatcher is on the session bus)", None)
+        return ("Tray icons", WARN, "no StatusNotifierWatcher on the session bus, so the panel shows no Tray icons and `ui tray` finds none",
+                "wait for the desktop and run doctor again; if it stays missing, restart the Guest (vmlab down %s && vmlab up %s)" % (self.lab.name, self.lab.name))  # fmt: skip
 
     def _diagnose_extensions(self):
         """vmlab's Shell extension drives Wayland sessions; GNOME may have turned all extensions off."""

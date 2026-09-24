@@ -6,7 +6,10 @@ Host with that directory as the working directory and are recorded in
 commands.jsonl. The UI contract serves the scripted tree and emulates a text
 editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fake]:
 
-    ui_tree = "path/to/tree.json"   # scripted UI tree, relative to the config file
+    ui_tree = "path/to/tree.json"   # scripted UI tree, relative to the config file; an
+                                    # application node's "trayicon" node is its Tray icon,
+                                    # whose "menuitem" children (with "enabled", "checked" and
+                                    # their own children) are its Tray menu
     channels = ["ssh", "exec"]      # Channel names, preferred first
     broken_channels = ["ssh"]       # these Channels fail every call (fault injection)
     hung_channels = ["ssh"]         # these Channels hang until the call times out
@@ -173,7 +176,7 @@ class FakeProvider(Provider):
         """The UI contract without a helper: the scripted tree, plus a text editor with a window per
         Staged document, the front one first: stage-text opens one, close-staged closes one.
 
-        Clicks and key presses are recorded; a click on a scripted element with "covered_by" refuses,
+        Clicks, key presses and the items tray chooses are recorded; a click on a scripted element with "covered_by" refuses,
         as a helper does when something else is on top of it. In the editor, a click focuses the text
         area, cmd+a selects all, cmd+c / cmd+v copy and paste (or ctrl+...), and typing replaces
         the selection. The clipboard and the editor live in the Guest's filesystem,
@@ -223,6 +226,23 @@ class FakeProvider(Provider):
                 state["clipboard"] = params["set"]
                 self._save_ui_state(state)
             return {"text": state.get("clipboard")}
+        if command == "tray":
+            apps = [a for a in self._scripted_tree().get("children", []) if a.get("name", "").lower() == params["app"].lower()]
+            icon = next(filter(None, (_tray_icon(a) for a in apps)), None)
+            if icon is None:
+                return {"icon": False}
+            items, level, chosen = _tray_items(icon), icon, []
+            for label in params["choose"]:
+                if level is not icon and not level.get("children"):
+                    return {"icon": True, "items": items, "chosen": None, "failed": {"at": chosen + [label], "reason": "leaf"}}
+                shown = [n for n in level.get("children", []) if n.get("role") == "menuitem"]
+                level = next((n for n in shown if n.get("name") == label), None)
+                chosen.append(label)
+                if level is None or not level.get("enabled", True):
+                    return {"icon": True, "items": items, "chosen": None, "failed": {"at": chosen, "reason": "disabled" if level else "missing"}}
+            if chosen:
+                self._record("tray", app=params["app"], chosen=chosen)
+            return {"icon": True, "items": items, "chosen": chosen or None, "failed": None}
         if command == "focus":
             apps = self._scripted_tree().get("children", []) + ([editor] if editor else [])
             [app] = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()] or [None]
@@ -342,6 +362,22 @@ def _uncovered(node):
     if "children" in node:
         out["children"] = [_uncovered(child) for child in node["children"]]
     return out
+
+
+def _tray_icon(node):
+    """The first scripted node with role trayicon in node, or None."""
+    if node.get("role") == "trayicon":
+        return node
+    return next(filter(None, (_tray_icon(child) for child in node.get("children", []))), None)
+
+
+def _tray_items(menu):
+    """A scripted Tray menu's items as a helper reads them: menuitems only, so no separators."""
+    return [
+        {"name": n.get("name", ""), "enabled": n.get("enabled", True), "checked": n.get("checked", False), "children": _tray_items(n)}
+        for n in menu.get("children", [])
+        if n.get("role") == "menuitem"
+    ]
 
 
 def _inside(bounds, x, y):

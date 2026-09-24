@@ -206,6 +206,13 @@ class Guest:
         uncovered (on the Scenario's clock), then raises with the last reason."""
         return self._ui_call(lambda contract: contract.click(ui.Query(text, role, app), index=index, at=at, timeout=timeout))
 
+    def tray(self, app, choose=None, timeout=None):
+        """Read app's Tray menu: {"items": [{"name", "enabled", "checked", "children"}], "chosen"}.
+        choose, a label or a list of labels (one per submenu level), chooses that item. Raises when
+        the app has no Tray icon, no item has a label, or the item is disabled; with timeout
+        (seconds), first waits for the Tray icon to appear (on the Scenario's clock)."""
+        return self._ui_call(lambda contract: contract.tray(app, choose=choose, timeout=timeout))
+
     def press(self, chord):
         """Press a key chord such as "cmd+shift+space", by physical key (any keyboard layout)."""
         return self._ui_call(lambda contract: contract.press(chord))

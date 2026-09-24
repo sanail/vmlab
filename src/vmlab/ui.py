@@ -14,7 +14,8 @@ Every node, on every OS:
 
 The root has role "desktop" and "truncated" (true when a size limit cut the
 tree short); its children are applications (with "pid"), whose children are
-their windows and tray (status) items.
+their windows and, on macOS, their Tray icons (menubaritem). A Tray menu is read
+and chosen from with the tray command, in a shape of its own (UI.tray).
 """
 
 import re
@@ -272,6 +273,45 @@ class NotClickable(GuestError):
 
 class NoAnswer(GuestError):
     """A condition's command came back without the Guest's answer: a Channel failed without saying so."""
+
+
+class TrayError(GuestError):
+    """A tray command that failed in the Guest: no Tray icon, no such item, or a disabled one.
+    result is what the command prints: the items it read, "chosen": null and the "error"."""
+
+    def __init__(self, message, fix, items):
+        super().__init__(message, fix)
+        self.result = {"items": items, "chosen": None, "error": message}
+
+
+TRAY_ITEM_DEFAULTS = {"name": "", "enabled": True, "checked": False, "children": []}
+
+
+def tray_labels(choose):
+    """g.tray's choose (None, a label or a list of labels) as a list of labels."""
+    labels = [] if choose is None else [choose] if isinstance(choose, str) else choose
+    if not isinstance(labels, (list, tuple)) or not all(isinstance(l, str) and l for l in labels):
+        raise UsageError("choose takes a label or a list of labels, one per menu level, not %r" % (choose,))
+    return list(labels)
+
+
+def tray_items(items):
+    """A Tray menu's items in the contract's shape; children is None where the helper could not list a submenu."""
+    out = []
+    for item in items:
+        item = dict(TRAY_ITEM_DEFAULTS, **{k: v for k, v in item.items() if k in TRAY_ITEM_DEFAULTS})
+        if item["children"] is not None:
+            item["children"] = tray_items(item["children"])
+        out.append(item)
+    return out
+
+
+def tray_level(items, path):
+    """The items of the menu that path (labels) opens, or None where they were not listed."""
+    for name in path:
+        item = next((i for i in items or [] if i["name"] == name), None)
+        items = item and item["children"]
+    return items
 
 
 class ElementCondition:
@@ -566,6 +606,47 @@ class UI:
                 raise NotClickable(exc.message)
             raise
         return {"x": result["x"], "y": result["y"], "element": element, "under": result.get("under")}
+
+    def tray(self, app, choose=None, timeout=None):
+        """Read app's Tray menu and, with choose (a label per menu level), choose that item.
+
+        {"items": [{"name", "enabled", "checked", "children"}], "chosen": labels or None}.
+        With timeout (seconds), wait for the Tray icon to appear. TrayError, carrying the
+        items, when there is no Tray icon, no item of a label or a disabled one.
+        """
+        if not app:
+            raise UsageError("tray needs the app whose Tray icon to use")
+        path = tray_labels(choose)
+        deadline = time.time() + (timeout or 0)
+        while True:
+            result = self._call_with_deadline("tray", {"app": app, "choose": path})
+            if result.get("icon"):
+                break
+            now = time.time()
+            if now >= deadline:
+                within = " within %gs" % timeout if timeout else ""
+                detail = ": %s" % result["detail"] if result.get("detail") else ""
+                raise TrayError(
+                    "%s has no Tray icon%s%s" % (app, within, detail),
+                    "check that %s is running and has put its icon in the tray; wait for it with a timeout" % app,
+                    [],
+                )
+            time.sleep(min(POLL_SECONDS, deadline - now))
+        items = tray_items(result["items"])
+        failed = result.get("failed")
+        if failed:
+            at = failed["at"]
+            label, under = at[-1], (" under %s" % " > ".join(at[:-1]) if len(at) > 1 else "")
+            if failed["reason"] == "disabled":
+                message = "%s's Tray menu item \"%s\"%s is disabled" % (app, label, under)
+            elif failed["reason"] == "leaf":
+                message = "%s's Tray menu item \"%s\" has no submenu to choose \"%s\" from" % (app, at[-2], label)
+            else:
+                level = tray_level(items, at[:-1])
+                names = "unknown" if level is None else ", ".join(i["name"] for i in level) or "none"
+                message = "%s's Tray menu has no item \"%s\"%s; its items: %s" % (app, label, under, names)
+            raise TrayError(message, "labels match exactly, one per menu level; look at `vmlab ui tray --app %s`" % app, items)
+        return {"items": items, "chosen": path or None}
 
     def press(self, chord):
         key, modifiers = parse_chord(chord)

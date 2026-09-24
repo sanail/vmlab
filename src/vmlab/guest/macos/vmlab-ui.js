@@ -86,6 +86,16 @@ function walker(maxDepth) {
   return walk;
 }
 
+// The process's extras menu bar, which holds its Tray icons, or null. Not "menu bar 2":
+// an accessory app has no main menu bar, so its extras bar is its only one.
+function extrasBar(proc) {
+  try {
+    return proc.attributes.byName("AXExtrasMenuBar").value() || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function screenBounds() {
   const frame = $.NSScreen.mainScreen.frame;
   return { x: 0, y: 0, w: Math.round(frame.size.width), h: Math.round(frame.size.height) };
@@ -102,10 +112,8 @@ function tree(params) {
       let windows = [];
       try { windows = procs[0].windows(); } catch (e) {}
       for (const w of windows) children.push(walk.node(w, 1));
-      try {
-        const bars = procs[0].menuBars();
-        if (bars.length > 1) children.push(walk.node(bars[1], 1)); // the extras (status item) bar
-      } catch (e) {}
+      const extras = extrasBar(procs[0]);
+      if (extras) children.push(walk.node(extras, 1));
     }
     return {
       native_role: "AXApplication", name: ObjC.unwrap(app.localizedName) || "", value: null, description: null,
@@ -287,6 +295,52 @@ function stageText(params) {
   return { app: str(proc.name()) || params.app, file: file, frontmost: frontmost, selected: selected, pressed: pressed };
 }
 
+// The items of a Tray icon's menu, or of a menu item's submenu (null when it has none), as
+// [{element, node, submenu}]. They are there while the menu is closed; pressing one chooses it.
+function trayMenu(element) {
+  let menus = [];
+  try { menus = element.menus(); } catch (e) {}
+  if (!menus.length) return null;
+  const out = [];
+  for (const item of menus[0].menuItems()) {
+    const name = str(item.name()) || "";
+    const enabled = item.enabled() !== false;
+    if (!name && !enabled) continue; // a separator
+    let mark = null;
+    try { mark = item.attributes.byName("AXMenuItemMarkChar").value(); } catch (e) {}
+    const submenu = trayMenu(item);
+    const checked = str(mark) === "\u2713"; // a check mark; "-" is the mixed state
+    const node = { name: name, enabled: enabled, checked: checked, children: (submenu || []).map((i) => i.node) };
+    out.push({ element: item, node: node, submenu: submenu });
+  }
+  return out;
+}
+
+function tray(params) {
+  const path = params.choose || [];
+  let icon = null;
+  for (const app of nsApps(params.app)) {
+    const procs = events.processes.whose({ unixId: app.processIdentifier })();
+    const extras = procs.length ? extrasBar(procs[0]) : null;
+    const items = extras ? extras.menuBarItems() : [];
+    if (items.length) { icon = items[0]; break; }
+  }
+  if (!icon) return { icon: false };
+  const top = trayMenu(icon) || [];
+  const items = top.map((i) => i.node);
+  let level = top;
+  const chosen = [];
+  for (let n = 0; n < path.length; n++) {
+    if (!level) return { icon: true, items: items, chosen: null, failed: { at: chosen.concat([path[n]]), reason: "leaf" } };
+    chosen.push(path[n]);
+    const item = level.find((i) => i.node.name === path[n]);
+    if (!item || !item.node.enabled) return { icon: true, items: items, chosen: null, failed: { at: chosen, reason: item ? "disabled" : "missing" } };
+    if (n === path.length - 1) item.element.click();
+    level = item.submenu;
+  }
+  return { icon: true, items: items, chosen: path.length ? path : null, failed: null };
+}
+
 function quoted(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
@@ -305,6 +359,7 @@ function run(argv) {
     case "stage-text": result = stageText(params); break;
     case "close-staged": result = closeStaged(params); break;
     case "focus": result = focus(params); break;
+    case "tray": result = tray(params); break;
     default: fail("unknown command " + command);
   }
   return JSON.stringify(result);

@@ -40,6 +40,8 @@ using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Automation;
 using System.Windows.Automation.Text;
+using Accessibility;
+using Microsoft.Win32;
 
 namespace VmlabUi {
 
@@ -99,6 +101,13 @@ static class Native {
     [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hwnd);
     [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct NOTIFYICONIDENTIFIER { public int cbSize; public IntPtr hWnd; public uint uID; public Guid guidItem; }
+    [DllImport("shell32.dll")] public static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER id, out RECT rect);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
+    [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object accessible);
+    [DllImport("oleacc.dll")] public static extern int AccessibleChildren(IAccessible parent, int start, int count, [Out] object[] children, out int got);
 }
 
 public static class Helper {
@@ -177,6 +186,7 @@ public static class Helper {
             case "focus": return Focus(p);
             case "stage-text": return StageText(p);
             case "close-staged": return CloseStaged(p);
+            case "tray": return Tray(p);
         }
         throw new Fail("unknown command " + command);
     }
@@ -656,6 +666,188 @@ public static class Helper {
         return typed;
     }
 
+    // MARK: - Tray menus
+
+    // MSAA roles and states of menus: UI Automation shows a WinForms ContextMenuStrip as an empty
+    // pane, while MSAA lists its items, and submenus' items, the same way as a Win32 menu's.
+    const int ROLE_MENUPOPUP = 11, ROLE_MENUITEM = 12;
+    const int STATE_UNAVAILABLE = 0x1, STATE_CHECKED = 0x10, STATE_INVISIBLE = 0x8000, STATE_HASPOPUP = 0x40000000;
+    const uint OBJID_CLIENT = 0xFFFFFFFC;
+    const string NOTIFY_ICONS = @"Control Panel\NotifyIconSettings";
+
+    /// An item of a Tray menu: the object that answers for it (child 0: itself), its node, its submenu.
+    public class TrayItem {
+        public IAccessible Host;
+        public object Child;
+        public Dictionary<string, object> Node;
+        public List<TrayItem> Submenu;  // null: none, or not listed without opening it
+    }
+
+    /// Every window of pid, hidden and message-only ones included: a Tray icon belongs to one of them.
+    static List<IntPtr> ProcessWindows(int pid) {
+        List<IntPtr> found = new List<IntPtr>();
+        Native.EnumWindows(delegate(IntPtr hwnd, IntPtr param) {
+            int owner;
+            Native.GetWindowThreadProcessId(hwnd, out owner);
+            if (owner == pid) found.Add(hwnd);
+            return true;
+        }, IntPtr.Zero);
+        IntPtr message = IntPtr.Zero;
+        while ((message = Native.FindWindowEx(new IntPtr(-3), message, null, null)) != IntPtr.Zero) {  // HWND_MESSAGE
+            int owner;
+            Native.GetWindowThreadProcessId(message, out owner);
+            if (owner == pid) found.Add(message);
+        }
+        return found;
+    }
+
+    /// The Tray icon of one of the processes: (pid, its rectangle on screen), or null. Windows 11 keeps
+    /// every icon an app showed under NotifyIconSettings, with the app's path and the icon's uID; the
+    /// shell then tells where it is. An icon waiting among the hidden ones is promoted to the taskbar.
+    static object[] TrayIcon(Process[] processes) {
+        using (RegistryKey icons = Registry.CurrentUser.OpenSubKey(NOTIFY_ICONS, true)) {
+            if (icons == null) return null;
+            foreach (Process process in processes) {
+                string path;
+                try { path = process.MainModule.FileName; } catch (Exception) { continue; }
+                foreach (string name in icons.GetSubKeyNames()) {
+                    using (RegistryKey icon = icons.OpenSubKey(name, true)) {
+                        if (icon == null || !string.Equals(icon.GetValue("ExecutablePath") as string, path, StringComparison.OrdinalIgnoreCase)) continue;
+                        object uid = icon.GetValue("UID");
+                        if (uid == null) continue;  // an icon known by a GUID only
+                        object promoted = icon.GetValue("IsPromoted");
+                        if (!(promoted is int) || (int)promoted != 1) {
+                            icon.SetValue("IsPromoted", 1, RegistryValueKind.DWord);  // on the taskbar at once, until the next restore
+                            Thread.Sleep(500);  // the shell answers where the icon is even while it moves: nothing to poll for
+                        }
+                        foreach (IntPtr hwnd in ProcessWindows(process.Id)) {
+                            Native.NOTIFYICONIDENTIFIER id = new Native.NOTIFYICONIDENTIFIER();
+                            id.cbSize = Marshal.SizeOf(typeof(Native.NOTIFYICONIDENTIFIER));
+                            id.hWnd = hwnd;
+                            id.uID = (uint)Convert.ToInt64(uid);
+                            Native.RECT r;
+                            if (Native.Shell_NotifyIconGetRect(ref id, out r) == 0 && r.Right > r.Left)
+                                return new object[] { process.Id, r };
+                        }
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /// The visible windows of pid that are menus: their MSAA client lists menu items.
+    static List<IntPtr> MenuWindows(int pid) {
+        return ProcessWindows(pid).FindAll(delegate(IntPtr hwnd) {
+            return Native.IsWindowVisible(hwnd) && MenuItems(Accessible(hwnd)).Count > 0;
+        });
+    }
+
+    static IAccessible Accessible(IntPtr hwnd) {
+        Guid iid = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71");  // IAccessible
+        object found;
+        return Native.AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, ref iid, out found) == 0 ? found as IAccessible : null;
+    }
+
+    static List<TrayItem> MenuItems(IAccessible parent) {
+        List<TrayItem> items = new List<TrayItem>();
+        if (parent == null) return items;
+        object[] kids;
+        try {
+            int count = parent.accChildCount, got;
+            kids = new object[count];
+            if (count > 0) Native.AccessibleChildren(parent, 0, count, kids, out got);
+        } catch (Exception) { return items; }
+        foreach (object kid in kids) {
+            IAccessible own = kid as IAccessible;
+            IAccessible host = own ?? parent;
+            object child = own != null ? (object)0 : kid;
+            int role, state;
+            string name;
+            try {
+                role = Convert.ToInt32(host.get_accRole(child));
+                state = Convert.ToInt32(host.get_accState(child));
+                name = host.get_accName(child) ?? "";
+            } catch (Exception) { continue; }
+            if (role == ROLE_MENUPOPUP && own != null) { items.AddRange(MenuItems(own)); continue; }  // a Win32 submenu's items
+            if (role != ROLE_MENUITEM || (state & STATE_INVISIBLE) != 0) continue;  // separators too
+            TrayItem item = new TrayItem();
+            item.Host = host;
+            item.Child = child;
+            List<TrayItem> sub = own != null ? MenuItems(own) : new List<TrayItem>();
+            item.Submenu = sub.Count > 0 ? sub : ((state & STATE_HASPOPUP) != 0 ? null : new List<TrayItem>());
+            bool hasSubmenu = sub.Count > 0 || (state & STATE_HASPOPUP) != 0;
+            item.Node = Obj("name", name, "enabled", (state & STATE_UNAVAILABLE) == 0, "checked", (state & STATE_CHECKED) != 0,
+                "children", item.Submenu == null ? null : item.Submenu.ConvertAll(delegate(TrayItem i) { return (object)i.Node; }));
+            if (!hasSubmenu) item.Submenu = null;
+            items.Add(item);
+        }
+        return items;
+    }
+
+    /// Read an app's Tray menu and choose p["choose"] (a label per menu level) from it: the menu
+    /// opens on a right click on the Tray icon, as a user opens it, and an item is chosen by its
+    /// default action. Whatever is still open afterwards is closed with Escape.
+    static Dictionary<string, object> Tray(Dictionary<string, object> p) {
+        string wanted = Str(p, "app");
+        if (string.IsNullOrEmpty(wanted)) throw new Fail("tray needs an app");
+        List<string> path = Strings(p, "choose");
+        DateTime deadline = Deadline(p);
+        object[] icon = TrayIcon(Process.GetProcessesByName(wanted));
+        if (icon == null) return Obj("icon", false);
+        int pid = (int)icon[0];
+        Native.RECT r = (Native.RECT)icon[1];
+        Native.SetCursorPos((r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2);
+        Thread.Sleep(50);
+        Mouse(0x0008);  // MOUSEEVENTF_RIGHTDOWN
+        Thread.Sleep(30);
+        Mouse(0x0010);  // MOUSEEVENTF_RIGHTUP
+        List<IntPtr> opened = WaitFor<List<IntPtr>>(deadline, delegate() { List<IntPtr> m = MenuWindows(pid); return m.Count > 0 ? m : null; });
+        if (opened == null) throw new Fail(wanted + "'s Tray menu did not open on a right click on its Tray icon");
+        try {
+            List<TrayItem> top = MenuItems(Accessible(opened[0]));
+            List<object> items = top.ConvertAll(delegate(TrayItem i) { return (object)i.Node; });
+            List<TrayItem> level = top;
+            List<string> chosen = new List<string>();
+            for (int n = 0; n < path.Count; n++) {
+                string label = path[n];
+                chosen.Add(label);
+                if (level == null)
+                    return Obj("icon", true, "items", items, "chosen", null, "failed", Obj("at", chosen, "reason", "leaf"));
+                TrayItem item = level.Find(delegate(TrayItem i) { return (string)i.Node["name"] == label; });
+                if (item == null || !(bool)item.Node["enabled"])
+                    return Obj("icon", true, "items", items, "chosen", null, "failed", Obj("at", chosen, "reason", item == null ? "missing" : "disabled"));
+                if (n + 1 < path.Count && item.Submenu == null && item.Node["children"] == null) {
+                    // A submenu listed only once it is open: open it, and read what opened.
+                    List<IntPtr> before = MenuWindows(pid);
+                    item.Host.accDoDefaultAction(item.Child);
+                    List<IntPtr> added = WaitFor<List<IntPtr>>(deadline, delegate() {
+                        List<IntPtr> m = MenuWindows(pid).FindAll(delegate(IntPtr w) { return !before.Contains(w); });
+                        return m.Count > 0 ? m : null;
+                    });
+                    if (added == null) throw new Fail(label + " in " + wanted + "'s Tray menu did not open its submenu");
+                    item.Submenu = MenuItems(Accessible(added[0]));
+                    item.Node["children"] = item.Submenu.ConvertAll(delegate(TrayItem i) { return (object)i.Node; });
+                }
+                if (n + 1 == path.Count) item.Host.accDoDefaultAction(item.Child);
+                level = item.Submenu;
+            }
+            return Obj("icon", true, "items", items, "chosen", path.Count > 0 ? path : null, "failed", null);
+        } finally {
+            // An item chosen in a submenu leaves the menu open; reading one leaves it open too. Each
+            // menu window is told to cancel, as Escape would, but no key goes to whatever is in front.
+            DateTime closing = DateTime.UtcNow.AddSeconds(3);
+            WaitFor<string>(closing, delegate() {
+                List<IntPtr> open = MenuWindows(pid);
+                foreach (IntPtr menu in open) {
+                    Native.PostMessage(menu, 0x0100, new IntPtr(0x1B), IntPtr.Zero);  // WM_KEYDOWN, VK_ESCAPE
+                    Native.PostMessage(menu, 0x0101, new IntPtr(0x1B), IntPtr.Zero);  // WM_KEYUP
+                }
+                return open.Count == 0 ? "closed" : null;
+            });
+        }
+    }
+
     // MARK: - Clipboard
 
     static T Retry<T>(Func<T> what) {
@@ -857,7 +1049,7 @@ if (-not (Test-Path -LiteralPath $dll)) {
     # Compiled aside and renamed: a concurrent call never loads half a file.
     $part = "$dll.$PID.part"
     Add-Type -TypeDefinition $source -OutputAssembly $part -OutputType Library -ReferencedAssemblies @(
-        'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions', 'System.Core')
+        'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions', 'System.Core', 'Accessibility')
     try { Move-Item -LiteralPath $part -Destination $dll -ErrorAction Stop } catch { Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $part }
     # Other vmlab versions' copies; one a running call has loaded stays until next time.
     Get-ChildItem -LiteralPath $dir -Filter 'vmlab-ui-*.dll' | Where-Object { $_.FullName -ne $dll } |

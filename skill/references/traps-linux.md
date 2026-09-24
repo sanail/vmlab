@@ -24,15 +24,11 @@ A Lab runs GNOME on Wayland (`session = "wayland"`) or Xfce on X11 (`"x11"`). Wh
 
 ## Tray menus
 
-**Symptom**: the app's tray icon is on the panel, but neither `ui tree` nor `ui find` shows it or its menu.
-
-**Cause**: panels keep tray icons and their menus out of the accessibility tree, and Wayland gives no coordinates to click at.
-
-**Do**: drive the menu the way the panel does, over D-Bus: the icon is a StatusNotifierItem registered with `org.kde.StatusNotifierWatcher` (`RegisteredStatusNotifierItems`), its `Menu` property names a `com.canonical.dbusmenu` object, `GetLayout` lists the items and `Event(id, "clicked", ...)` chooses one. Run it with `g.exec` as a small `python3` script (`gi.repository.Gio`), with `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus`. A libayatana item is registered as `:1.42/org/ayatana/NotificationItem/x`: the bus name ends at the first `/`.
+Panels keep Tray icons and their menus out of `ui tree`: read and choose from a Tray menu with `g.tray(APP, choose=...)`, which drives it over D-Bus, the way the panel does, in both Desktop sessions. It finds StatusNotifierItem icons only (GTK's, Qt's, Electron's, libayatana's); an app with an old XEmbed tray icon has none to find. `vmlab doctor` warns when the Desktop session has no StatusNotifierWatcher, which means no panel shows Tray icons.
 
 ## Notifications
 
-**Do**: record them on the session bus rather than on screen: start `dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"` with `g.spawn` (same bus address as above, in `env=`) before the step, and read its output (`wait_for(log=handle.log, pattern=...)`, `handle.output()`): each `Notify` call lists the app name, icon, summary and body as its first four strings. Put a nonce in what the app sends. A `Notify` that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
+**Do**: record them on the session bus rather than on screen: start `dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"` with `g.spawn` (vmlab's calls have the session bus's address) before the step, and read its output (`wait_for(log=handle.log, pattern=...)`, `handle.output()`): each `Notify` call lists the app name, icon, summary and body as its first four strings. Put a nonce in what the app sends. A `Notify` that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
 
 ## Processes and packages
 

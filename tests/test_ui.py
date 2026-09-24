@@ -370,6 +370,137 @@ class UiCliTest(UiTestCase):
         self.assertEqual(self.ui("tree", "--lab", "win")["role"], "desktop")
 
 
+# MyApp's Tray icon, as the Fake scripts one: a trayicon node of the app, its Tray menu's items as menuitems.
+TRAY_ICON = {
+    "role": "trayicon",
+    "children": [
+        {"role": "menuitem", "name": "Open"},
+        {"role": "separator"},
+        {"role": "menuitem", "name": "Settings", "children": [
+            {"role": "menuitem", "name": "Advanced"},
+            {"role": "menuitem", "name": "Dark mode", "checked": True},
+        ]},
+        {"role": "menuitem", "name": "Update", "enabled": False},
+        {"role": "menuitem", "name": "Quit"},
+    ],
+}  # fmt: skip
+TRAY_ITEMS = [
+    {"name": "Open", "enabled": True, "checked": False, "children": []},
+    {"name": "Settings", "enabled": True, "checked": False, "children": [
+        {"name": "Advanced", "enabled": True, "checked": False, "children": []},
+        {"name": "Dark mode", "enabled": True, "checked": True, "children": []},
+    ]},
+    {"name": "Update", "enabled": False, "checked": False, "children": []},
+    {"name": "Quit", "enabled": True, "checked": False, "children": []},
+]  # fmt: skip
+
+
+class TrayTest(UiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.write_tray_tree()
+
+    def write_tray_tree(self, icon=True):
+        tree = json.loads(json.dumps(TREE))
+        if icon:
+            tree["children"][0]["children"].append(TRAY_ICON)
+        (self.project.dir / "tree.json").write_text(json.dumps(tree))
+
+    def tray(self, *args):
+        """(exit code, JSON printed, stderr) of `vmlab ui tray ARGS`."""
+        r = self.project.vmlab("ui", "tray", *args)
+        return r.code, json.loads(r.out), r.err
+
+    def choices(self):
+        log = next(self.project.home.glob("fake/*/commands.jsonl")).read_text()
+        return [e["chosen"] for e in map(json.loads, log.splitlines()) if e["event"] == "tray"]
+
+    def test_lists_the_tray_menu_with_its_submenus(self):
+        self.assertEqual(self.tray("--app", "myapp"), (0, {"items": TRAY_ITEMS, "chosen": None}, ""))
+        self.assertEqual(self.choices(), [])
+
+    def test_chooses_a_top_level_item(self):
+        code, result, _ = self.tray("--app", "MyApp", "--choose", "Quit")
+        self.assertEqual((code, result["chosen"]), (0, ["Quit"]))
+        self.assertEqual(result["items"], TRAY_ITEMS)
+        self.assertEqual(self.choices(), [["Quit"]])
+
+    def test_chooses_an_item_of_a_submenu_one_label_per_level(self):
+        code, result, _ = self.tray("--app", "MyApp", "--choose", "Settings", "--choose", "Advanced")
+        self.assertEqual((code, result["chosen"]), (0, ["Settings", "Advanced"]))
+        self.assertEqual(self.choices(), [["Settings", "Advanced"]])
+
+    def test_an_app_without_a_tray_icon_fails_at_once(self):
+        started = time.time()
+        code, result, err = self.tray("--app", "Other")
+        self.assertEqual((code, result["items"], result["chosen"]), (1, [], None))
+        self.assertIn("Other has no Tray icon", err)
+        self.assertIn(result["error"], err)
+        self.assertLess(time.time() - started, 8)
+
+    def test_a_missing_label_fails_with_the_items_of_its_level(self):
+        code, result, err = self.tray("--app", "MyApp", "--choose", "Settings", "--choose", "Nope")
+        self.assertEqual((code, result["items"], result["chosen"]), (1, TRAY_ITEMS, None))
+        self.assertIn('no item "Nope" under Settings', err)
+        self.assertIn("Advanced, Dark mode", err)
+        self.assertEqual(self.choices(), [])
+
+    def test_a_disabled_item_fails(self):
+        code, result, err = self.tray("--app", "MyApp", "--choose", "Update")
+        self.assertEqual((code, result["items"], result["chosen"]), (1, TRAY_ITEMS, None))
+        self.assertIn('"Update" is disabled', err)
+        self.assertEqual(self.choices(), [])
+
+    def test_a_label_past_an_item_without_a_submenu_fails(self):
+        code, result, err = self.tray("--app", "MyApp", "--choose", "Quit", "--choose", "Now")
+        self.assertEqual(code, 1)
+        self.assertIn('"Quit" has no submenu', err)
+
+    def test_a_timeout_waits_for_the_tray_icon_to_appear(self):
+        self.write_tray_tree(icon=False)
+        self.later(1, self.write_tray_tree)
+        code, result, _ = self.tray("--app", "MyApp", "--choose", "Open", "--timeout", "10")
+        self.assertEqual((code, result["chosen"]), (0, ["Open"]))
+
+    def test_a_timeout_that_runs_out_says_so(self):
+        self.write_tray_tree(icon=False)
+        started = time.time()
+        code, _, err = self.tray("--app", "MyApp", "--timeout", "1")
+        self.assertGreaterEqual(time.time() - started, 1)
+        self.assertEqual(code, 1)
+        self.assertIn("MyApp has no Tray icon within 1s", err)
+
+    def test_app_is_required(self):
+        r = self.project.vmlab("ui", "tray")
+        self.assertExit(r, 2)
+        self.assertIn("--app", r.err)
+
+    def test_scenario_api_returns_the_cli_json(self):
+        self.project.scenario("tray.py", """
+            def scenario(g):
+                listed = g.tray("MyApp")
+                g.check("listed", listed == {"items": %r, "chosen": None}, detail=listed)
+                g.check("one label", g.tray("MyApp", choose="Quit")["chosen"] == ["Quit"])
+                g.check("a path", g.tray("MyApp", choose=["Settings", "Dark mode"])["chosen"] == ["Settings", "Dark mode"])
+                try:
+                    g.tray("MyApp", choose="Nope")
+                    g.check("a missing label raises", False)
+                except Exception as exc:
+                    g.check("a missing label raises", "Open, Settings, Update, Quit" in str(exc), detail=str(exc))
+        """ % TRAY_ITEMS)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
+        self.assertEqual(self.choices(), [["Quit"], ["Settings", "Dark mode"]])
+
+    def test_choose_takes_labels_only(self):
+        self.project.scenario("tray.py", """
+            def scenario(g):
+                g.tray("MyApp", choose=["Settings", 3])
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertIn("choose takes a label or a list of labels", self.project.report()["scenarios"][0]["error"])
+
+
 class StagedCleanupTest(UiTestCase):
     """What a Scenario stages and leaves open is closed at the end of its Run, however the Run ends."""
 

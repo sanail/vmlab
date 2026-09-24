@@ -17,6 +17,7 @@
 //   focus       {"app": name, "window": title substring?, "timeout": seconds}
 //   stage-text  {"text": s, "app": name, "then": {"key", "modifiers"}?, "timeout": seconds}
 //   close-staged {"file": path stage-text returned, "app": name, "timeout": seconds}
+//   tray        {"app": name, "choose": [label per menu level], "timeout": seconds}
 //
 // Traps (README: "macOS Guests with Tart"):
 // - WebKit builds a page's accessibility tree lazily and hands it to the NEXT
@@ -480,6 +481,72 @@ func stageText(_ params: [String: Any]) {
     emit(["app": app.localizedName ?? appName, "file": file.path, "frontmost": frontmost, "selected": selected as Any? ?? NSNull(), "pressed": pressed])
 }
 
+// MARK: - Tray menus
+
+/// An item of a Tray menu: its element, its node in the contract's shape, its submenu's items.
+struct TrayItem {
+    let element: AXUIElement
+    let node: [String: Any]
+    let submenu: [TrayItem]?
+}
+
+/// The items of the menu element holds (a Tray icon, or a menu item with a submenu); nil when it holds none.
+func trayMenu(_ element: AXUIElement) -> [TrayItem]? {
+    guard let menu = children(element).first(where: { text($0, kAXRoleAttribute as String) == "AXMenu" }) else { return nil }
+    return children(menu).compactMap { item -> TrayItem? in
+        let title = text(item, kAXTitleAttribute as String) ?? ""
+        let enabled = (attribute(item, kAXEnabledAttribute as String) as? Bool) ?? true
+        if title.isEmpty && !enabled { return nil }  // a separator
+        let submenu = trayMenu(item)
+        let node: [String: Any] = [
+            "name": title, "enabled": enabled,
+            "checked": text(item, "AXMenuItemMarkChar") == "\u{2713}",  // a check mark; "-" is the mixed state
+            "children": (submenu ?? []).map { $0.node },
+        ]
+        return TrayItem(element: item, node: node, submenu: submenu)
+    }
+}
+
+/// Read an app's Tray menu, and choose params["choose"] (a label per menu level) from it. An
+/// NSStatusItem's menu, submenus included, is in the app's extras menu bar even while it is closed,
+/// and pressing an item there chooses it: no menu opens, so nothing covering the menu bar (loginwindow
+/// after a launch) is in the way and nothing is left open.
+func tray(_ params: [String: Any]) {
+    guard let wanted = params["app"] as? String else { fail("tray needs an app") }
+    let path = params["choose"] as? [String] ?? []
+    var icon: AXUIElement?
+    for app in appsFor(wanted) {
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 3)
+        if let extras = attribute(ax, kAXExtrasMenuBarAttribute as String), CFGetTypeID(extras) == AXUIElementGetTypeID(),
+           let first = children(extras as! AXUIElement).first {
+            icon = first
+            break
+        }
+    }
+    guard let status = icon else { return emit(["icon": false]) }
+    let top = trayMenu(status) ?? []
+    let items = top.map { $0.node }
+    var level: [TrayItem]? = top
+    var chosen: [String] = []
+    for (i, label) in path.enumerated() {
+        guard let menu = level else {
+            return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen + [label], "reason": "leaf"]])
+        }
+        chosen.append(label)
+        guard let item = menu.first(where: { $0.node["name"] as? String == label }), item.node["enabled"] as? Bool == true else {
+            let reason = menu.contains(where: { $0.node["name"] as? String == label }) ? "disabled" : "missing"
+            return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": reason]])
+        }
+        if i == path.count - 1 {
+            let pressed = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+            if pressed != .success { fail("pressing \(label) in the Tray menu failed (AXError \(pressed.rawValue))") }
+        }
+        level = item.submenu
+    }
+    emit(["icon": true, "items": items, "chosen": path.isEmpty ? NSNull() : path as Any, "failed": NSNull()])
+}
+
 // MARK: - Main
 
 let args = CommandLine.arguments
@@ -503,5 +570,6 @@ case "clipboard": clipboard(params)
 case "stage-text": stageText(params)
 case "close-staged": closeStaged(params)
 case "focus": focus(params)
+case "tray": tray(params)
 default: fail("unknown command \(args[1])")
 }

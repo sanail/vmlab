@@ -87,9 +87,12 @@ class MacHelper:
         args = [command, json.dumps(params)]
         if not self.jxa:
             result = self.provider.exec(["/bin/sh", "-c", MACOS_GUARD, "sh"] + args, timeout)
-            if result.code != MISSING:
-                return _result(result, command, "vmlab-ui")
-            self.jxa = True
+            if "unknown command %s" % command not in result.stderr:
+                if result.code != MISSING:
+                    return _result(result, command, "vmlab-ui")
+                self.jxa = True
+            # Otherwise the vmlab-ui of an older provisioning lacks this command (doctor warns about
+            # that provisioning): this call goes to the fallback, the next one to vmlab-ui again.
         with tempfile.TemporaryFile() as script:
             script.write(pkgutil.get_data("vmlab", "guest/macos/vmlab-ui.js"))
             result = self.provider.exec(["/usr/bin/osascript", "-l", "JavaScript", "-"] + args, timeout, stdin=script)

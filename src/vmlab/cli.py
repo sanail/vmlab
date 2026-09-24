@@ -272,6 +272,10 @@ def _ui_parser(sub):
         "--exec", nargs=argparse.REMAINDER, metavar="ARG",
         help="this command exits 0 (with --pattern: its output matches); goes last: --exec [--] COMMAND ...",
     )  # fmt: skip
+    p = ui_sub.add_parser("tray", parents=[common], help="read an app's Tray menu, or --choose an item of it")
+    p.add_argument("--app", required=True, help="the app whose Tray icon to use")
+    p.add_argument("--choose", action="append", metavar="LABEL", help="the item to choose; repeat it for each submenu level: --choose Settings --choose Advanced")
+    p.add_argument("--timeout", type=float, help="seconds to wait for the Tray icon to appear (default: fail at once)")
     p = ui_sub.add_parser("focus", parents=[common], help="bring a running app (and one of its windows) to the front")
     p.add_argument("--app", required=True)
     p.add_argument("--window", help="raise the first window whose title contains this")
@@ -363,6 +367,12 @@ def _ui(project, args):
             file=args.file, log=args.log, pattern=args.pattern, exec=args.exec,
         )  # fmt: skip
         result = contract.wait_for(condition, timeout=args.timeout)
+    elif c == "tray":
+        try:
+            result = contract.tray(args.app, choose=args.choose, timeout=args.timeout)
+        except ui.TrayError as exc:
+            print(json.dumps(exc.result, indent=2, ensure_ascii=False))
+            raise
     elif c == "clipboard":
         result = contract.clipboard(set=args.set)
     elif c == "focus":

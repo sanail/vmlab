@@ -192,6 +192,69 @@ def remove_programs(g, *names):
 '''
 
 
+# Tray menus, against a fixture app of the Guest's own making (tray_fixture_*): the Scenario puts it
+# into the Guest and starts it under a name of its own, which is the app's name. SOURCE is its source.
+TRAY_FIXTURES = {"linux": "tray_fixture_linux.py", "macos": "tray_fixture_macos.swift", "windows": "tray_fixture_windows.ps1"}
+TRAY = r'''
+import re
+
+NAME = "vmlab-tray-" + uuid.uuid4().hex[:4]  # 15 characters: all of it is a Linux process's name
+HIDE = "Get-ChildItem 'HKCU:\\Control Panel\\NotifyIconSettings' | Where-Object { (Get-ItemProperty $_.PSPath).ExecutablePath -like '*\\%s.exe' } | ForEach-Object { Set-ItemProperty $_.PSPath IsPromoted 0 -Type DWord }"
+
+def start(g):
+    # Start the fixture; the Guest path of the file it records choices in.
+    if g.os == "windows":
+        record = g.put("%TEMP%\\" + NAME + ".txt", "")
+        script = g.put("%TEMP%\\" + NAME + ".ps1", SOURCE)
+        exe = g.exec(cmd(g, "", "$p = Join-Path $env:TEMP '%s.exe'; Copy-Item -Force (Get-Command powershell.exe).Source $p; $p" % NAME)).stdout.strip()
+        g.spawn([exe, "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script, record])
+        return record
+    record = g.put("~/%s.txt" % NAME, "")
+    exe = "/tmp/" + NAME
+    if g.os == "macos":
+        built = g.exec(["swiftc", "-o", exe, g.put("~/%s.swift" % NAME, SOURCE)], timeout=300)
+        g.check("the fixture builds with the Guest's swiftc", built.ok, detail=built.stderr[-2000:])
+        g.spawn([exe, record])
+    else:
+        g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
+        g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), record])
+    return record
+
+def recorded(g, record):
+    # The labels the fixture recorded, without mnemonics.
+    return [re.sub("[_&\\ufeff]", "", line).strip() for line in g.get(record).splitlines() if line.strip()]
+
+def refused(g, choose):
+    try:
+        g.tray(NAME, choose=choose)
+    except Exception as exc:
+        return str(exc)
+
+def scenario(g):
+    record = start(g)
+    listed = g.tray(NAME, timeout=60)
+    items = {i["name"]: i for i in listed["items"]}
+    g.check("the Tray menu's items, in order, without the separator", list(items) == ["Open", "Settings", "Pinned", "Update"], detail=listed)
+    g.check("checked items", items["Pinned"]["checked"] and not items["Open"]["checked"], detail=listed)
+    g.check("a disabled item", not items["Update"]["enabled"] and items["Open"]["enabled"], detail=listed)
+    submenu = items["Settings"]["children"]
+    g.check("the submenu's items, or null where listing them needs a click",
+            submenu is None or [(i["name"], i["checked"]) for i in submenu] == [("Advanced", False), ("Dark mode", True)], detail=submenu)
+    g.check("reading chooses nothing", listed["chosen"] is None and recorded(g, record) == [], detail=[listed, recorded(g, record)])
+    if g.os == "windows":
+        g.exec(cmd(g, "", HIDE % NAME))  # among the hidden icons, as a new app's icon is at first
+    chosen = g.tray(NAME, choose=["Settings", "Advanced"])
+    g.check("a submenu's item is chosen", chosen["chosen"] == ["Settings", "Advanced"], detail=chosen)
+    seen = g.wait_for(log=record, pattern="Advanced", timeout=20)
+    g.check("and the app got it", seen["met"] and recorded(g, record) == ["Advanced"], detail=recorded(g, record))
+    missing = refused(g, ["Settings", "Nope"])
+    g.check("a missing label fails, naming the level's items", missing and "Advanced" in missing and "Dark mode" in missing, detail=missing)
+    disabled = refused(g, "Update")
+    g.check("a disabled item fails", disabled and "disabled" in disabled, detail=disabled)
+    g.check("nothing else was chosen", recorded(g, record) == ["Advanced"], detail=recorded(g, record))
+'''
+
+
 def ui(test):
     """A UI contract test: skipped on Guest OSes that have no UI helper yet."""
 
@@ -634,6 +697,13 @@ def scenario(g):
     g.check("a click lands on the taskbar button", clicked["element"]["name"] == buttons[0]["name"], detail=clicked)
     g.press("escape")
 """))
+
+    @ui
+    def test_09c_ui_tray_reads_and_chooses_from_a_tray_menu(self):
+        if self.target.provider == "fake":
+            self.skipTest("the Fake's Tray menus are scripted: tests/test_ui.py covers them")
+        source = (Path(__file__).resolve().parent / TRAY_FIXTURES[self.target.os]).read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_tray.py", UI + "SOURCE = %r\n" % source + TRAY))
 
     @ui
     def test_10_ui_cli_prints_the_same_json(self):

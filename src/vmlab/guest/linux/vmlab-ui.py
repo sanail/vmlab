@@ -19,6 +19,7 @@ user manager, into which the session imports it: a Channel's own login has none.
 - Wayland (GNOME): a client can neither learn where windows are nor move the
   pointer to a point, so vmlab's GNOME Shell extension (shell-extension/) does
   that, and input and the clipboard go through it too.
+- Tray menus, in both sessions, over D-Bus (Tray): panels keep them out of AT-SPI.
 
 Traps (README: "Linux Guests with VMware Fusion"):
 - Toolkits disagree about coordinates. GTK 4 reports every element at (0, 0) in
@@ -152,6 +153,140 @@ def process_name(pid):
             return f.read().strip()
     except OSError:
         return None
+
+
+class Tray:
+    """Tray menus over D-Bus, in either Desktop session: an app's Tray icon is a StatusNotifierItem
+    registered with the session's StatusNotifierWatcher, and its Tray menu is the com.canonical.dbusmenu
+    object the item names, which is what panels draw it from. Panels keep both out of AT-SPI."""
+
+    WATCHER = ("org.kde.StatusNotifierWatcher", "/StatusNotifierWatcher", "org.kde.StatusNotifierWatcher")
+    MENU = "com.canonical.dbusmenu"
+
+    def __init__(self):
+        from gi.repository import Gio, GLib
+
+        self.Gio, self.GLib = Gio, GLib
+        self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+
+    def call(self, dest, path, iface, method, args=None, reply=None):
+        GLib = self.GLib
+        return self.bus.call_sync(
+            dest, path, iface, method, args, GLib.VariantType(reply) if reply else None, self.Gio.DBusCallFlags.NONE, 5000, None
+        ).unpack()
+
+    def prop(self, dest, path, iface, name):
+        return self.call(dest, path, "org.freedesktop.DBus.Properties", "Get", self.GLib.Variant("(ss)", (iface, name)), "(v)")[0]
+
+    def has_watcher(self):
+        args = self.GLib.Variant("(s)", (self.WATCHER[0],))
+        return self.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "NameHasOwner", args, "(b)")[0]
+
+    def icons(self):
+        """[(dest, path, pid)] of every registered StatusNotifierItem whose owner still answers."""
+        found = []
+        for item in self.prop(*self.WATCHER, "RegisteredStatusNotifierItems"):
+            # ":1.42/org/ayatana/NotificationItem/x" (libayatana), ":1.42@/path", or a bus name alone:
+            # the bus name ends at the first "/" or "@".
+            cut = min(i for i in (item.find("/"), item.find("@"), len(item)) if i >= 0)
+            dest, path = item[:cut], item[cut:].lstrip("@") or "/StatusNotifierItem"
+            try:
+                args = self.GLib.Variant("(s)", (dest,))
+                pid = self.call("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetConnectionUnixProcessID", args, "(u)")[0]
+            except Exception:  # its owner has gone
+                continue
+            found.append((dest, path, pid))
+        return found
+
+    def names(self, dest, path, pid):
+        """What --app may call this icon's app: its process's name, program and command, the item's Id and Title."""
+        found = [process_name(pid)]
+        try:
+            found.append(os.path.basename(os.readlink("/proc/%d/exe" % pid)))
+            with open("/proc/%d/cmdline" % pid, "rb") as f:
+                found.append(os.path.basename(f.read().split(b"\0")[0].decode("utf-8", "replace")))
+        except OSError:
+            pass
+        for key in ("Id", "Title"):
+            try:
+                found.append(self.prop(dest, path, "org.kde.StatusNotifierItem", key))
+            except Exception:
+                pass
+        return {n.lower() for n in found if n}
+
+    def accessible_pids(self, wanted):
+        """The pids of the applications AT-SPI knows by the name wanted (lowercase), as the other commands match them."""
+        try:
+            import gi
+
+            gi.require_version("Atspi", "2.0")
+            from gi.repository import Atspi
+
+            Atspi.set_timeout(ATSPI_TIMEOUT_MS, ATSPI_TIMEOUT_MS)
+            desktop = Atspi.get_desktop(0)
+            apps = [desktop.get_child_at_index(i) for i in range(desktop.get_child_count())]
+            return {a.get_process_id() for a in apps if a is not None and (a.get_name() or "").lower() == wanted}
+        except Exception:  # no accessibility bus: the other names still match
+            return set()
+
+    def layout(self, dest, menu, ident):
+        """The item ident's children, raw: [(id, properties, children)]."""
+        try:
+            self.call(dest, menu, self.MENU, "AboutToShow", self.GLib.Variant("(i)", (ident,)), "(b)")
+        except Exception:  # optional for the menu's owner
+            pass
+        _, root = self.call(dest, menu, self.MENU, "GetLayout", self.GLib.Variant("(iias)", (ident, -1, [])), "(u(ia{sv}av))")
+        return root[2]
+
+    def items(self, dest, menu, raw):
+        """[(item in the contract's shape, its id, whether it has a submenu, that submenu's items as
+        items() gives them)], without separators and hidden items."""
+        out = []
+        for ident, props, children in raw:
+            if props.get("type") == "separator" or not props.get("visible", True):
+                continue
+            submenu = props.get("children-display") == "submenu" or bool(children)
+            if submenu and not children:  # filled in when it is about to be shown
+                children = self.layout(dest, menu, ident)
+            item = {
+                "name": re.sub(r"_(.)", r"\1", props.get("label", "")),  # without mnemonics: "_Open" -> "Open", "__" -> "_"
+                "enabled": bool(props.get("enabled", True)),
+                "checked": props.get("toggle-type") in ("checkmark", "radio") and props.get("toggle-state") == 1,
+            }
+            kids = self.items(dest, menu, children)
+            item["children"] = [k[0] for k in kids]
+            out.append((item, ident, submenu, kids))
+        return out
+
+    def run(self, params):
+        wanted, path = (params.get("app") or "").lower(), params.get("choose") or []
+        if not self.has_watcher():
+            detail = "the Desktop session has no StatusNotifierWatcher, so its panel shows no Tray icons; see `vmlab doctor`"
+            return emit({"icon": False, "detail": detail})
+        icons = self.icons()
+        icon = next((i for i in icons if wanted in self.names(*i)), None)
+        if icon is None:
+            pids = self.accessible_pids(wanted)
+            icon = next((i for i in icons if i[2] in pids), None)
+        if icon is None:
+            return emit({"icon": False})
+        dest, item_path, _ = icon
+        menu = self.prop(dest, item_path, "org.kde.StatusNotifierItem", "Menu")
+        level = self.items(dest, menu, self.layout(dest, menu, 0))
+        items = [i[0] for i in level]
+        chosen = []
+        for n, label in enumerate(path):
+            found = next((i for i in level if i[0]["name"] == label), None)
+            chosen.append(label)
+            if found is None or not found[0]["enabled"]:
+                return emit({"icon": True, "items": items, "chosen": None, "failed": {"at": chosen, "reason": "disabled" if found else "missing"}})
+            if n + 1 < len(path) and not found[2]:
+                return emit({"icon": True, "items": items, "chosen": None, "failed": {"at": chosen + [path[n + 1]], "reason": "leaf"}})
+            if n + 1 == len(path):
+                args = self.GLib.Variant("(isvu)", (found[1], "clicked", self.GLib.Variant("i", 0), 0))
+                self.call(dest, menu, self.MENU, "Event", args)
+            level = found[3]
+        emit({"icon": True, "items": items, "chosen": chosen or None, "failed": None})
 
 
 class Window:
@@ -839,6 +974,8 @@ def main(argv):
     except ValueError:
         fail("parameters are not JSON: %s" % argv[2])
     kind = session()
+    if command == "tray":
+        return Tray().run(params)
     ui = UI(kind)
     if command == "version":
         emit({"helper": "linux", "version": VERSION, "session": kind, "input": ui.ws.describe(), "trusted": True})

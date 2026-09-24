@@ -61,11 +61,13 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.clipboard()`, `g.set_clipboard(text)` | `ui clipboard [--set TEXT]` | `{"text"}`; `""` empties the clipboard |
 | `g.stage_text(text, app=None, then=None)` | `ui stage-text TEXT [--app] [--then CHORD]` | `{"app", "file", "frontmost", "selected", "pressed"}` |
 | `g.close_staged(staged)` | `ui close-staged --file PATH [--app]` | `{"file", "closed"}` |
+| `g.tray(app, choose=None, timeout=None)` | `ui tray --app APP [--choose LABEL]... [--timeout S]` | `{"items": [{"name", "enabled", "checked", "children"}], "chosen"}` |
 | `g.wait_for(text=, role=, app=, process=, file=, log=, exec=, pattern=, gone=False, timeout=None)` | `ui wait-for` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "error"]}` |
 | `g.screenshot(name)` | `ui screenshot` | `{"path"}` |
 
 - A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`, `enabled`, `native_role` and `children`. Applications carry `pid`.
 - `stage_text` closes nothing: every call opens one more Staged document (its `"file"`). Close each with `g.close_staged(staged)` (the `stage_text` result or its `"file"`) once the Check that needed it is done, so an old selection cannot answer an app that reads "the selection". It saves the document (changes typed into it too) and closes just it; the editor's other documents, and the one in front, stay. `"closed"` is false when it was already gone, and a path that is not a Staged document raises. What a Scenario leaves open is closed at the end of its Run, however it ends; one vmlab cannot close is a warning in the report.
+- `tray` reads the app's Tray menu (its items in order, without separators; a submenu's items in `children`, or `null` where listing them needs a click) and, with `choose`, chooses an item: a label, or a list of labels, one per menu level (`choose=["Settings", "Advanced"]`), matched exactly without mnemonics. It raises when the app has no Tray icon, no item has a label, or the item is disabled, naming the items there. `timeout=` waits for the Tray icon to appear (on the Scenario's clock), since tray apps put it up after their launch. Nothing is left open. Use it instead of clicking the tray: panels keep Linux Tray menus out of the tree, and a Windows menu opens only on a click on the icon.
 - `text` matches name, value and description: exact matches win, otherwise substrings. `role` takes the cross-OS or the native role.
 - `click` refuses when nothing matches or something else lies over the element's middle, and says what. With `timeout=` (seconds, on the Scenario's clock) it first waits for the element to be there and uncovered, then raises with the last reason; use it for an element that is about to appear instead of a retry loop of your own. `at=(x, y)` ignores `timeout`.
 - Chords: `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`win`/`super`) and one key (`a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, arrows, `minus`, `comma`, `slash`, ...). They are sent by physical key, so they work on any keyboard layout; `type` sends Unicode.
@@ -75,7 +77,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 - A command the Guest does not have (exit 127, 9009 on Windows, or PowerShell's CommandNotFoundException) raises at once, so a typo in `exec=` does not wait out the timeout. To wait for a command an install is still putting in place, wait for its file (`file=`) first.
 - `process=` matches a process's name exactly, as text. Linux keeps only the first 15 bytes of a longer name; vmlab matches those, then the full name in the process's command line.
 - To show that nothing happens for N seconds, wait for it with `timeout=N` and check `"met"` is false.
-- App names: macOS and Linux use the application's name; Windows uses the process name (`Notepad`, `explorer`), and the taskbar and tray belong to `explorer`.
+- App names: macOS and Linux use the application's name; Windows uses the process name (`Notepad`, `explorer`), and the taskbar belongs to `explorer`. `g.tray` takes the app's own name on every OS.
 
 ```python
 def scenario(g):

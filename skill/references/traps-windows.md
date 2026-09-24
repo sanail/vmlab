@@ -34,9 +34,9 @@ A web view reads the Windows theme (`AppsUseLightTheme`) once, when it is create
 
 ## Taskbar and tray
 
-Whether a window has a taskbar button cannot be read from its styles: frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched. Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`. Tray icons are `explorer`'s buttons too, and `g.click` reaches them. The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the old icon (install the old version, show its window), or it never goes red.
+Whether a window has a taskbar button cannot be read from its styles: frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched. Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`. The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the old icon (install the old version, show its window), or it never goes red.
 
-A new app's tray icon waits among the hidden icons. Bring it onto the taskbar without keys (a stray Win key opens Start and spoils the Scenario's input): Windows 11 keeps each icon under `HKCU:\Control Panel\NotifyIconSettings\*`, with the app's `ExecutablePath`, from the icon's first appearance; setting that key's `IsPromoted` to 1 (DWord) moves the icon at once. The menu it opens belongs to the app's process: its items are `menuitem`s under `--app` with the process name, and a submenu opens on a click on its item. Opening the tray makes the taskbar the foreground window, as a user's click does: an app that reads "the foreground app" from its tray menu sees the taskbar.
+Read and choose from an app's Tray menu with `g.tray(APP, choose=...)` (APP: its process name). A new app's Tray icon waits among the hidden icons; `g.tray` moves it onto the taskbar without pressing a key (through `IsPromoted` under `HKCU:\Control Panel\NotifyIconSettings`), and it stays there until the next restore. It then opens the menu with a right click on the icon, as a user does, so the app becomes the foreground app for a moment. An app known to Windows by an icon GUID only, with no registry entry of its own, is not found. The Tray icon itself is one of `explorer`'s buttons, which `g.click` reaches.
 
 ## Notifications
 
