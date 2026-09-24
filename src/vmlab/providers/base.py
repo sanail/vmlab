@@ -167,9 +167,12 @@ class Provider:
     def _read_file(self, guest_path, path, timeout):
         """read_file of path in the Guest, named guest_path in errors."""
         if self.lab.os == "windows":
+            # Shared for writing: a process may still be writing the file (a log, a spawned process's
+            # output), and ReadAllBytes refuses a file another handle has open for writing.
             script = (
                 "$p = %s; if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { exit %d }; "
-                "[Convert]::ToBase64String([IO.File]::ReadAllBytes((Get-Item -LiteralPath $p).FullName))" % (ps_path(path), NO_FILE)
+                "$f = [IO.File]::Open((Get-Item -LiteralPath $p).FullName, 'Open', 'Read', 'ReadWrite, Delete'); "
+                "$m = New-Object IO.MemoryStream; $f.CopyTo($m); $f.Close(); [Convert]::ToBase64String($m.ToArray())" % (ps_path(path), NO_FILE)
             )
             argv = self.shell_argv(script)
         else:
