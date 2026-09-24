@@ -1,11 +1,20 @@
 """Write a Run folder's reports: report.json, junit.xml and summary.md."""
 
 import json
+import shlex
 import xml.etree.ElementTree as ET
 
+from vmlab.scenario import OUTPUT_TAIL as OUTPUT_TAIL_SHOWN
 from vmlab.scenario import VISUAL
 
 STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
+# How a spawned process ended: its report entry's "ended".
+ENDED = {
+    "scenario": "stopped by the Scenario",
+    "run": "stopped at the end of the Run",
+    "exited": "had exited by itself",
+    "failed": "still running: vmlab could not stop it",
+}
 
 
 def overall_status(scenarios):
@@ -65,6 +74,10 @@ def _write_junit(path, report):
     ET.ElementTree(suite).write(str(path), encoding="utf-8", xml_declaration=True)
 
 
+def command_line(argv):
+    return " ".join(shlex.quote(a) for a in argv)
+
+
 def _evidence(scenario):
     return "\n".join(["evidence:"] + scenario["screenshots"]) if scenario["screenshots"] else ""
 
@@ -109,6 +122,16 @@ def _markdown(report):
             lines.append("- Channel %s failed (%s); %s served %s" % (f["from"], f["reason"], f["to"], f["argv"]))
         if s["error"]:
             lines += ["", "```", s["error"], "```"]
+        for p in s["spawned"]:
+            lines += ["", "- spawned `%s` (pid %s, output in %s): %s" % (command_line(p["argv"]), p["pid"], p["log"], ENDED[p["ended"]])]
+            if p.get("stop_error"):
+                lines.append("  %s" % p["stop_error"].splitlines()[0])
+            if "output_tail" in p:
+                if p["output_tail"] is None:
+                    lines.append("  output unreadable: %s" % p["output_error"].splitlines()[0])
+                else:
+                    lines += ["", "  Its output%s:" % (" (the end)" if len(p["output_tail"]) >= OUTPUT_TAIL_SHOWN else ""), "", "  ```"]
+                    lines += ["  " + line for line in p["output_tail"].splitlines()] + ["  ```"]
         for shot in s["screenshots"]:
             lines.append("- screenshot: [%s](%s)" % (shot, shot))
     return "\n".join(lines) + "\n"

@@ -32,7 +32,7 @@ A Lab runs GNOME on Wayland (`session = "wayland"`) or Xfce on X11 (`"x11"`). Wh
 
 ## Notifications
 
-**Do**: record them on the session bus rather than on screen: start `dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"` in the background (same bus address as above) before the step, and read its log: each `Notify` call lists the app name, icon, summary and body as its first four strings. Put a nonce in what the app sends. A `Notify` that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
+**Do**: record them on the session bus rather than on screen: start `dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"` with `g.spawn` (same bus address as above, in `env=`) before the step, and read its output (`wait_for(log=handle.log, pattern=...)`, `handle.output()`): each `Notify` call lists the app name, icon, summary and body as its first four strings. Put a nonce in what the app sends. A `Notify` that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
 
 ## Processes and packages
 

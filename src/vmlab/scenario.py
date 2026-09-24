@@ -29,9 +29,11 @@ import traceback
 
 from vmlab import arch, ui
 from vmlab.config import ConfigError, UsageError
-from vmlab.providers.base import GuestError, GuestTimeout
+from vmlab.providers import spawning
+from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
 
 DETERMINISTIC, VISUAL = "deterministic", "visual, unverified"
+OUTPUT_TAIL = 2000  # characters of a spawned process's output in the report of a Run that did not pass
 
 
 class ScenarioError(Exception):
@@ -68,6 +70,7 @@ class Guest:
         self._deadline = None
         self.checks = []
         self.screenshots = []
+        self.spawned = []  # every Spawned process, stopped at the end of the Run
         self.channel_use = ChannelUse()  # this Run's calls, including its app reset and launch
 
     def _start_clock(self, limit):
@@ -118,6 +121,48 @@ class Guest:
         self._remaining("get")
         data = self._on_clock("get %s" % guest_path, lambda call_timeout: self._provider.read_file(guest_path, call_timeout("get")))
         return data if binary else decode_content(guest_path, data)
+
+    def spawn(self, argv, env=None):
+        """Start argv detached in the Guest; env adds to its environment. Returns a Spawned handle:
+        .stop(), .running(), .output(), .log (its output's Guest path) and .pid. Whatever is still
+        running at the end of the Run is stopped then, however the Run ends. Raises if the Guest
+        has no such command."""
+        argv = spawning.validate_argv(argv)
+        self._remaining("spawn")
+        started = self._on_clock("spawn %s" % argv, lambda call_timeout: self._provider.spawner().start(argv, dict(env or {}), call_timeout("spawn")))
+        process = Spawned(self, argv, started)
+        self.spawned.append(process)
+        return process
+
+    def _end_spawned(self, with_output):
+        """Stop what the Scenario spawned and left running, best-effort and off its clock. Returns the
+        report's entries; with_output adds the tail of each process's output."""
+        entries, unreachable = [], []  # once a call finds no Guest, the rest would only wait for it too
+
+        def attempt(fn):
+            if unreachable:
+                raise GuestError("not tried: %s" % unreachable[0])
+            try:
+                return fn()
+            except (ChannelError, GuestTimeout) as exc:
+                unreachable.append(str(exc).splitlines()[0])
+                raise
+
+        for process in self.spawned:
+            entry = {"argv": process.argv, "pid": process.pid, "log": process.log, "ended": process._ended}
+            if entry["ended"] is None:
+                try:
+                    found = attempt(lambda: self._provider.spawner().stop(process._started, self._step_timeout))
+                    entry["ended"] = "run" if found == spawning.STOPPED else "exited"
+                except Exception as exc:  # noted in the report; it never changes the Run's result
+                    entry["ended"], entry["stop_error"] = "failed", str(exc) or type(exc).__name__
+            if with_output:
+                try:
+                    entry["output_tail"] = _text(attempt(lambda: self._provider.read_file(process.log, self._step_timeout)))[-OUTPUT_TAIL:]
+                except Exception as exc:
+                    entry["output_tail"], entry["output_error"] = None, str(exc) or type(exc).__name__
+            entries.append(entry)
+        return entries
 
     # The UI contract (vmlab.ui): each method returns what `vmlab ui <command>` prints.
 
@@ -200,6 +245,45 @@ class Guest:
         return bool(passed)
 
 
+class Spawned:
+    """A process g.spawn started in the Guest."""
+
+    def __init__(self, guest, argv, started):
+        self.argv = argv
+        self.pid = started["pid"]  # on Windows, the cmd.exe that holds its output's redirect
+        self.log = started["log"]  # the Guest path of its stdout and stderr, together
+        self._guest = guest
+        self._started = started
+        self._ended = None  # how it ended, once the Scenario stopped it: "scenario" or "exited"
+
+    def __repr__(self):
+        return "<Spawned pid %s: %s>" % (self.pid, self.argv)
+
+    def running(self):
+        """Is the process still running?"""
+        return self._call("running", lambda spawner, timeout: spawner.running(self._started, timeout))
+
+    def stop(self):
+        """End the process and the processes it started. Harmless if it has ended already; raises
+        if it will not stop."""
+        found = self._call("stop", lambda spawner, timeout: spawner.stop(self._started, timeout))
+        if self._ended is None:
+            self._ended = "scenario" if found == spawning.STOPPED else "exited"
+
+    def output(self):
+        """Its stdout and stderr so far, as text (bytes that are not UTF-8 show as \ufffd)."""
+        return _text(self._guest.get(self.log, binary=True))
+
+    def _call(self, what, fn):
+        g = self._guest
+        g._remaining(what)
+        return g._on_clock("%s of %s" % (what, self), lambda call_timeout: fn(g._provider.spawner(), call_timeout(what)))
+
+
+def _text(data):
+    return data.decode("utf-8", "replace")
+
+
 def encode_content(content):
     """g.put's content as bytes: str as UTF-8."""
     if isinstance(content, str):
@@ -237,6 +321,7 @@ def run_scenario(path, guest, prepare):
         if not guest.checks:
             raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
     except ConfigError:
+        guest._end_spawned(with_output=False)
         raise
     except ScenarioError as exc:
         error = str(exc)
@@ -251,6 +336,7 @@ def run_scenario(path, guest, prepare):
         status = "passed"
     else:
         status = "failed"
+    spawned = guest._end_spawned(with_output=status != "passed")
     return {
         "name": path.stem,
         "file": str(path),
@@ -259,6 +345,7 @@ def run_scenario(path, guest, prepare):
         "error": error,
         "checks": guest.checks,
         "screenshots": guest.screenshots,
+        "spawned": spawned,
         "channels": guest.channel_use.channels,
         "fallbacks": guest.channel_use.fallbacks,
     }

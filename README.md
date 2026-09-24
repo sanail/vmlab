@@ -253,6 +253,8 @@ def scenario(g):
     g.check("echo prints hello", r.stdout.strip() == "hello", detail=r.stderr)
     g.put("~/input.txt", "data\n")         # str (UTF-8) or bytes; makes folders; returns the absolute Guest path
     g.check("read back", g.get("~/input.txt") == "data\n")  # binary=True for bytes; a missing file raises
+    mock = g.spawn(["python3", "-u", "-m", "http.server", "8080"])  # detached (env= adds to its environment); stopped with the Run
+    g.wait_for(log=mock.log, pattern="Serving HTTP")  # mock.log: its stdout+stderr; mock.output(), .running(), .stop(), .pid
     g.screenshot("after echo")             # saved in the Run folder as evidence
     g.check("icon looks right", True, visual=True)  # a judgement from a screenshot: reported "visual, unverified"
     # g.lab, g.os, g.arch (the Build artifact's) and g.guest_arch (the Guest's: the Host's)

@@ -27,6 +27,7 @@ import tempfile
 import textwrap
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from harness import zipapp_path
@@ -130,6 +131,51 @@ def walk(node):
     for child in node["children"]:
         yield from walk(child)
 """
+
+# g.spawn: a small HTTP server under a name of its own, for wait_for(process=...): on POSIX a link
+# to perl (macOS Guests have no Python without the developer tools), on Windows a copy of
+# PowerShell. The Scenario sets TAG.
+SPAWN = r'''
+PERL_SERVER = """
+use IO::Socket::INET;
+$| = 1;
+my ($port, $tag) = @ARGV;
+my $s = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => $port, Listen => 5, ReuseAddr => 1) or die "cannot listen: $!\n";
+print "listening on $port\n";
+while (my $c = $s->accept) {
+    while (my $h = <$c>) { print "got: $h"; last if $h =~ /^\r?\n$/ }
+    print $c "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\nok $tag\n";
+    close $c;
+}
+"""
+PERL_CLIENT = 'my $c = IO::Socket::INET->new("127.0.0.1:$ARGV[0]") or exit 1; print $c "GET / HTTP/1.0\r\n\r\n"; print while <$c>'
+WINDOWS_SERVER = "; ".join([
+    "$l = New-Object Net.Sockets.TcpListener([Net.IPAddress]::Loopback, %d)", "$l.Start()", "'listening on %d'",
+    "while ($true) { $c = $l.AcceptTcpClient(); $s = $c.GetStream(); $r = New-Object IO.StreamReader($s); "
+    "do { $h = $r.ReadLine(); \"got: $h\" } while ($h); "
+    "$b = [Text.Encoding]::ASCII.GetBytes(\"HTTP/1.0 200 OK`r`nContent-Type: text/plain`r`n`r`nok %s`n\"); $s.Write($b, 0, $b.Length); $c.Close() }",
+])
+
+def program(g, name):
+    # The Guest path of a program called name.
+    if g.os == "windows":
+        script = "$p = Join-Path $env:TEMP '%s.exe'; Copy-Item -Force (Get-Command powershell.exe).Source $p; $p" % name
+        return g.exec(cmd(g, "", script)).stdout.strip()
+    return g.exec(["sh", "-c", 'p="${TMPDIR:-/tmp}/$1"; ln -sf "$(command -v perl)" "$p" && echo "$p"', "sh", name]).stdout.strip()
+
+def server(g, name, port):
+    # (a spawned HTTP server that answers "ok TAG", the argv that asks it)
+    if g.os == "windows":
+        spawned = g.spawn([program(g, name), "-NoProfile", "-Command", WINDOWS_SERVER % (port, port, TAG)])
+        return spawned, ["curl.exe", "-s", "http://127.0.0.1:%d/" % port]
+    # A child of the process spawned, so stopping it must end its process group.
+    spawned = g.spawn(["sh", "-c", '"$@" & wait', "sh", program(g, name), "-e", PERL_SERVER, str(port), TAG])
+    return spawned, ["perl", "-MIO::Socket::INET", "-e", PERL_CLIENT, str(port)]
+
+def remove_programs(g, *names):
+    g.exec(cmd(g, 'cd "${TMPDIR:-/tmp}" && rm -f ' + " ".join(names),
+               "Remove-Item -Force " + ", ".join("(Join-Path $env:TEMP %s.exe)" % n for n in names)))
+'''
 
 
 def ui(test):
@@ -305,6 +351,41 @@ def scenario(g):
         self.assertEqual(got.returncode, 0, got.stderr)
         self.assertEqual(got.stdout, data)
         self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
+
+    def test_06e_spawn_a_server_stop_it_and_the_run_stops_the_other(self):
+        tag = uuid.uuid4().hex[:6]
+        port = 20000 + int(tag, 16) % 20000
+        proc, report = self.target.scenario("spawn.py", COMMANDS + SPAWN + """
+TAG, PORT = %r, %d
+
+def scenario(g):
+    web, ask = server(g, "vs" + TAG, PORT)
+    answered = g.wait_for(exec=ask, pattern="ok " + TAG, timeout=60)
+    g.check("the spawned server answers", answered["met"], detail=[answered, web.output()])
+    g.check("it is running", web.running())
+    logged = g.wait_for(log=web.log, pattern="got: GET", timeout=20)
+    g.check("its output is in its log", logged["met"], detail=repr(web.output()))
+    g.check("output() reads it", "listening on %%d" %% PORT in web.output(), detail=repr(web.output()))
+    web.stop()
+    gone = g.wait_for(process="vs" + TAG, gone=True, timeout=30)
+    g.check("stop ends it", gone["met"], detail=gone)
+    g.check("it is not running", not web.running())
+    left, ask = server(g, "vs" + TAG + "b", PORT + 1)
+    answered = g.wait_for(exec=ask, pattern="ok " + TAG, timeout=60)
+    g.check("the second server answers", answered["met"], detail=[answered, left.output()])
+    remove_programs(g, "vs" + TAG)
+""" % (tag, port))
+        self.assertPassed(proc, report)
+        [web, left] = report["scenarios"][0]["spawned"]
+        self.assertEqual((web["ended"], left["ended"]), ("scenario", "run"), report["scenarios"][0]["spawned"])
+        self.assertPassed(*self.target.scenario("spawn_after.py", COMMANDS + SPAWN + """
+TAG = %r
+
+def scenario(g):
+    gone = g.wait_for(process="vs" + TAG + "b", gone=True, timeout=10)
+    g.check("what the Scenario left running ended with its Run", gone["met"], detail=gone)
+    remove_programs(g, "vs" + TAG + "b")
+""" % tag))
 
     def remove_argv(self, guest_path):
         if self.target.os == "windows":

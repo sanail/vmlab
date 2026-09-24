@@ -188,6 +188,12 @@ class Provider:
         except ValueError:
             raise GuestError("reading %s in the Guest returned no base64: %r" % (guest_path, result.stdout[:200]))
 
+    def spawner(self):
+        """How g.spawn starts, checks and stops background processes in this Guest (vmlab.providers.spawning)."""
+        from vmlab.providers import spawning
+
+        return spawning.WindowsSpawner(self) if self.lab.os == "windows" else spawning.PosixSpawner(self)
+
     def send_file(self, local, guest_path):
         """Copy the Host file local into the Guest over the first Channel that can carry it."""
         failures = []

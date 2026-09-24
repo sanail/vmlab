@@ -304,6 +304,10 @@ def _print_summary(data, out):
     if data["error"]:
         out("ERROR %s: %s" % (data["lab"], data["error"]))
     for s in data["scenarios"]:
+        for p in s["spawned"]:
+            if p["ended"] == "failed":
+                out("warning: %s/%s: spawned `%s` (pid %s) is still running in the Guest: %s"
+                    % (data["lab"], s["name"], report.command_line(p["argv"]), p["pid"], p["stop_error"].splitlines()[0]))
         if s["status"] == "error":
             out("ERROR %s/%s: %s" % (data["lab"], s["name"], s["error"]))
         for c in s["checks"]:

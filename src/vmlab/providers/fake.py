@@ -25,6 +25,7 @@ import zlib
 from vmlab import hostproc
 from vmlab.config import ConfigError
 from vmlab.home import vmlab_home
+from vmlab.providers import spawning
 from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
@@ -113,6 +114,11 @@ class FakeProvider(Provider):
         except ConfigError as exc:
             raise GuestError("%s: %s" % (guest_path, exc.problem))
         return self._read_file(guest_path, str(path), timeout)
+
+    def spawner(self):
+        # Commands run on the Host, whatever the Lab's os: logs go in the Guest's home, where
+        # read_file (g.get) finds them.
+        return spawning.PosixSpawner(self, log_dir="~")
 
     def remove_paths(self, paths, timeout):
         self._record("remove_paths", paths=list(paths))

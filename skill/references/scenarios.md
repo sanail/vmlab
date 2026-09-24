@@ -12,6 +12,7 @@ def scenario(g):
     g.check("the app logged its start", "started" in r.stdout, detail=r.stdout[-500:])
     path = g.put("~/Documents/input.txt", "Ohm's law\n")  # str (UTF-8) or bytes; folders made; returns the absolute Guest path
     settings = g.get("~/.config/myapp/settings.json")   # str; g.get(path, binary=True) for bytes
+    mock = g.spawn(["python3", "-m", "http.server", "8080"])  # detached; stopped with the Run (see below)
     g.screenshot("after start")                 # saved in the Run folder as evidence
     g.check("the icon looks right", True, visual=True)  # a judgement from a screenshot: "visual, unverified"
     # g.lab, g.os ("macos" | "windows" | "linux"), g.arch (the Build artifact's), g.guest_arch
@@ -22,6 +23,28 @@ def scenario(g):
 `g.check(name, passed, detail=None, visual=False)` records a Check; a failed Check does not stop the Scenario, and a Scenario records at least one. An exception, a timeout or a call no Channel can carry fails the Run with the Scenario's file and line.
 
 Code shared by several Scenarios lives in `_name.py` next to them (`.vmlab/scenarios/_helpers.py`, or in `.vmlab/runs/ad-hoc/`), imported plainly at the top of the Scenario: `import _helpers`. The Scenario's folder is on `sys.path` while it runs; don't add it yourself. Helpers are re-imported for each Scenario, so their module-level state does not carry over to the next one.
+
+## Background processes
+
+`g.spawn(argv, env=None)` starts a command detached in the Guest (a mock server, a log recorder) and returns a handle; `env` adds to its environment. Whatever a Scenario spawns and leaves running is stopped at the end of its Run, however the Run ends (passed, failed, an exception, a timeout), so the next Scenario starts without it; a Run that did not pass reports each spawned process's command and the end of its output. There is no CLI counterpart.
+
+```python
+def scenario(g):
+    # A mock server the app talks to; its stdout and stderr go together to a Guest file, mock.log.
+    mock = g.spawn(["python3", "-m", "http.server", "8080", "--bind", "127.0.0.1"])
+    up = g.wait_for(exec=["curl", "-fsS", "http://127.0.0.1:8080/"], timeout=20)
+    g.check("the mock server answers", up["met"], detail=[up, mock.output()])
+    ...
+    asked = g.wait_for(log=mock.log, pattern=r"GET /api/v1/items", timeout=10)
+    g.check("the app asked the mock server", asked["met"], detail=mock.output()[-2000:])
+    mock.stop()                               # optional: the Run stops it anyway
+```
+
+- `handle.stop()` ends the process and what it started: on macOS and Linux its process group (SIGTERM, then SIGKILL after 5 s), on Windows its process tree. Stopping one that has already ended is harmless; one that will not stop raises.
+- `handle.running()` is true while it runs; `handle.output()` is its output so far, as text; `handle.log` is that output's Guest path (for `wait_for(log=...)`, `g.get`); `handle.pid` is its process id (on Windows, the `cmd.exe` that writes its output).
+- Output goes to a file, so many programs buffer it and a `wait_for(log=...)` sees it late: run Python with `-u` (or `env={"PYTHONUNBUFFERED": "1"}`), and wait for what the process does (it answers, a file appears) rather than for what it prints, where you can.
+- `g.spawn` raises when the Guest has no such command; a command that starts and then fails shows why in its output. Log files stay in the Guest's temp folder after the Run.
+- A process vmlab cannot stop at the end of the Run does not change the Run's result: the report notes it (`"ended": "failed"`) and vmlab prints a warning.
 
 ## UI methods
 
