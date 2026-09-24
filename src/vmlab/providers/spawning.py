@@ -18,7 +18,7 @@ import subprocess
 import uuid
 
 from vmlab.config import UsageError, is_argv
-from vmlab.providers.base import GuestError
+from vmlab.providers.base import GuestError, ps_quote, sh_expand_tilde
 
 NO_COMMAND = 127  # the start script's exit code when the Guest has no such command
 GONE = 4  # the stop script's exit code when nothing of the process was left to stop
@@ -41,8 +41,7 @@ class PosixSpawner:
     def start(self, argv, env, timeout):
         """Start argv detached; returns {"pid", "log"}: its log is in log_dir."""
         log = "%s/vmlab-spawn-%s.log" % (self.log_dir, uuid.uuid4().hex[:12])
-        script = (
-            'log=$1; shift; case $log in "~"|"~/"*) log="$HOME${log#"~"}";; esac; '
+        script = "log=$1; shift; " + sh_expand_tilde("log") + (
             'command -v "$1" >/dev/null 2>&1 || { echo "no such command: $1" >&2; exit %d; }; '
             "if command -v setsid >/dev/null 2>&1; then "
             'setsid "$@" </dev/null >"$log" 2>&1 & '
@@ -91,7 +90,7 @@ class WindowsSpawner:
             "$info.Arguments = '/d /s /c ' + $q + $line + ' <nul >' + $q + $log + $q + ' 2>&1' + $q; "
             "$info.UseShellExecute = $false; $info.CreateNoWindow = $true; $info.WorkingDirectory = $env:USERPROFILE; "
             "$p = [Diagnostics.Process]::Start($info); $p.Id; $p.StartTime.ToFileTimeUtc(); $log"
-            % (uuid.uuid4().hex[:12], _ps_quote(argv[0]), _ps_quote(argv[0]), NO_COMMAND, line)
+            % (uuid.uuid4().hex[:12], ps_quote(argv[0]), ps_quote(argv[0]), NO_COMMAND, line)
         )
         result = self.provider.exec(self.provider.shell_argv(script), timeout, env=env)
         pid, started, path = _parse(argv, result, 3)
@@ -123,10 +122,6 @@ def cmd_line(argv):
     included, so none of them opens a quoted stretch where carets stop working."""
     args = "".join("^" + c if c in '()%!^"<>&|' else c for c in subprocess.list2cmdline(argv[1:]))
     return '"%s"%s' % (argv[0], " " + args if args else "")
-
-
-def _ps_quote(text):
-    return "'%s'" % text.replace("'", "''")
 
 
 def _parse(argv, result, fields):

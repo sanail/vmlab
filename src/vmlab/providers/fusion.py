@@ -74,7 +74,6 @@ INSTALL_FIX = (
     "Broadcom's support portal (a free Broadcom account; Homebrew has no cask for it) then open the .dmg and double-click its installer"
 )
 CALL_TIMEOUT = 60  # s for quick vmrun commands
-SEND_FILE_TIMEOUT = 600  # s for one file (a Build artifact) into a Guest
 DHCP_LEASES = "/var/db/vmware/vmnet-dhcpd-vmnet8.leases"  # Fusion's NAT network
 PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest boots
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
@@ -516,14 +515,10 @@ class VmrunChannel(Channel):
         code, out = vmrun(["createDirectoryInGuest", self.vm.vmx, directory], CALL_TIMEOUT, auth)
         return code == 0 or "exist" in out.lower()
 
-    def send_file(self, local, guest_path):
+    def send_file(self, local, guest_path, timeout):
         auth = self._auth()
-        deadline = time.time() + SEND_FILE_TIMEOUT
-        # A ChannelError, not a timeout that fails the Run: copying a file again over another
-        # Channel is safe, unlike running a command twice.
-        self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local, guest_path], deadline, auth,
-                    ChannelError("copying %s into %s did not finish within %ss" % (local, self.vm.name, SEND_FILE_TIMEOUT),
-                                 "check the Guest's disk space and that VMware Tools run"))  # fmt: skip
+        self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local, guest_path], time.time() + timeout, auth,
+                    GuestTimeout("copying %s into %s did not finish within %ss and was killed" % (local, self.vm.name, timeout)))  # fmt: skip
 
     def _vmrun(self, args, deadline, auth, timed_out):
         """One vmrun step of a call that must end by deadline; timed_out is what to raise if it does not."""

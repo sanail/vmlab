@@ -21,14 +21,14 @@ import re
 import time
 
 from vmlab.config import UsageError, is_argv
-from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path
+from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path, ps_quote, sh_expand_tilde
 
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
 POLL_SECONDS = 0.25  # between checks of a wait_for condition; the condition and timeout decide when it ends
 EXTRA_KEYS = ("native_subrole", "bundle_id")
 STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text) gives up before its call would be killed
 # sh: $1 with a leading ~ expanded to the Guest user's home, as $p
-EXPAND_TILDE = 'p=$1; case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; '
+EXPAND_TILDE = "p=$1; " + sh_expand_tilde("p")
 
 STAGE_APPS = {"macos": "TextEdit", "windows": "Notepad", "linux": "gnome-text-editor"}
 
@@ -470,7 +470,7 @@ class PowerShellProbes:
         return argv
 
     def process_argv(self, provider, name):
-        return provider.shell_argv("if (Get-Process -Name '%s' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % name.replace("'", "''"))
+        return provider.shell_argv("if (Get-Process -Name %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % ps_quote(name))
 
     def exists_argv(self, provider, path):
         return provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % ps_path(path))

@@ -17,6 +17,7 @@ import stat
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,7 +25,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from vmlab.providers import windows  # noqa: E402
-from vmlab.providers.base import ChannelError, GuestError, GuestTimeout  # noqa: E402
+from vmlab.providers.base import ChannelError, ExecResult, GuestError, GuestTimeout, ps_path  # noqa: E402
 
 FAKE_SSH = textwrap.dedent(
     """\
@@ -34,7 +35,10 @@ FAKE_SSH = textwrap.dedent(
     args = sys.argv[1:]
     with open(os.path.join(state, "log"), "a") as log:
         log.write(json.dumps([os.path.basename(sys.argv[0])] + args) + "\\n")
-    if os.path.basename(sys.argv[0]) == "scp" or "-O" in args or "-N" in args:
+    if os.path.basename(sys.argv[0]) == "scp":
+        time.sleep(float(os.environ.get("FAKE_SCP_SECONDS", "0")))
+        sys.exit(0)
+    if "-O" in args or "-N" in args:
         sys.exit(0)
     server = os.path.join(state, "server")
     if "-W" in args:
@@ -165,10 +169,82 @@ class WindowsSshChannelTest(unittest.TestCase):
             self.channel.exec(["powershell", "-Command", "Start-Sleep 30"], 1, {})
         self.assertIn("timed out after 1s on Channel ssh", caught.exception.message)
 
+    def test_scp_is_killed_at_its_timeout(self):
+        local = self.tmp / "big.tar"
+        local.write_bytes(b"x")
+        started = time.time()
+        with mock.patch.dict(os.environ, {"FAKE_SCP_SECONDS": "30"}):
+            with self.assertRaises(GuestTimeout) as caught:
+                self.channel.send_file(local, r"C:\ProgramData\vmlab\calls\big.tar", 1)
+        self.assertLess(time.time() - started, 10)
+        self.assertIn("within 1s", caught.exception.message)
+
     def test_each_version_of_the_server_has_its_own_port(self):
         ports = {windows.server_port("%012x" % n) for n in range(0, 2**48, 2**40)}
         self.assertEqual(len(ports), 256)
         self.assertTrue(all(windows.SERVER_PORTS[0] <= p < windows.SERVER_PORTS[1] for p in ports))
+
+
+class StandInProvider:
+    """What windows.copy_in uses of a Provider: its transfer takes send_seconds; exec answers."""
+
+    def __init__(self, send_seconds):
+        self.lab = mock.Mock(name="lab")
+        self.lab.name, self.lab.app.install_timeout = "win", 600
+        self.send_seconds = send_seconds
+        self.timeouts = []  # (what, timeout) per call
+
+    def send_file(self, local, guest_path, timeout):
+        self.timeouts.append(("send_file", timeout))
+        if self.send_seconds > timeout:
+            time.sleep(timeout)
+            raise GuestTimeout("copy timed out")
+        time.sleep(self.send_seconds)
+
+    def shell_argv(self, command):
+        return ["powershell", "-Command", command]
+
+    def exec(self, argv, timeout, env=None, stdin=None):
+        self.timeouts.append(("exec", timeout))
+        return ExecResult(argv, 0, "C:\\Users\\tester\\notes\r\n", "")
+
+
+class WindowsCopyInTest(unittest.TestCase):
+    def setUp(self):
+        tmp = Path(tempfile.mkdtemp(prefix="vmlab-wincopy-"))
+        self.addCleanup(shutil.rmtree, str(tmp), ignore_errors=True)
+        self.src = tmp / "a.txt"
+        self.src.write_text("a")
+
+    def test_the_transfer_and_the_unpacking_share_the_timeout(self):
+        provider = StandInProvider(send_seconds=0.5)
+        path = windows.copy_in(provider, self.src, "~/notes", 5)
+        self.assertEqual(path, "C:\\Users\\tester\\notes\\a.txt")
+        [(first, sent), (second, unpacked)] = provider.timeouts
+        self.assertEqual((first, second), ("send_file", "exec"))
+        self.assertLessEqual(sent, 5)
+        self.assertLessEqual(unpacked, 5 - 0.5)
+
+    def test_a_transfer_that_outlives_the_timeout_ends_the_copy(self):
+        provider = StandInProvider(send_seconds=30)
+        started = time.time()
+        with self.assertRaises(GuestTimeout):
+            windows.copy_in(provider, self.src, "~/notes", 1)
+        self.assertLess(time.time() - started, 5)
+        self.assertEqual([what for what, _ in provider.timeouts], ["send_file"])
+
+
+class PowerShellPathTest(unittest.TestCase):
+    def test_tilde_is_the_profile_only_alone_or_before_a_slash(self):
+        for path in ("~", "~\\notes.txt", "~/notes.txt"):
+            self.assertTrue(ps_path(path).startswith("($env:USERPROFILE + "), path)
+        for path in ("~notes.txt", "C:\\~\\x", "%TEMP%\\~x"):
+            self.assertNotIn("USERPROFILE", ps_path(path), path)
+
+    def test_the_path_is_taken_literally_not_as_a_pattern(self):
+        expr = ps_path("~\\it's $HOME\\%TEMP%")
+        self.assertNotIn("-replace", expr)
+        self.assertIn("'\\it''s $HOME\\%TEMP%'", expr)  # single-quoted: no $ expansion
 
 
 if __name__ == "__main__":

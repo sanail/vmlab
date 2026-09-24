@@ -22,11 +22,12 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
 from vmlab import hostproc
-from vmlab.providers.base import ChannelError, ExecResult, GuestError, GuestTimeout
+from vmlab.providers.base import ChannelError, ExecResult, GuestError, GuestTimeout, ps_path, ps_quote
 from vmlab.providers.ssh import SshChannel
 
 # Where a call's script, stdin and result live. Not C:\Windows\Temp: a Scheduled Task's
@@ -140,7 +141,10 @@ class WindowsSshChannel(SshChannel):
         with tempfile.NamedTemporaryFile(suffix=".ps1") as local:
             local.write(script)
             local.flush()
-            self.send_file(local.name, path)
+            try:
+                self.send_file(local.name, path, SERVER_START_TIMEOUT)
+            except GuestTimeout as exc:  # the call has not run yet, so another Channel may take it
+                raise ChannelError(exc.message, "check the Guest's disk space and sshd")
         command = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%s" -Port %d -Start' % (path, self._port)
         result = self.run_command(command, ["vmlab-call-server", "-Start"], SERVER_START_TIMEOUT, None)
         if result.code:
@@ -197,23 +201,32 @@ class WindowsSshChannel(SshChannel):
 
 
 def copy_in(provider, src, guest_dir, timeout=None):
-    """Provider.copy_in for Windows Guests: the Host file or folder src as a tar archive,
-    carried in as a file (a Channel's own transfer, not exec's stdin, which Windows' sshd
-    cannot stream), then unpacked by tar.exe, which Windows has."""
+    """Provider.copy_in for Windows Guests: the Host file or folder src as a tar archive, carried
+    in as a file by a Channel's own transfer (send_file), then unpacked by tar.exe, which Windows
+    has. Not over exec's stdin: both Windows Channels hold a call's stdin whole (the call server
+    in memory, vmrun in a file it copies in first), and a Build artifact may be large. The copy
+    and the unpacking share timeout (default: the Lab's app.install_timeout)."""
+    timeout = provider.lab.app.install_timeout if timeout is None else timeout
+    deadline = time.time() + timeout
+
+    def remaining():
+        left = deadline - time.time()
+        if left <= 0:
+            raise GuestTimeout("copying %s into Guest %s did not finish within %ss" % (src, provider.lab.name, timeout))
+        return left
+
     archive = r"%s\vmlab-copy-%s.tar" % (CALL_DIR, uuid.uuid4().hex)
     with tempfile.TemporaryDirectory() as tmp:
         local = Path(tmp) / "copy.tar"
         with tarfile.open(str(local), mode="w") as tar_file:
             tar_file.add(str(src), arcname=src.name)
-        provider.send_file(local, archive)
+        provider.send_file(local, archive, remaining())
     script = (
-        "$d = [Environment]::ExpandEnvironmentVariables('%s') -replace '^~', $env:USERPROFILE; "
-        "New-Item -ItemType Directory -Force -Path $d | Out-Null; tar.exe -xf '%s' -C $d; $code = $LASTEXITCODE; "
-        "Remove-Item -Force -ErrorAction SilentlyContinue '%s'; if ($code) { exit $code }; (Get-Item -LiteralPath $d).FullName"
-        % (guest_dir.replace("'", "''"), archive, archive)
+        "$d = %s; New-Item -ItemType Directory -Force -Path $d | Out-Null; tar.exe -xf %s -C $d; $code = $LASTEXITCODE; "
+        "Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath %s; if ($code) { exit $code }; (Get-Item -LiteralPath $d).FullName"
+        % (ps_path(guest_dir), ps_quote(archive), ps_quote(archive))
     )
-    timeout = provider.lab.app.install_timeout if timeout is None else timeout
-    result = provider.exec(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout)
+    result = provider.exec(provider.shell_argv(script), remaining())
     if not result.ok:
         detail = "\n".join(result.stderr.strip().splitlines()[-15:]) or "(no output)"
         raise GuestError("copying %s into the Guest failed: %s" % (src, detail), "check free disk space in the Guest")

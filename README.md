@@ -348,7 +348,7 @@ vmlab doctor [LAB...] [--json] [--bench [--calls N]]
                                          # Outside a project: the Host only (which OSes it can test, which hypervisors it has)
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab exec [--lab LAB] [--timeout S] -- COMMAND ...   # one command in a running Guest; its output and exit code
-vmlab put GUEST_PATH [--from HOSTFILE] [--lab LAB]    # write a Guest file from stdin (or HOSTFILE); prints its Guest path
+vmlab put GUEST_PATH [--from HOSTFILE] [--lab LAB]    # write a Guest file from piped stdin (or HOSTFILE); prints its Guest path
 vmlab get GUEST_PATH [--lab LAB]                      # print a Guest file to stdout, byte for byte
 vmlab version
 ```

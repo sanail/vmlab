@@ -22,7 +22,6 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 CONNECT_TIMEOUT = 5
 MASTER_PERSIST = 600  # seconds an idle master connection stays up
 MAX_SOCKET_PATH = 100  # sun_path is 104 bytes on macOS
-SEND_FILE_TIMEOUT = 600  # s for one scp of a Build artifact
 # ssh exits 255 on its own failures, and so may a remote command. ssh's own
 # failures are told apart by what it prints.
 SSH_FAILURE = re.compile(
@@ -163,15 +162,15 @@ class SshChannel(Channel):
         except subprocess.TimeoutExpired:
             pass
 
-    def send_file(self, local, guest_path):
-        """Copy a Host file into the Guest with scp, which carries any size (exec's stdin does not
-        on Windows). guest_path is a Guest path; scp takes it with forward slashes."""
+    def send_file(self, local, guest_path, timeout):
+        """Copy a Host file into the Guest with scp, which carries any size. guest_path is a Guest
+        path; scp takes it with forward slashes."""
         target = self._target()
         remote = "%s:%s" % (target, str(guest_path).replace("\\", "/"))
         try:
-            code, out, err = hostproc.run(["scp"] + self._options() + ["-p", str(local), remote], SEND_FILE_TIMEOUT)
+            code, out, err = hostproc.run(["scp"] + self._options() + ["-p", str(local), remote], timeout)
         except subprocess.TimeoutExpired:
-            raise ChannelError("scp of %s into the Guest did not finish within %ss" % (local, SEND_FILE_TIMEOUT), "check the Guest's disk space and sshd")
+            raise GuestTimeout("scp of %s into the Guest did not finish within %ss and was killed" % (local, timeout))
         if code:
             lines = (err or out).strip().splitlines()
             raise ChannelError("scp of %s into the Guest failed: %s" % (local, lines[-1] if lines else "exit %s" % code), "check that the Guest runs sshd")

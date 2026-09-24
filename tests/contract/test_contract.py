@@ -343,6 +343,35 @@ def scenario(g):
                "Remove-Item -Recurse -Force (Join-Path $HOME contract-files-%s), (Join-Path $env:TEMP contract-files-%s.txt)" % (tag, tag)))
 """))
 
+    def test_06c2_put_and_get_names_with_spaces_non_ascii_and_tildes_and_over_a_symlink(self):
+        self.assertPassed(*self.target.scenario("files_names.py", COMMANDS + """
+import uuid
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:6]
+    sep = "\\\\" if g.os == "windows" else "/"
+    folder = "contract names \\u00e9 %s" % tag
+    text = "\\u0417\\u0430\\u043a\\u043e\\u043d \\u2713\\n"
+    path = g.put("~/%s/\\u0444\\u0430\\u0439\\u043b \\u2713 caf\\u00e9.txt" % folder, text)
+    g.check("a path with spaces and non-ASCII names", path.endswith(folder + sep + "\\u0444\\u0430\\u0439\\u043b \\u2713 caf\\u00e9.txt"), detail=path)
+    g.check("its round trip", g.get("~/%s/\\u0444\\u0430\\u0439\\u043b \\u2713 caf\\u00e9.txt" % folder) == text)
+    # ~ is the home only alone or before a slash: ~name is a relative path, in the home here too
+    # (calls start there).
+    tilde = g.put("~%s/x.txt" % tag, "tilde")
+    g.check("~name is not the home", tilde.endswith(sep + "~%s" % tag + sep + "x.txt"), detail=tilde)
+    g.check("~name round trip", g.get("~%s/x.txt" % tag) == "tilde")
+    if g.os != "windows":
+        # put replaces the file at the path: a symlink there is replaced, its target left alone.
+        g.exec(["sh", "-c", 'cd "$HOME/$1" && printf target > target.txt && ln -s target.txt link.txt', "sh", folder])
+        g.put("~/%s/link.txt" % folder, "new")
+        kind = g.exec(["sh", "-c", 'cd "$HOME/$1" && if [ -L link.txt ]; then echo link; else echo file; fi', "sh", folder])
+        g.check("put over a symlink replaces the link", kind.stdout.strip() == "file", detail=kind.stdout + kind.stderr)
+        g.check("the link's target is untouched", g.get("~/%s/target.txt" % folder) == "target")
+        g.check("the new file has the content", g.get("~/%s/link.txt" % folder) == "new")
+    g.exec(cmd(g, 'rm -rf "$HOME/%s" "$HOME/~%s"' % (folder, tag),
+               "Remove-Item -Recurse -Force -LiteralPath (Join-Path $HOME '%s'), (Join-Path $HOME '~%s')" % (folder, tag)))
+"""))
+
     def test_06d_put_and_get_on_the_cli(self):
         data = bytes(range(256)) * 16 + "é✓".encode("utf-8")
         path = "~/contract-cli-%d.bin" % os.getpid()

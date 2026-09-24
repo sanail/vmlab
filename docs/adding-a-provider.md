@@ -20,7 +20,7 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | `is_reachable()` | Has it booted far enough for its Channels to work (e.g. it has an IP and SSH answers)? The base `up()` polls it until the Lab's `boot_timeout`. |
 | `channels()` | The Guest's Channels, preferred first (see below). The base `exec()` falls back through them. |
 | `restore()` | Return the running Guest to its Clean state (snapshot revert, or re-clone from the Base guest). It must be reachable again when this returns. |
-| `copy_in(src, guest_dir)` | Copy a Host file or folder into `guest_dir` (created; `~` is the Guest user's home). Return the absolute Guest path of the copy. `copy_in_by_tar` does it over `exec`'s stdin for POSIX Guests; `vmlab.providers.windows.copy_in` does it for Windows ones, where stdin cannot carry it. |
+| `copy_in(src, guest_dir, timeout=None)` | Copy a Host file or folder into `guest_dir` (created; `~` is the Guest user's home) within `timeout` seconds, all of it (default: the Lab's `app.install_timeout`, for Build artifacts), and raise `GuestTimeout` when it runs out. Return the absolute Guest path of the copy. `g.put` and `vmlab put` are built on it (`put_file`), with the call's timeout. `copy_in_by_tar` does it over `exec`'s stdin for POSIX Guests; `vmlab.providers.windows.copy_in` does it for Windows ones by `send_file` and `tar.exe`, since Windows Channels hold a call's stdin whole. A file already at the copy's path is replaced, a symlink too (not written through), as `tar -x` does. |
 | `screenshot(dest)` | Write a PNG of the Guest's screen to `dest`, Host-side where the hypervisor can. |
 
 These are built on the methods above; override them only when the Guest needs something else:
@@ -28,6 +28,7 @@ These are built on the methods above; override them only when the Guest needs so
 - `up()`, `down()` and `exec()` (Channel fallback).
 - `shell_argv(command)`: `sh -c`, or PowerShell on Windows.
 - `remove_paths(paths, timeout)`: app state reset.
+- `read_file(guest_path, timeout)`: `g.get` and `vmlab get`, the bytes of a Guest file (`GuestError` naming it when it is not there). The default reads it over `exec` as base64 with the Guest's shell (`sh` or PowerShell), with `put_file`'s path rules; the Fake Provider overrides it to map the path into its Host folder.
 - `probe_argv()`: the command `doctor` sends down each Channel (and `doctor --bench` times).
 - `diagnose()`: `doctor`'s checks of what the Guest is made from, answerable while it is stopped (its Base guest, its clone), as `[(check, status, detail, fix)]` with a status from `vmlab.providers.base` (`OK`, `INFO`, `WARN`, `FAIL`). A `FAIL` means the Guest cannot start, and doctor checks nothing further for the Lab. The default has none.
 - `diagnose_guest()`: the same for a running Guest whose Channels work, for what only this Provider's Guests can get wrong (Tart: a TCC consent dialog blocking Apple Events, or a Screen Recording alert raised by a screenshot over each Channel; Fusion: a Linux Guest logged into the wrong desktop session). Channels, one screenshot and the UI helper are checked for every Provider.
@@ -36,7 +37,7 @@ These are built on the methods above; override them only when the Guest needs so
 
 The UI helpers are per OS, not per Provider: `src/vmlab/guest/<os>/` holds them and `src/vmlab/uihelpers.py` runs them. A helper takes `COMMAND JSON` and prints one JSON object; `src/vmlab/ui.py` does everything above that once (roles, node shape, matching, chords, waiting). Provisioning a Base guest must install what the helper needs, so no Run compiles or installs anything (the macOS helper is compiled then; the Linux helper is plain Python sent with each call, and provisioning installs the GNOME Shell extension it drives on Wayland; the Windows helper is sent with each call too, and provisioning compiles its C# into the snapshot; the one exception is a Windows Base guest provisioned by an older vmlab, whose Labs compile the new helper on their first UI call after a restore).
 
-Every call into the hypervisor must be bounded: `start`, `stop`, `restore`, `copy_in` and `screenshot` take no timeout argument, so use the Lab's `step_timeout` (or `boot_timeout` for start and restore) and raise `GuestTimeout` when it runs out. A hung hypervisor must never hang a suite.
+Every call into the hypervisor must be bounded: `start`, `stop`, `restore` and `screenshot` take no timeout argument, so use the Lab's `step_timeout` (or `boot_timeout` for start and restore) and raise `GuestTimeout` when it runs out. `copy_in` and `send_file` take the caller's timeout and must end within it, every step together (a Scenario's `g.put` passes what is left of its clock). A hung hypervisor must never hang a suite.
 
 `guest_id` names the Guest uniquely per project and Lab. Use it for the hypervisor's VM name, so projects never share a Guest by accident.
 
@@ -54,7 +55,7 @@ Subclass `vmlab.providers.base.Channel`. Set a short `name` (it appears in repor
 - Pass `argv` without re-splitting it. Quote each element for the remote shell, so spaces and quotes arrive intact.
 - Apply `env` to the command only, never to the Guest's global environment.
 - Use a unique output file per call if the Channel captures output through files. Never use a shared one: concurrent calls would race.
-- Implement `send_file(local, guest_path)` if the Channel can carry a file of any size (scp, the hypervisor's own file copy). Windows Guests need it: their `exec` cannot take much on stdin.
+- Implement `send_file(local, guest_path, timeout)` if the Channel can carry a file of any size (scp, the hypervisor's own file copy). Windows Guests need it for `copy_in`: their Channels hold a call's stdin whole (the call server in memory), too much for a Build artifact. Raise `ChannelError` when the Channel cannot carry the file (the next one may), and `GuestTimeout` after killing a copy that outlives `timeout`: the time is spent, so it does not fall back.
 
 Typical Channels: SSH with vmlab's own key and known_hosts (multiplexed; reuse `vmlab.providers.ssh.SshChannel`), the hypervisor's guest-exec (`tart exec`, `vmrun runProgramInGuest`), and on Windows SSH to vmlab's call server in the desktop session (`vmlab.providers.windows.WindowsSshChannel`). ADR 0003 has the defaults per OS.
 

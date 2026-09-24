@@ -71,7 +71,7 @@ def main(argv=None):
     p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
     p.add_argument("argv", nargs=argparse.REMAINDER, metavar="-- COMMAND ...")
 
-    p = sub.add_parser("put", help="write a file into a running Guest from stdin (or --from); prints its absolute Guest path")
+    p = sub.add_parser("put", help="write a file into a running Guest from piped stdin (or --from); prints its absolute Guest path")
     p.add_argument("guest_path", metavar="GUEST_PATH", help="its folders are made; ~ is the Guest user's home, %%VARS%% expand on Windows")
     p.add_argument("--from", dest="source", metavar="HOSTFILE", help="copy this Host file instead of reading stdin")
     p.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
@@ -310,14 +310,19 @@ def _exec(project, args):
 
 
 def _put(project, args):
+    if args.source is None and sys.stdin.isatty():
+        raise UsageError(
+            "no content for %s: pipe it in or name a Host file, e.g. `echo hi | vmlab put %s` or `vmlab put %s --from notes.txt`"
+            % (args.guest_path, args.guest_path, args.guest_path)
+        )
+    lab, provider = _running_guest(project, args.lab)
     if args.source is None:
-        data = sys.stdin.buffer.read()
+        data = sys.stdin.buffer.read()  # all of it; nothing piped in (< /dev/null) makes an empty file
     else:
         try:
             data = Path(args.source).read_bytes()
         except OSError as exc:
             raise UsageError("--from %s: %s" % (args.source, exc.strerror or exc))
-    lab, provider = _running_guest(project, args.lab)
     print(provider.put_file(args.guest_path, data, lab.step_timeout))
     return EXIT_OK
 

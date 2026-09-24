@@ -1,5 +1,6 @@
 """g.put / g.get and `vmlab put` / `vmlab get`: files into and out of a Guest."""
 
+import os
 import subprocess
 import sys
 import time
@@ -160,6 +161,41 @@ class CliFilesTest(VmlabTestCase):
         r = self.project.vmlab("get", "~/nothing-here.txt")
         self.assertExit(r, 1)
         self.assertIn("~/nothing-here.txt", r.err)
+
+    def test_put_with_a_terminal_for_stdin_says_how_to_give_content_instead_of_waiting(self):
+        self.assertExit(self.project.vmlab("up"), 0)
+        leader, terminal = os.openpty()
+        self.addCleanup(os.close, leader)
+        try:
+            put = subprocess.run(
+                [sys.executable, str(zipapp_path()), "put", "~/x.txt"],
+                cwd=str(self.project.root / "app"), env=self.project.environ(), stdin=terminal, capture_output=True, timeout=30,
+            )  # fmt: skip
+        finally:
+            os.close(terminal)
+        self.assertEqual(put.returncode, 2, put.stderr)
+        self.assertIn(b"--from", put.stderr)
+
+    def test_put_to_a_stopped_guest_fails_without_waiting_for_stdin(self):
+        # A pipe nobody writes to or closes: reading it first would wait for good.
+        with subprocess.Popen(
+            [sys.executable, str(zipapp_path()), "put", "~/x.txt"],
+            cwd=str(self.project.root / "app"), env=self.project.environ(), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        ) as put:  # fmt: skip
+            try:
+                code = put.wait(timeout=30)
+            finally:
+                put.stdin.close()
+            err = put.stderr.read()
+        self.assertEqual(code, 1, err)
+        self.assertIn(b"vmlab up mac", err)
+
+    def test_put_of_an_empty_pipe_writes_an_empty_file(self):
+        self.assertExit(self.project.vmlab("up"), 0)
+        put = self.vmlab_bytes("put", "~/empty.txt", stdin=b"")
+        self.assertEqual(put.returncode, 0, put.stderr)
+        got = self.vmlab_bytes("get", "~/empty.txt")
+        self.assertEqual((got.returncode, got.stdout), (0, b""), got.stderr)
 
     def test_a_stopped_guest_is_an_error(self):
         r = self.project.vmlab("get", "~/x")

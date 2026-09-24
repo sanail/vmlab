@@ -103,6 +103,8 @@ class FakeProvider(Provider):
         self._record("copy_in", src=str(src), guest_dir=guest_dir)
         dest = self._host_path(guest_dir, "labs.%s.app" % self.lab.name) / src.name
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.is_symlink():
+            dest.unlink()  # replaced, as tar -x does in real Guests, not written through
         if src.is_dir():
             shutil.copytree(str(src), str(dest), symlinks=True)
         else:

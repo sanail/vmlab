@@ -57,9 +57,12 @@ class Channel:
 
     name = None
 
-    def send_file(self, local, guest_path):
-        """Copy the Host file local to the Guest path guest_path. Channels that carry files
-        themselves implement it; Windows Guests need it, where exec's stdin cannot carry much."""
+    def send_file(self, local, guest_path, timeout):
+        """Copy the Host file local to the Guest path guest_path. Channels that carry files of any
+        size themselves (scp, the hypervisor's own copy) implement it: Windows Guests copy Build
+        artifacts with it, since their Channels hold a call's stdin whole. Raise ChannelError
+        when the Channel cannot carry it, GuestTimeout (after killing the copy) when it does not
+        finish within timeout seconds."""
         raise NotImplementedError
 
     def exec(self, argv, timeout, env, stdin=None):
@@ -176,7 +179,7 @@ class Provider:
             )
             argv = self.shell_argv(script)
         else:
-            script = 'p=$1; case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; [ -f "$p" ] || exit %d; base64 < "$p"' % NO_FILE
+            script = 'p=$1; %s[ -f "$p" ] || exit %d; base64 < "$p"' % (sh_expand_tilde("p"), NO_FILE)
             argv = ["sh", "-c", script, "sh", path]
         result = self.exec(argv, timeout)
         if result.code == NO_FILE:
@@ -194,12 +197,17 @@ class Provider:
 
         return spawning.WindowsSpawner(self) if self.lab.os == "windows" else spawning.PosixSpawner(self)
 
-    def send_file(self, local, guest_path):
-        """Copy the Host file local into the Guest over the first Channel that can carry it."""
+    def send_file(self, local, guest_path, timeout):
+        """Copy the Host file local into the Guest over the first Channel that can carry it, all
+        within timeout seconds. A Channel that times out has spent them: GuestTimeout, no fallback."""
         failures = []
+        deadline = time.time() + timeout
         for channel in self.channels():
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                raise GuestTimeout("copying %s into Guest %s did not finish within %ss" % (local, self.lab.name, timeout))
             try:
-                channel.send_file(local, guest_path)
+                channel.send_file(local, guest_path, remaining)
                 return
             except ChannelError as exc:
                 failures.append((channel.name, exc))
@@ -211,7 +219,7 @@ class Provider:
     def copy_in_by_tar(self, src, guest_dir, timeout=None):
         """copy_in for POSIX Guests: a tar stream over exec's stdin keeps bundles intact
         (symlinks, modes); the Guest-side script expands ~ and prints the absolute folder."""
-        script = 'd=$1; case $d in "~"|"~/"*) d="$HOME${d#"~"}";; esac; mkdir -p "$d" && tar -xf - -C "$d" && cd "$d" && pwd'
+        script = 'd=$1; %smkdir -p "$d" && tar -xf - -C "$d" && cd "$d" && pwd' % sh_expand_tilde("d")
         argv = ["/bin/sh", "-c", script, "sh", guest_dir]
         with tempfile.TemporaryFile() as archive:
             with tarfile.open(fileobj=archive, mode="w") as tar_file:
@@ -233,17 +241,15 @@ class Provider:
         if not paths:
             return
         if self.lab.os == "windows":
-            # %VARS% expand; ~ is the user profile.
-            quoted = ["'%s'" % p.replace("'", "''") for p in paths]
             # exit 0: PowerShell exits 1 when its last command failed, even with the error silenced,
             # and a path that is not there is exactly what this asks for.
             script = (
-                "foreach ($p in @(%s)) { $p = [Environment]::ExpandEnvironmentVariables($p) -replace '^~', $env:USERPROFILE; "
-                "Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }; exit 0" % ", ".join(quoted)
+                "foreach ($p in @(%s)) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }; exit 0"
+                % ", ".join(ps_path(p) for p in paths)
             )
             argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
         else:
-            script = 'for p in "$@"; do case $p in "~"|"~/"*) p="$HOME${p#"~"}";; esac; rm -rf -- "$p"; done'
+            script = 'for p in "$@"; do %srm -rf -- "$p"; done' % sh_expand_tilde("p")
             argv = ["sh", "-c", script, "sh"] + list(paths)
         result = self.exec(argv, timeout)
         if not result.ok:
@@ -337,6 +343,21 @@ def split_guest_path(guest_path, os_name):
     return folder, name
 
 
+def ps_quote(text):
+    """text as a PowerShell string literal, taken as is (no $ or ` expansion)."""
+    return "'%s'" % text.replace("'", "''")
+
+
 def ps_path(path):
-    """A PowerShell expression for path, with %VARS% and a leading ~ expanded."""
-    return "([Environment]::ExpandEnvironmentVariables('%s') -replace '^~', $env:USERPROFILE)" % path.replace("'", "''")
+    """A PowerShell expression for the Guest path path, in parentheses so it also works as a
+    command's argument: %VARS% expand, and ~ alone or before a slash or backslash is the user's
+    profile (~foo stays as it is)."""
+    if path == "~" or path[:2] in ("~/", "~\\"):
+        return "($env:USERPROFILE + [Environment]::ExpandEnvironmentVariables(%s))" % ps_quote(path[1:])
+    return "([Environment]::ExpandEnvironmentVariables(%s))" % ps_quote(path)
+
+
+def sh_expand_tilde(var):
+    """POSIX sh that expands a leading ~ in $var, alone or before a slash, to the Guest user's
+    home (~foo stays as it is); a statement to put before the ones that use $var."""
+    return 'case $%s in "~"|"~/"*) %s="$HOME${%s#"~"}";; esac; ' % (var, var, var)
