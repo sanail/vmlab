@@ -291,6 +291,6 @@ def _ready(path, key, ready):
             path, key, "holds several conditions (%s); it takes one" % ", ".join(found), "keep the one that says the app is ready; a Scenario waits for the rest with g.wait_for"
         )
     try:
-        return ui.condition(**ready)
-    except UsageError as exc:
-        raise ConfigError(path, key, str(exc), READY_EXAMPLE)
+        return ui.condition(named=str, **ready)
+    except ui.ConditionError as exc:  # named in TOML keys: labs.<name>.app.ready.<key>
+        raise ConfigError(path, key + ("." + exc.key if exc.key else ""), exc.problem, READY_EXAMPLE)

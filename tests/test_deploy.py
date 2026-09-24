@@ -267,12 +267,14 @@ def scenario(g):
         self.assertIn('"file": "~/never"', error)
 
     def test_g_launch_waits_on_the_scenario_clock(self):
-        self.config('ready = { file = "~/never" }\nready_timeout = 60\n')
+        self.config('ready = { exec = ["sh", "-c", "echo tray-missing; exit 3"] }\nready_timeout = 60\n')
         self.project.scenario("a.py", "LAUNCH = False\nTIMEOUT = 1\ndef scenario(g):\n    g.launch()\n    g.check('ok', True)\n")
         started = time.time()
         error = self.run_error()
         self.assertLess(time.time() - started, 20)
-        self.assertIn("1s timeout", error)
+        # The Scenario's clock ran out before ready_timeout: the error still says what it waited for.
+        for fragment in ("1s timeout", "labs.mac.app.ready", '"exec"', "tray-missing", '"code": 3'):
+            self.assertIn(fragment, error)
 
     def test_deploy_waits_for_ready(self):
         self.config()
@@ -287,6 +289,18 @@ def scenario(g):
         self.assertIn('"log": "~/app.log"', r.err)
         self.assertIn("ready_timeout", r.err)
 
+    def test_deploy_stops_at_the_first_lab_that_is_not_ready(self):
+        self.project.config(
+            FAKE_LAB + SLOW_APP + 'ready = { file = "~/never" }\nready_timeout = 1\n'
+            + FAKE_LAB.replace("labs.mac", "labs.later") + '[labs.later.app]\nlaunch = "true"\n'
+        )  # fmt: skip
+        r = self.project.vmlab("deploy")
+        self.assertExit(r, 1)
+        self.assertIn("labs.mac.app.ready", r.err)
+        self.assertNotIn("later: deployed", r.out)
+        status = {g["lab"]: g["running"] for g in json.loads(self.project.vmlab("status", "--json").out)}
+        self.assertEqual(status, {"mac": True, "later": False})
+
 
 class ReadyConfigTest(VmlabTestCase):
     def assertConfigError(self, app, *fragments):
@@ -298,6 +312,7 @@ class ReadyConfigTest(VmlabTestCase):
         for fragment in fragments:
             self.assertIn(fragment, r.err)
         self.assertEqual(self.project.run_dirs(), [])
+        self.last_error = r.err
 
     def test_no_condition(self):
         self.assertConfigError("ready = {}\n", "labs.mac.app.ready", "no condition")
@@ -317,10 +332,12 @@ class ReadyConfigTest(VmlabTestCase):
         self.assertConfigError('ready = { process = "x", gone = "yes" }\n', "labs.mac.app.ready.gone", "true or false")
         self.assertConfigError('ready = { exec = "curl localhost" }\n', "labs.mac.app.ready.exec", "list")
 
-    def test_the_same_errors_as_wait_for(self):
-        self.assertConfigError('ready = { log = "~/app.log" }\n', "labs.mac.app.ready", "needs --pattern")
-        self.assertConfigError('ready = { log = "~/app.log", pattern = "(" }\n', "labs.mac.app.ready", "not a valid regular expression")
-        self.assertConfigError('ready = { file = "~/x", pattern = "y" }\n', "labs.mac.app.ready", "--pattern goes with")
+    def test_the_same_errors_as_wait_for_in_toml_keys(self):
+        self.assertConfigError('ready = { log = "~/app.log" }\n', "labs.mac.app.ready.log: needs pattern")
+        self.assertConfigError('ready = { log = "~/app.log", pattern = "(" }\n', "labs.mac.app.ready.pattern:", "not a valid regular expression")
+        self.assertConfigError('ready = { file = "~/x", pattern = "y" }\n', "labs.mac.app.ready.pattern: goes with log or exec")
+        self.assertConfigError('ready = { process = "MyApp", app = "MyApp" }\n', "labs.mac.app.ready.app: goes with text or role")
+        self.assertNotIn("--", self.last_error)
 
     def test_ready_timeout(self):
         self.assertConfigError('ready = { file = "~/x" }\nready_timeout = 0\n', "labs.mac.app.ready_timeout", "> 0")

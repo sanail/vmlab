@@ -207,7 +207,7 @@ class Guest:
         file has a line matching pattern, or the command exec (an argv) exits 0 (with pattern: its
         stdout matches). gone=True waits for the condition to stop holding instead. Returns
         {"met": bool, ...}; never raises for an unmet condition. timeout defaults to the Lab's step_timeout."""
-        condition = ui.condition(text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern, exec=exec)
+        condition = ui.condition(text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern, exec=exec, named=str)
         return self._ui_call(lambda contract: contract.wait_for(condition, timeout=timeout))
 
     def _ui_call(self, fn):

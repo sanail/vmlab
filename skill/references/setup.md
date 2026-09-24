@@ -54,7 +54,7 @@ Each Lab is one Guest: one OS version on one Provider. Add one `[labs.NAME]` tab
 - Windows: `provider = "fusion"`, `[labs.NAME.fusion] base = "windows-11"`, `language = "en-US"` (the default: the display language Scenarios' element names are in; the wizard's VM must be English (United States) Windows, and `vmlab doctor` fails a Lab whose Guest shows another).
 - `arch` is the Build artifact's; leave it out for the Host's own.
 
-Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the Host, installed, quit and launched in the Guest, what says the launched app is ready, and which Guest paths hold the app's state. Read [app-recipes.md](app-recipes.md) and derive every recipe from the project's build system and packaging. Show the user what you wrote, and say which recipes are guesses to confirm.
+Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the Host, installed, quit and launched in the Guest, what says the launched app is ready (if anything does), and which Guest paths hold the app's state. Read [app-recipes.md](app-recipes.md) and derive every recipe from the project's build system and packaging. Show the user what you wrote, and say which recipes are guesses to confirm.
 
 ## 6. Doctor to green
 
@@ -62,6 +62,6 @@ Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the 
 
 A stopped Guest shows `info ... stopped; Channels not checked`: start it with `vmlab up LAB` and run `vmlab doctor LAB` again, so its Channels, screenshots and UI helper are checked too. WARN lines (an architecture this Host cannot cover, a slower fallback Channel or UI helper) go to the user as they are.
 
-Then prove the recipes: `vmlab deploy LAB` builds when stale, installs, launches and waits for `ready`. A failure names the recipe (or the unmet `ready` condition and its last answer) and the Guest command to try by hand (`vmlab exec --lab LAB -- ...`). Something odd with no clear error (a permission prompt, an empty accessibility tree, keys going to the wrong window): read the Guest OS's traps: [macOS](traps-macos.md), [Windows](traps-windows.md), [Linux](traps-linux.md).
+Then prove the recipes: `vmlab deploy LAB` builds when stale, installs, launches and waits for `ready`, if the Lab has one. A failure names the recipe (or the unmet `ready` condition and its last answer) and the Guest command to try by hand (`vmlab exec --lab LAB -- ...`). Something odd with no clear error (a permission prompt, an empty accessibility tree, keys going to the wrong window): read the Guest OS's traps: [macOS](traps-macos.md), [Windows](traps-windows.md), [Linux](traps-linux.md).
 
 Done when, for every agreed Lab, `vmlab doctor LAB` with its Guest running shows no FAIL and `vmlab deploy LAB` exits 0 with the app running: `vmlab ui screenshot --lab LAB`, look at the PNG, and see the app's window with nothing covering it. A system alert or prompt over it is a finding: clear it (see the traps above) or report it to the user as unresolved. Tell the user it is ready, remind them `vmlab down` stops the Guests, and return to the workflow that sent you here, if any.

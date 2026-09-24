@@ -309,7 +309,7 @@ class LogCondition:
 
     def __init__(self, path, pattern):
         self.path, self.pattern = path, pattern
-        self.regex = _regex(pattern)
+        self.regex = re.compile(pattern, re.M)
 
     def describe(self):
         return {"log": self.path, "pattern": self.pattern}
@@ -327,7 +327,7 @@ class ExecCondition:
 
     def __init__(self, argv, pattern):
         self.argv, self.pattern = argv, pattern
-        self.regex = None if pattern is None else _regex(pattern)
+        self.regex = None if pattern is None else re.compile(pattern, re.M)
 
     def describe(self):
         return dict({"exec": self.argv}, **({} if self.pattern is None else {"pattern": self.pattern}))
@@ -356,22 +356,44 @@ class Gone:
         return not held, extra
 
 
-def _regex(pattern):
-    try:
-        return re.compile(pattern, re.M)
-    except re.error as exc:
-        raise UsageError("--pattern %r is not a valid regular expression: %s" % (pattern, exc))
+class ConditionError(UsageError):
+    """A malformed wait_for condition. key is the argument at fault (None: the set of them) and
+    problem what is wrong with it, naming other arguments as the caller spells them."""
+
+    def __init__(self, key, problem, named):
+        self.key, self.problem = key, problem
+        super().__init__("%s %s" % (named(key), problem) if key else problem)
 
 
-def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None):
-    """The one wait_for condition these arguments describe; UsageError unless there is exactly one.
+def flag(key):
+    """How `vmlab ui wait-for` spells condition()'s argument key."""
+    return "--" + key
 
-    gone=True inverts it. exec is an argv."""
+
+def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, named=flag):
+    """The one wait_for condition these arguments describe; ConditionError unless there is exactly one.
+
+    gone=True inverts it. exec is an argv. named(key) spells an argument in errors (default: its flag)."""
     element = text is not None or role is not None
     if sum([element, process is not None, file is not None, log is not None, exec is not None]) != 1:
-        raise UsageError("wait-for needs exactly one condition: an element (--text/--role), --process, --file, --log with --pattern, or --exec")
+        raise ConditionError(
+            None,
+            "wait-for needs exactly one condition: an element (%s/%s), %s, %s, %s with %s, or %s" % tuple(map(named, ("text", "role", "process", "file", "log", "pattern", "exec"))),
+            named,
+        )
+    if app is not None and not element:
+        raise ConditionError("app", "goes with %s or %s: it narrows an element to one app's" % (named("text"), named("role")), named)
     if pattern is not None and log is None and exec is None:
-        raise UsageError("--pattern goes with --log or --exec")
+        raise ConditionError("pattern", "goes with %s or %s" % (named("log"), named("exec")), named)
+    if log is not None and pattern is None:
+        raise ConditionError("log", "needs %s" % named("pattern"), named)
+    if exec is not None and not is_argv(exec):
+        raise ConditionError("exec", "needs a command: a non-empty list of strings, the program first", named)
+    if pattern is not None:
+        try:
+            re.compile(pattern, re.M)
+        except re.error as exc:
+            raise ConditionError("pattern", "%r is not a valid regular expression: %s" % (pattern, exc), named)
     if element:
         found = ElementCondition(Query(text, role, app))
     elif process is not None:
@@ -379,12 +401,8 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
     elif file is not None:
         found = FileCondition(file)
     elif log is not None:
-        if pattern is None:
-            raise UsageError("wait-for --log needs --pattern")
         found = LogCondition(log, pattern)
     else:
-        if not is_argv(exec):
-            raise UsageError("wait-for --exec needs a command: a non-empty argv list of strings, e.g. --exec test -e /tmp/ready")
         found = ExecCondition(list(exec), pattern)
     return Gone(found) if gone else found
 
@@ -558,12 +576,26 @@ class UI:
         """Poll condition until it holds or timeout seconds (default: the Lab's step_timeout) pass.
 
         Returns {"met", "waited_s", "condition", ...}, with "error" when the last poll got no
-        answer (a failed Channel, a hung call); an unmet condition is not an error.
+        answer (a failed Channel, a hung call); an unmet condition is not an error. When the
+        caller's own clock runs out first (a Scenario's), its GuestTimeout carries that result
+        so far as .unmet.
         """
         timeout = self.provider.lab.step_timeout if timeout is None else timeout
         started = time.time()
-        deadline = started + timeout
-        extra, error = dict(condition.unanswered), None
+        state = {"extra": dict(condition.unanswered), "error": None}
+        try:
+            return self._wait(condition, started, started + timeout, state)
+        except GuestTimeout as exc:
+            exc.unmet = self._waited(condition, started, False, **state)
+            raise
+
+    def _waited(self, condition, started, met, extra, error):
+        result = dict({"met": bool(met), "waited_s": round(time.time() - started, 3), "condition": condition.describe()}, **extra)
+        if error:
+            result["error"] = error  # why the last poll got no answer
+        return result
+
+    def _wait(self, condition, started, deadline, state):
         first = True
         while True:
             # A poll may not outlive the wait by more than a moment, except the first: the answer
@@ -573,19 +605,16 @@ class UI:
                 poll_timeout = min(poll_timeout, max(1, deadline - time.time() + 1))
             first = False
             try:
-                met, extra = condition.poll(self, poll_timeout)
-                error = None
+                met, state["extra"] = condition.poll(self, poll_timeout)
+                state["error"] = None
             except (NoAnswer, ChannelError, GuestTimeout) as exc:
                 # A poll the Guest did not answer (a failed Channel, a slow or hung call) just
                 # means "not met yet", for every condition and gone=True alike. A Scenario
                 # running out of time (a subclass of GuestTimeout) still ends the Scenario.
                 if isinstance(exc, GuestTimeout) and type(exc) is not GuestTimeout:
                     raise
-                met, error = False, exc.message
+                met, state["error"] = False, exc.message
             now = time.time()
             if met or now >= deadline:
-                result = dict({"met": bool(met), "waited_s": round(now - started, 3), "condition": condition.describe()}, **extra)
-                if error:
-                    result["error"] = error  # why the last poll got no answer
-                return result
+                return self._waited(condition, started, met, **state)
             time.sleep(min(POLL_SECONDS, deadline - now))

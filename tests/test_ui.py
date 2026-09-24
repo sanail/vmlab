@@ -260,6 +260,10 @@ class UiCliTest(UiTestCase):
         r = self.ui("wait-for", "--file", "a", "--pattern", "x", code=2)
         self.assertIn("--pattern", r.err)
 
+    def test_app_goes_with_an_element(self):
+        r = self.ui("wait-for", "--process", "MyApp", "--app", "MyApp", code=2)
+        self.assertIn("--app goes with --text or --role", r.err)
+
     def test_wait_for_needs_exactly_one_condition(self):
         r = self.ui("wait-for", "--file", "a", "--process", "b", code=2)
         self.assertIn("one condition", r.err)
@@ -464,6 +468,14 @@ class UiScenarioTest(UiTestCase):
         self.assertExit(self.project.vmlab("run"), 1)
         self.assertLess(time.time() - started, 15)
         self.assertIn("timeout", self.project.report()["scenarios"][0]["error"])
+
+    def test_app_without_an_element_errors_the_scenario(self):
+        self.project.scenario("app.py", """
+            def scenario(g):
+                g.wait_for(process="MyApp", app="MyApp", timeout=1)
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertIn("app goes with text or role", self.project.report()["scenarios"][0]["error"])
 
     def test_a_missing_command_errors_the_scenario_naming_it(self):
         self.project.scenario("typo.py", """

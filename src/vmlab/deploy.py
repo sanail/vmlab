@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 
 from vmlab import hostproc, ui
-from vmlab.providers.base import GuestError
+from vmlab.providers.base import GuestError, GuestTimeout
 
 GUEST_ARTIFACTS = "~/vmlab/artifacts"
 LOG_TAIL_LINES = 20
@@ -103,16 +103,26 @@ def launch(provider, lab, guest_artifact, env=None, call_timeout=None):
 
 def _wait_ready(provider, lab, call_timeout):
     timeout = lab.app.ready_timeout or lab.step_timeout
-    result = ui.UI(provider, call_timeout).wait_for(lab.app.ready, timeout=timeout)
+    key = "labs.%s.app" % lab.name
+    fix = "check that the launch recipe starts the app and what the condition waits for (try it with `vmlab ui wait-for`), or raise %s.ready_timeout" % key
+    try:
+        result = ui.UI(provider, call_timeout).wait_for(lab.app.ready, timeout=timeout)
+    except GuestTimeout as exc:
+        if getattr(exc, "unmet", None) is None:
+            raise
+        # The caller's clock (a Scenario's, in g.launch) ran out before ready_timeout: the same
+        # error ends it, saying what it was waiting for.
+        raise type(exc)("%s, waiting for the app to be ready: %s" % (exc.message, _unmet(key, exc.unmet)))
     if not result["met"]:
-        key = "labs.%s.app" % lab.name
-        answer = json.dumps({k: v for k, v in result.items() if k not in ("met", "waited_s", "condition")})
-        if len(answer) > ANSWER_CHARS:
-            answer = answer[:ANSWER_CHARS] + "..."
-        raise DeployError(
-            "the app is not ready: %s.ready %s not met within %ss of its launch; last answer: %s" % (key, json.dumps(result["condition"]), timeout, answer),
-            "check that the launch recipe starts the app and what the condition waits for (try it with `vmlab ui wait-for`), or raise %s.ready_timeout" % key,
-        )
+        raise DeployError("the app is not ready within %ss of its launch: %s" % (timeout, _unmet(key, result)), fix)
+
+
+def _unmet(key, result):
+    """'labs.<lab>.app.ready {condition} not met; last answer: {...}', the answer cut to ANSWER_CHARS."""
+    answer = json.dumps({k: v for k, v in result.items() if k not in ("met", "waited_s", "condition")})
+    if len(answer) > ANSWER_CHARS:
+        answer = answer[:ANSWER_CHARS] + "..."
+    return "%s.ready %s not met; last answer: %s" % (key, json.dumps(result["condition"]), answer)
 
 
 def _recipe(provider, lab, step, guest_artifact, timeout, check=True, extra_env=None):
