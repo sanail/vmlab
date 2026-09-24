@@ -96,6 +96,18 @@ Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' SubscribedContent-310093Enabled 0
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' SoftLandingEnabled 0
 
+Say 'no OneDrive'
+# OneDrive starts at logon (the user's Run key, then a Scheduled Task ten minutes later) and a
+# few minutes on shows "Turn On Windows Backup" at the bottom right of the screen, over the app
+# under test (the prompt is OneDrive's own). The policy makes OneDrive quit as soon as it starts,
+# however it is started; its prompts to back up the user's folders are blocked as well, and
+# neither the Run key nor its Scheduled Tasks start it any more.
+Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\OneDrive' DisableFileSyncNGSC 1
+Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\OneDrive' KFMBlockOptIn 1
+Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name OneDrive -ErrorAction SilentlyContinue
+Get-ScheduledTask -TaskName 'OneDrive *' -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
+Get-Process -Name OneDrive, OneDrive.Sync.Service -ErrorAction SilentlyContinue | Stop-Process -Force
+
 Say 'UTF-8 as the code page of every program (after the reboot)'
 $codepages = 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'
 foreach ($name in 'ACP', 'OEMCP', 'MACCP') { Set-Value $codepages $name '65001' String }
