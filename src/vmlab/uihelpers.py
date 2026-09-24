@@ -1,4 +1,5 @@
-"""The Guest-side helpers behind the UI contract, one per OS, reached over any Channel.
+"""The Guest-side helpers behind the UI contract, one per OS, reached over any Channel; each
+Guest OS picks its own (vmlab.guestos).
 
 A helper takes `COMMAND JSON` and prints one JSON object (vmlab.ui has the
 commands and shapes); it exits non-zero with a message on stderr when it
@@ -40,16 +41,6 @@ def macos_helper_info(channel, timeout):
     """vmlab-ui's version info over one Channel ({"version", "trusted", ...}), or None if it is not installed."""
     result = channel.exec(["/bin/sh", "-c", MACOS_GUARD, "sh", "version"], timeout, {})
     return None if result.code == MISSING else _result(result, "version", "vmlab-ui")
-
-
-def for_provider(provider):
-    if provider.lab.os == "macos":
-        return MacHelper(provider)
-    if provider.lab.os == "linux":
-        return LinuxHelper(provider)
-    if provider.lab.os == "windows":
-        return WindowsHelper(provider)
-    return Unsupported(provider)
 
 
 def _result(result, command, helper):
@@ -153,17 +144,3 @@ class WindowsHelper:
         info = self.call("version", {}, max(timeout, WINDOWS_COMPILE_TIMEOUT))
         screen = info.get("screen") or {}
         return True, "UI Automation; screen %sx%s at %s dpi" % (screen.get("w"), screen.get("h"), info.get("dpi"))
-
-
-class Unsupported:
-    def __init__(self, provider):
-        self.provider = provider
-
-    def call(self, command, params, timeout):
-        raise GuestError(
-            "the UI contract is not implemented for %s Guests yet" % self.provider.lab.os,
-            "use g.exec() and g.screenshot() on this Lab for now",
-        )
-
-    def describe(self, timeout):
-        return None, None

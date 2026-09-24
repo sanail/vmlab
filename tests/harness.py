@@ -2,7 +2,7 @@
 
 Tests only use what a user or CI would see: exit codes, stdout/stderr and the
 files vmlab writes into the project. Nothing here imports vmlab itself; the few tests that
-load one part directly say so (test_linux_ui_helper, test_windows_ssh).
+load one part directly say so (test_linux_ui_helper, test_windows_ssh, test_guest_os).
 """
 
 import atexit

@@ -36,7 +36,6 @@ from datetime import datetime, timezone
 from vmlab import hostproc
 from vmlab.config import ConfigError
 from vmlab.home import vmlab_home
-from vmlab.providers import spawning
 from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
@@ -46,6 +45,12 @@ OPTIONS = ("ui_tree", "notifications", "channels", "broken_channels", "hung_chan
 
 
 class FakeProvider(Provider):
+    def __init__(self, project, lab):
+        from vmlab import guestos
+
+        super().__init__(project, lab)
+        self.guest_os = guestos.FakeGuestOS(guestos.for_os(lab.os))  # Guest commands run on the Host, whatever the Lab's os
+
     @property
     def state_dir(self):
         path = vmlab_home() / "fake" / self.guest_id
@@ -106,9 +111,6 @@ class FakeProvider(Provider):
             raise ConfigError(self.project.config_path, key, "%r leaves the Guest" % guest_path, "use a path inside the Guest")
         return target
 
-    def shell_argv(self, command):
-        return ["sh", "-c", command]  # Guest commands run on the Host, whatever the Lab's os
-
     def copy_in(self, src, guest_dir, timeout=None):
         self._record("copy_in", src=str(src), guest_dir=guest_dir)
         dest = self._host_path(guest_dir, "labs.%s.app" % self.lab.name) / src.name
@@ -128,11 +130,6 @@ class FakeProvider(Provider):
         except ConfigError as exc:
             raise GuestError("%s: %s" % (guest_path, exc.problem))
         return self._read_file(guest_path, str(path), timeout)
-
-    def spawner(self):
-        # Commands run on the Host, whatever the Lab's os: logs go in the Guest's home, where
-        # read_file (g.get) finds them.
-        return spawning.PosixSpawner(self, log_dir="~")
 
     def remove_paths(self, paths, timeout):
         self._record("remove_paths", paths=list(paths))

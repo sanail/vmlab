@@ -32,7 +32,6 @@ STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text, close-staged) give
 # sh: $1 with a leading ~ expanded to the Guest user's home, as $p
 EXPAND_TILDE = "p=$1; " + sh_expand_tilde("p")
 
-STAGE_APPS = {"macos": "TextEdit", "windows": "Notepad", "linux": "gnome-text-editor"}
 # The name of every file stage-text writes (8 random hex digits); the helper checks its folder.
 STAGED_NAME = re.compile(r"vmlab-stage-[0-9a-f]{8}\.txt", re.I)
 
@@ -153,7 +152,6 @@ WINDOWS_ROLES = {
     "Document": "document",
     "ProgressBar": "progressbar",
 }
-NATIVE_ROLES = {"macos": MACOS_ROLES, "linux": LINUX_ROLES, "windows": WINDOWS_ROLES}
 
 MODIFIERS = {
     "ctrl": "ctrl", "control": "ctrl",
@@ -190,16 +188,16 @@ def chord_text(key, modifiers):
     return "+".join(list(modifiers) + [key])
 
 
-def normalize(node, os_name):
+def normalize(node, native_roles):
     """Fill in the shared node shape and the cross-OS role, recursively."""
     out = dict(NODE_DEFAULTS, **node)
     native = out.get("native_role")
     if "role" not in node:
-        out["role"] = NATIVE_ROLES.get(os_name, {}).get(native) or re.sub(r"^AX|\s+", "", native or "").lower() or "unknown"
+        out["role"] = native_roles.get(native) or re.sub(r"^AX|\s+", "", native or "").lower() or "unknown"
     out["native_role"] = native if native is not None else out["role"]
     for key in EXTRA_KEYS:  # helper detail outside the shared shape
         out.pop(key, None)
-    out["children"] = [normalize(child, os_name) for child in node.get("children", [])]
+    out["children"] = [normalize(child, native_roles) for child in node.get("children", [])]
     return out
 
 
@@ -563,9 +561,6 @@ fi
 class PosixProbes:
     """Commands that check the Guest from its shell, for wait_for's conditions."""
 
-    def __init__(self, os_name):
-        self.os = os_name
-
     def _answered(self, script, args):
         return ["sh", "-c", script + POSIX_ANSWER, "sh"] + list(args)
 
@@ -573,11 +568,7 @@ class PosixProbes:
         return self._answered('"$@"', argv)
 
     def process_argv(self, provider, name):
-        """pgrep matches a name exactly (as text, not a regex). Linux keeps only the first 15 bytes
-        of a longer one: those match, then the full name in the process's command line."""
-        cut = name.encode("utf-8")[:LINUX_NAME_BYTES].decode("utf-8", "ignore")
-        if self.os == "linux" and cut != name:
-            return self._answered(POSIX_PROCESS, ["^" + _ere(cut), name])
+        """pgrep matches a name exactly (as text, not a regex)."""
         return self._answered(POSIX_PROCESS, ["^%s$" % _ere(name), ""])
 
     def exists_argv(self, provider, path):
@@ -593,6 +584,16 @@ class PosixProbes:
             return None
         result.stderr = result.stderr[: found.start()]
         return result
+
+
+class LinuxProbes(PosixProbes):
+    def process_argv(self, provider, name):
+        """Linux keeps only the first 15 bytes of a longer name: those match, then the full name
+        in the process's command line."""
+        cut = name.encode("utf-8")[:LINUX_NAME_BYTES].decode("utf-8", "ignore")
+        if cut != name:
+            return self._answered(POSIX_PROCESS, ["^" + _ere(cut), name])
+        return super().process_argv(provider, name)
 
 
 class PowerShellProbes:
@@ -629,9 +630,9 @@ class UI:
 
     def __init__(self, provider, call_timeout):
         self.provider = provider
-        self.os = provider.lab.os
+        self.guest_os = provider.guest_os
         self.call_timeout = call_timeout
-        self.probes = PowerShellProbes() if self.os == "windows" else PosixProbes(self.os)
+        self.probes = self.guest_os.probes()
 
     def _call(self, command, params):
         return self.provider.ui_call(command, params, self.call_timeout("ui %s" % command))
@@ -644,7 +645,7 @@ class UI:
     def tree(self, app=None, timeout=None):
         params = {"app": app} if app else {}
         timeout = self.call_timeout("ui tree") if timeout is None else timeout
-        return normalize(self.provider.ui_call("tree", params, timeout), self.os)
+        return normalize(self.provider.ui_call("tree", params, timeout), self.guest_os.native_roles)
 
     def find(self, query):
         return {"matches": query.require("find").matches(self.tree(query.app))}
@@ -751,7 +752,7 @@ class UI:
 
     def stage_text(self, text, app=None, then=None):
         """Open text in a third-party app, select it all and press the chord then, in one Guest call."""
-        params = {"text": text, "app": app or STAGE_APPS.get(self.os, "TextEdit")}
+        params = {"text": text, "app": app or self.guest_os.stage_app}
         if then:
             key, modifiers = parse_chord(then)
             params["then"] = {"key": key, "modifiers": modifiers}
@@ -765,7 +766,7 @@ class UI:
         stock one), saving it first. {"file", "closed"}; closed is false when it was not open."""
         if not STAGED_NAME.fullmatch(re.split(r"[\\/]", file)[-1]):
             raise UsageError("%s is not a Staged document: close-staged takes the \"file\" a stage-text returned" % file)
-        params = {"file": file, "app": app or STAGE_APPS.get(self.os, "TextEdit")}
+        params = {"file": file, "app": app or self.guest_os.stage_app}
         return {"file": file, "closed": bool(self._call_with_deadline("close-staged", params)["closed"])}
 
     def notifications(self, app=None, text=None, since=None, timeout=None):

@@ -14,7 +14,6 @@ import tempfile
 import time
 from pathlib import Path
 
-from vmlab.config import UsageError
 
 BOOT_POLL_SECONDS = 0.2
 # How bad a doctor finding is (vmlab.doctor). Only FAIL makes doctor fail.
@@ -92,6 +91,21 @@ class Provider:
         self.lab = lab
         self.on_exec = None  # called with every ExecResult, so reports can note Channels and fallbacks
         self._ui_helper = None
+        self._guest_os = None
+
+    @property
+    def guest_os(self):
+        """The Guest OS object (vmlab.guestos) that decides how to run commands, name paths and
+        drive the UI in this Guest: by default the one for lab.os."""
+        if self._guest_os is None:
+            from vmlab import guestos
+
+            self._guest_os = guestos.for_os(self.lab.os)
+        return self._guest_os
+
+    @guest_os.setter
+    def guest_os(self, value):
+        self._guest_os = value
 
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
@@ -156,7 +170,7 @@ class Provider:
     def put_file(self, guest_path, data, timeout):
         """Write the bytes data to guest_path, making its folders; ~ is the Guest user's home and,
         on Windows, %VARS% expand. Returns the absolute Guest path. Built on copy_in."""
-        folder, name = split_guest_path(guest_path, self.lab.os)
+        folder, name = self.guest_os.split_path(guest_path)
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp) / name
             local.write_bytes(data)
@@ -169,19 +183,7 @@ class Provider:
 
     def _read_file(self, guest_path, path, timeout):
         """read_file of path in the Guest, named guest_path in errors."""
-        if self.lab.os == "windows":
-            # Shared for writing: a process may still be writing the file (a log, a spawned process's
-            # output), and ReadAllBytes refuses a file another handle has open for writing.
-            script = (
-                "$p = %s; if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { exit %d }; "
-                "$f = [IO.File]::Open((Get-Item -LiteralPath $p).FullName, 'Open', 'Read', 'ReadWrite, Delete'); "
-                "$m = New-Object IO.MemoryStream; $f.CopyTo($m); $f.Close(); [Convert]::ToBase64String($m.ToArray())" % (ps_path(path), NO_FILE)
-            )
-            argv = self.shell_argv(script)
-        else:
-            script = 'p=$1; %s[ -f "$p" ] || exit %d; base64 < "$p"' % (sh_expand_tilde("p"), NO_FILE)
-            argv = ["sh", "-c", script, "sh", path]
-        result = self.exec(argv, timeout)
+        result = self.exec(self.guest_os.read_file_argv(path), timeout)
         if result.code == NO_FILE:
             raise GuestError("no file %s in Guest %s" % (guest_path, self.lab.name), "check the path; ~ is the Guest user's home")
         if not result.ok:
@@ -193,9 +195,7 @@ class Provider:
 
     def spawner(self):
         """How g.spawn starts, checks and stops background processes in this Guest (vmlab.providers.spawning)."""
-        from vmlab.providers import spawning
-
-        return spawning.WindowsSpawner(self) if self.lab.os == "windows" else spawning.PosixSpawner(self)
+        return self.guest_os.spawner(self)
 
     def send_file(self, local, guest_path, timeout):
         """Copy the Host file local into the Guest over the first Channel that can carry it, all
@@ -232,32 +232,19 @@ class Provider:
 
     def shell_argv(self, command):
         """argv that runs a command line in the Guest's shell: sh, or PowerShell on Windows."""
-        if self.lab.os == "windows":
-            return ["powershell", "-NoProfile", "-NonInteractive", "-Command", command]
-        return ["sh", "-c", command]
+        return self.guest_os.shell_argv(command)
 
     def remove_paths(self, paths, timeout):
         """Delete Guest paths (files or folders; a leading ~ is the Guest user's home) if they exist."""
         if not paths:
             return
-        if self.lab.os == "windows":
-            # exit 0: PowerShell exits 1 when its last command failed, even with the error silenced,
-            # and a path that is not there is exactly what this asks for.
-            script = (
-                "foreach ($p in @(%s)) { Remove-Item -LiteralPath $p -Recurse -Force -ErrorAction SilentlyContinue }; exit 0"
-                % ", ".join(ps_path(p) for p in paths)
-            )
-            argv = ["powershell", "-NoProfile", "-NonInteractive", "-Command", script]
-        else:
-            script = 'for p in "$@"; do %srm -rf -- "$p"; done' % sh_expand_tilde("p")
-            argv = ["sh", "-c", script, "sh"] + list(paths)
-        result = self.exec(argv, timeout)
+        result = self.exec(self.guest_os.remove_paths_argv(paths), timeout)
         if not result.ok:
             raise GuestError("resetting app state %s failed: %s" % (paths, result.stderr.strip()))
 
     def probe_argv(self):
         """A command that succeeds on any healthy Guest, used to test Channels."""
-        return ["cmd", "/c", "exit 0"] if self.lab.os == "windows" else ["true"]
+        return self.guest_os.probe_argv()
 
     def screenshot(self, dest):
         """Write a PNG screenshot of the Guest's screen to dest."""
@@ -273,9 +260,7 @@ class Provider:
 
     def ui_helper(self):
         if self._ui_helper is None:
-            from vmlab import uihelpers
-
-            self._ui_helper = uihelpers.for_provider(self)
+            self._ui_helper = self.guest_os.ui_helper(self)
         return self._ui_helper
 
     def up(self):
@@ -327,20 +312,6 @@ class Provider:
             % (self.lab.name, argv, "; ".join("%s: %s" % (name, exc.message) for name, exc in failures)),
             "run `vmlab doctor %s`" % self.lab.name,
         )
-
-
-def split_guest_path(guest_path, os_name):
-    """(folder, name) of a Guest file path; a bare name is in the Guest user's home."""
-    seps = "\\/" if os_name == "windows" else "/"
-    cut = max(guest_path.rfind(sep) for sep in seps)
-    folder, name = guest_path[:cut], guest_path[cut + 1 :]
-    if not name or name in (".", "..", "~"):
-        raise UsageError("%r is not a file path; give the file's name, e.g. ~/notes.txt" % guest_path)
-    if cut < 0:
-        folder = "~"
-    elif not folder or folder.endswith(":"):
-        folder = guest_path[: cut + 1]  # the root, / or C:\
-    return folder, name
 
 
 def ps_quote(text):
