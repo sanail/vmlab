@@ -54,7 +54,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | --- | --- | --- |
 | `g.tree(app=None)` | `ui tree [--app APP]` | node tree |
 | `g.find(text=, role=, app=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
-| `g.click(text=, role=, app=, index=0)`, `g.click(at=(x, y))` | `ui click` | `{"x", "y", "element", "under"}` |
+| `g.click(text=, role=, app=, index=0, timeout=None)`, `g.click(at=(x, y))` | `ui click [--timeout S]` | `{"x", "y", "element", "under"}` |
 | `g.press("cmd+shift+space")` | `ui press CHORD` | `{"chord"}` |
 | `g.type(text)` | `ui type TEXT` | `{"typed": n}` |
 | `g.focus(app, window=None)` | `ui focus --app APP [--window T]` | `{"app", "window", "frontmost"}` |
@@ -66,7 +66,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 - A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`, `enabled`, `native_role` and `children`. Applications carry `pid`.
 - `stage_text` first closes the documents earlier stages left open in that editor (`vmlab-stage-*` files; changes typed into them are saved to those files), so each stage leaves one staged document; the editor's other documents stay.
 - `text` matches name, value and description: exact matches win, otherwise substrings. `role` takes the cross-OS or the native role.
-- `click` refuses when something else lies over the element's middle, and says what.
+- `click` refuses when nothing matches or something else lies over the element's middle, and says what. With `timeout=` (seconds, on the Scenario's clock) it first waits for the element to be there and uncovered, then raises with the last reason; use it for an element that is about to appear instead of a retry loop of your own. `at=(x, y)` ignores `timeout`.
 - Chords: `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`win`/`super`) and one key (`a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, arrows, `minus`, `comma`, `slash`, ...). They are sent by physical key, so they work on any keyboard layout; `type` sends Unicode.
 - `wait_for` takes exactly one condition and returns `"met": false` on timeout rather than raising: check it. The conditions: an element (`text=`/`role=`, with `"matches"`; `app=` narrows it to one app's and goes with them only), a process by name (`process=`), a Guest path (`file=`), a line in a Guest file (`log=` with `pattern=`, a Python regex), or a command (`exec=[argv]`: it exits 0; with `pattern=`, its stdout matches, whatever the exit code; the result carries the last answer's `code` and the tail of its `stdout`).
 - `gone=True` waits for any condition to stop holding: the element or process gone, the file removed, no matching log line, the command failing.

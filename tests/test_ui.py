@@ -38,6 +38,11 @@ TREE = {
 NODE_KEYS = {"role", "name", "value", "description", "bounds", "focused", "enabled", "native_role", "children"}
 
 
+def palette(tree):
+    """The elements of MyApp's Palette window in tree (Run is [1])."""
+    return tree["children"][0]["children"][0]["children"]
+
+
 def walk(node):
     yield node
     for child in node["children"]:
@@ -55,6 +60,19 @@ class UiTestCase(VmlabTestCase):
         r = self.project.vmlab("ui", *args)
         self.assertExit(r, code)
         return json.loads(r.out) if code == 0 else r
+
+    def write_tree(self, covered_by=None):
+        """The scripted tree, with MyApp's Run button covered by covered_by (the Fake refuses to click it)."""
+        tree = json.loads(json.dumps(TREE))
+        if covered_by:
+            palette(tree)[1]["covered_by"] = covered_by
+        (self.project.dir / "tree.json").write_text(json.dumps(tree))
+
+    def later(self, seconds, fn):
+        """fn in seconds, on a thread of its own; cancelled at cleanup if it has not run yet."""
+        timer = threading.Timer(seconds, fn)
+        timer.start()
+        self.addCleanup(timer.cancel)
 
 
 class UiCliTest(UiTestCase):
@@ -106,6 +124,39 @@ class UiCliTest(UiTestCase):
     def test_click_on_an_element_without_bounds_fails(self):
         r = self.ui("click", "--text", "Run", "--app", "Other", code=1)
         self.assertIn("no bounds", r.err)
+
+    def test_click_on_a_covered_element_fails_at_once_naming_what_covers_it(self):
+        self.write_tree(covered_by="loginwindow")
+        started = time.time()
+        r = self.ui("click", "--text", "Run", "--app", "MyApp", code=1)
+        self.assertIn("loginwindow", r.err)
+        self.assertLess(time.time() - started, 8)
+
+    def test_click_with_a_timeout_waits_for_the_element_to_appear(self):
+        tree = json.loads(json.dumps(TREE))
+        palette(tree).append({"role": "button", "name": "Later", "bounds": {"x": 300, "y": 350, "w": 40, "h": 20}})
+        self.later(1, lambda: (self.project.dir / "tree.json").write_text(json.dumps(tree)))
+        self.assertEqual(self.ui("click", "--text", "Later", "--timeout", "10")["element"]["name"], "Later")
+
+    def test_click_with_a_timeout_waits_for_the_element_to_be_uncovered(self):
+        self.write_tree(covered_by="loginwindow")
+        self.later(1, self.write_tree)
+        clicked = self.ui("click", "--text", "Run", "--app", "MyApp", "--timeout", "10")
+        self.assertEqual((clicked["x"], clicked["y"]), (250, 360))
+
+    def test_click_that_times_out_reports_the_last_reason(self):
+        started = time.time()
+        r = self.ui("click", "--text", "Nope", "--timeout", "1", code=1)
+        self.assertGreaterEqual(time.time() - started, 1)
+        self.assertIn("within 1s", r.err)
+        self.assertIn("no element to click matches text='Nope'", r.err)
+        self.write_tree(covered_by="loginwindow")
+        r = self.ui("click", "--text", "Run", "--app", "MyApp", "--timeout", "1", code=1)
+        self.assertIn("loginwindow", r.err)
+
+    def test_click_at_coordinates_ignores_the_timeout(self):
+        clicked = self.ui("click", "--at", "5", "7", "--timeout", "10")
+        self.assertEqual((clicked["x"], clicked["y"]), (5, 7))
 
     def test_press_normalises_the_chord(self):
         self.assertEqual(self.ui("press", "Shift+Command+Space")["chord"], "shift+cmd+space")
@@ -449,6 +500,31 @@ class UiScenarioTest(UiTestCase):
             TIMEOUT = 1
             def scenario(g):
                 g.wait_for(text="Nope", timeout=30)
+                g.check("unreachable", True)
+        """)
+        started = time.time()
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertLess(time.time() - started, 15)
+        self.assertIn("timeout", self.project.report()["scenarios"][0]["error"])
+
+    def test_click_with_a_timeout_in_a_scenario(self):
+        self.write_tree(covered_by="loginwindow")
+        self.project.scenario("click.py", """
+            import json, pathlib, threading
+            def scenario(g):
+                tree = pathlib.Path(%r)
+                uncovered = json.loads(tree.read_text())
+                del uncovered["children"][0]["children"][0]["children"][1]["covered_by"]
+                threading.Timer(1, lambda: tree.write_text(json.dumps(uncovered))).start()
+                g.check("clicked once uncovered", g.click(text="Run", app="MyApp", timeout=10)["x"] == 250)
+        """ % str(self.project.dir / "tree.json"))
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_a_click_timeout_is_bounded_by_the_scenario_timeout(self):
+        self.project.scenario("slow.py", """
+            TIMEOUT = 1
+            def scenario(g):
+                g.click(text="Nope", timeout=30)
                 g.check("unreachable", True)
         """)
         started = time.time()

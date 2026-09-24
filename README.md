@@ -276,7 +276,7 @@ Scenarios and the agent read and drive the Guest's UI with the same commands and
 | --- | --- | --- |
 | `ui tree [--app APP]` | `g.tree(app=None)` | the node tree below |
 | `ui find [--text T] [--role R] [--app APP]` | `g.find(text=, role=, app=)` | `{"matches": [node without children, plus "app"]}` |
-| `ui click [--text/--role/--app] [--index N]`, `ui click --at X Y` | `g.click(..., index=0)`, `g.click(at=(x, y))` | `{"x", "y", "element", "under"}` |
+| `ui click [--text/--role/--app] [--index N] [--timeout S]`, `ui click --at X Y` | `g.click(..., index=0, timeout=None)`, `g.click(at=(x, y))` | `{"x", "y", "element", "under"}` |
 | `ui press CHORD` | `g.press("cmd+shift+space")` | `{"chord": "shift+cmd+space"}` |
 | `ui type TEXT` | `g.type(text)` | `{"typed": n}` |
 | `ui focus --app APP [--window TITLE]` | `g.focus(app, window=None)` | `{"app", "window", "frontmost"}` |
@@ -288,7 +288,7 @@ Scenarios and the agent read and drive the Guest's UI with the same commands and
 Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` in screen points, pixels on Windows, or null), `focused`, `enabled`, `native_role` (e.g. `AXButton`) and `children`. The root is the `desktop`, with `truncated` true when a size limit cut the tree short; its children are applications (with `pid`), holding their windows and tray items.
 
 - `find` matches `--text` against name, value and description: exact matches win, otherwise substrings. `--role` takes the cross-OS or the native role.
-- `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point.
+- `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point. Without `--timeout` it fails at once when nothing matches or something covers the element; with it, it tries again until the element is there and uncovered, then fails with the last reason. `--at` ignores `--timeout`.
 - Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key: `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`, `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...). An unknown key is a usage error (exit 2).
 - `focus` brings a running app to the front and waits until it is frontmost; `--window` first raises its first window whose title contains TITLE. An app that is not running, or a window that is not there, is an error naming what is.
 - `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or GNOME Text Editor, `gnome-text-editor`), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.

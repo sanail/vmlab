@@ -181,9 +181,11 @@ class Guest:
         """{"matches": [...]}: elements by text (exact beats substring) and/or role, optionally in one app."""
         return self._ui_call(lambda contract: contract.find(ui.Query(text, role, app)))
 
-    def click(self, text=None, role=None, app=None, index=0, at=None):
-        """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing matches."""
-        return self._ui_call(lambda contract: contract.click(ui.Query(text, role, app), index=index, at=at))
+    def click(self, text=None, role=None, app=None, index=0, at=None, timeout=None):
+        """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing
+        matches or something covers it; with timeout (seconds), first waits for it to be there and
+        uncovered (on the Scenario's clock), then raises with the last reason."""
+        return self._ui_call(lambda contract: contract.click(ui.Query(text, role, app), index=index, at=at, timeout=timeout))
 
     def press(self, chord):
         """Press a key chord such as "cmd+shift+space", by physical key (any keyboard layout)."""

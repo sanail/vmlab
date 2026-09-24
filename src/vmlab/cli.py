@@ -255,6 +255,7 @@ def _ui_parser(sub):
     p = ui_sub.add_parser("click", parents=[common, element], help="click an element's middle (or --at X Y)")
     p.add_argument("--index", type=int, default=0, help="which match to click (default: the first)")
     p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="click this screen point instead")
+    p.add_argument("--timeout", type=float, help="seconds to wait for the element to be there and uncovered (default: fail at once; --at ignores it)")
     p = ui_sub.add_parser("press", parents=[common], help="press a key chord, e.g. cmd+shift+space")
     p.add_argument("chord")
     p = ui_sub.add_parser("type", parents=[common], help="type text into whatever has focus")
@@ -348,7 +349,7 @@ def _ui(project, args):
         result = contract.find(ui.Query(args.text, args.role, args.app))
     elif c == "click":
         at = tuple(args.at) if args.at else None
-        result = contract.click(ui.Query(args.text, args.role, args.app), index=args.index, at=at)
+        result = contract.click(ui.Query(args.text, args.role, args.app), index=args.index, at=at, timeout=args.timeout)
     elif c == "press":
         result = contract.press(args.chord)
     elif c == "type":

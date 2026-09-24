@@ -536,6 +536,24 @@ def scenario(g):
 """))
 
     @ui
+    def test_08b_ui_a_click_with_a_timeout_waits_for_a_window_opened_just_before_it(self):
+        self.assertPassed(*self.target.scenario("ui_click_timeout.py", UI + """
+FAKE = %r  # the Fake editor opens staged documents only
+EDITOR = {"macos": ["open", "-a", "TextEdit"], "windows": ["notepad.exe"], "linux": ["gnome-text-editor"]}
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:8]
+    text = "opened " + tag
+    if FAKE:
+        app = g.stage_text(text)["app"]
+    else:
+        app = g.stage_text("staged " + tag)["app"]
+        g.spawn(EDITOR[g.os] + [g.put("~/vmlab-opened-%%s.txt" %% tag, text)])  # its window is not there yet
+    clicked = g.click(role="textarea", text=text, app=app, timeout=30)
+    g.check("the click waited for the new document's text area", clicked["element"]["value"] == text, detail=clicked)
+""" % (self.target.provider == "fake")))
+
+    @ui
     def test_09_ui_a_cold_webkit_page_is_read_on_the_first_try(self):
         # WebKit builds its accessibility tree lazily and hands it to the next client
         # to connect. Safari is started afresh and waited for through the window

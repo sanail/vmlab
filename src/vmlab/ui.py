@@ -24,7 +24,7 @@ from vmlab.config import UsageError, is_argv
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path, ps_quote, sh_expand_tilde
 
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
-POLL_SECONDS = 0.25  # between checks of a wait_for condition; the condition and timeout decide when it ends
+POLL_SECONDS = 0.25  # between checks of a wait_for condition or tries of a click with a timeout; they and the timeout decide when it ends
 EXTRA_KEYS = ("native_subrole", "bundle_id")
 STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text) gives up before its call would be killed
 # sh: $1 with a leading ~ expanded to the Guest user's home, as $p
@@ -258,6 +258,14 @@ STDOUT_TAIL = 2000  # characters of an exec condition's last output kept in the 
 MISSING_CODES = (127, 9009)
 MISSING_MARKS = ("CommandNotFoundException", "is not recognized as")
 LINUX_NAME_BYTES = 15  # of a process's name, Linux keeps (and pgrep matches) this many
+
+
+# How every helper refuses a click on a covered element (or one scrolled out of view).
+COVERED = "something else is at ("
+
+
+class NotClickable(GuestError):
+    """A click found no element to click, or something else on top of it: a click with a timeout tries again."""
 
 
 class NoAnswer(GuestError):
@@ -516,21 +524,45 @@ class UI:
     def find(self, query):
         return {"matches": query.require("find").matches(self.tree(query.app))}
 
-    def click(self, query=None, index=0, at=None):
-        """Click the index-th match's middle, refusing if something else is on top of it; or click at (x, y)."""
+    def click(self, query=None, index=0, at=None, timeout=None):
+        """Click the index-th match's middle, refusing if something else is on top of it; or click at (x, y).
+
+        With timeout (seconds), retry until the element is there and uncovered; when time runs
+        out, raise with the last reason. at=(x, y) clicks ignore timeout.
+        """
         if at is not None:
             x, y = at
             result = self._call("click", {"x": x, "y": y})
             return {"x": result["x"], "y": result["y"], "element": None, "under": result.get("under")}
-        matches = self.find(query.require("click"))["matches"]
+        query.require("click")
+        if timeout is None:
+            return self._click(query, index)
+        deadline = time.time() + timeout
+        while True:
+            try:
+                return self._click(query, index)
+            except NotClickable as exc:
+                now = time.time()
+                if now >= deadline:
+                    raise GuestError("could not click %s within %gs: %s" % (query, timeout, exc.message), exc.fix)
+                time.sleep(min(POLL_SECONDS, deadline - now))
+
+    def _click(self, query, index):
+        """One try at clicking; NotClickable when the element is not there or is covered."""
+        matches = self.find(query)["matches"]
         if len(matches) <= index:
-            raise GuestError("no element to click matches %s (%d found)" % (query, len(matches)), "look at `vmlab ui tree` for what is on screen")
+            raise NotClickable("no element to click matches %s (%d found)" % (query, len(matches)), "look at `vmlab ui tree` for what is on screen")
         element = matches[index]
         b = element["bounds"]
         if not b or b["w"] <= 0 or b["h"] <= 0:
-            raise GuestError("the element matching %s has no bounds on screen" % query, "it may be hidden; wait for it to appear, or click another element")
+            raise NotClickable("the element matching %s has no bounds on screen" % query, "it may be hidden; wait for it to appear, or click another element")
         x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
-        result = self._call("click", {"x": x, "y": y, "expect": {"label": label(element), "bounds": b}})
+        try:
+            result = self._call("click", {"x": x, "y": y, "expect": {"label": label(element), "bounds": b}})
+        except GuestError as exc:
+            if type(exc) is GuestError and COVERED in exc.message:
+                raise NotClickable(exc.message)
+            raise
         return {"x": result["x"], "y": result["y"], "element": element, "under": result.get("under")}
 
     def press(self, chord):

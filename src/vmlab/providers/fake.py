@@ -171,7 +171,8 @@ class FakeProvider(Provider):
     def ui_call(self, command, params, timeout):
         """The UI contract without a helper: the scripted tree, plus a text editor that stage-text opens.
 
-        Clicks and key presses are recorded; in the editor, a click focuses the text
+        Clicks and key presses are recorded; a click on a scripted element with "covered_by" refuses,
+        as a helper does when something else is on top of it. In the editor, a click focuses the text
         area, cmd+a selects all, cmd+c / cmd+v copy and paste (or ctrl+...), and typing replaces
         the selection. The clipboard and the editor live in the Guest's filesystem,
         so restoring Clean state clears them.
@@ -183,7 +184,7 @@ class FakeProvider(Provider):
         editor = state.get("editor")
         area = editor["children"][0]["children"][0] if editor else None
         if command == "tree":
-            tree = self._scripted_tree()
+            tree = _uncovered(self._scripted_tree())
             apps = tree.get("children", []) + ([editor] if editor else [])
             if state.get("frontmost"):
                 apps = [dict(a, focused=a.get("name") == state["frontmost"]) for a in apps]
@@ -191,6 +192,10 @@ class FakeProvider(Provider):
                 apps = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()]
             return dict(tree, children=apps)
         if command == "click":
+            cover = _cover(self._scripted_tree(), params.get("expect", {}).get("bounds"))
+            if cover:
+                x, y = params["x"], params["y"]
+                raise GuestError("UI click failed in the Guest (fake): something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (x, y, cover))
             if area and _inside(area["bounds"], params["x"], params["y"]):
                 area["focused"], state["selected"] = True, False
             self._save_ui_state(state)
@@ -305,6 +310,21 @@ class _EmulatedHelper:
 def _shortcut(chord):
     """The key of an editing shortcut, cmd+<key> or ctrl+<key> (whichever the Lab's OS uses), else None."""
     return chord["key"] if chord["modifiers"] in (["cmd"], ["ctrl"]) else None
+
+
+def _cover(node, bounds):
+    """What covers the scripted element at bounds (its "covered_by"), if anything."""
+    if bounds and node.get("covered_by") and node.get("bounds") == bounds:
+        return node["covered_by"]
+    return next(filter(None, (_cover(child, bounds) for child in node.get("children", []))), None)
+
+
+def _uncovered(node):
+    """The scripted tree as a helper reads it: without "covered_by"."""
+    out = {k: v for k, v in node.items() if k != "covered_by"}
+    if "children" in node:
+        out["children"] = [_uncovered(child) for child in node["children"]]
+    return out
 
 
 def _inside(bounds, x, y):

@@ -50,7 +50,7 @@ Tell the user what this means for real users: an ad-hoc signed app's grant is ti
 
 ## Menu bar extras
 
-An app's status item (its tray icon) is a `menubaritem` of the app, and its menu's items are in the tree even while it is closed, with no bounds. Read them there; to choose one, open the menu first with `g.click(role="menubaritem", app=APP)` (the status item is usually the app's only nameless one), then click the item. Right after a launch `loginwindow` can lay a window over the menu bar for a moment, and the click refuses the covered item: wait a second and click again.
+An app's status item (its tray icon) is a `menubaritem` of the app, and its menu's items are in the tree even while it is closed, with no bounds. Read them there; to choose one, open the menu first with `g.click(role="menubaritem", app=APP)` (the status item is usually the app's only nameless one), then click the item. Right after a launch `loginwindow` can lay a window over the menu bar for a moment, and the click refuses the covered item: click with a timeout, `g.click(role="menubaritem", app=APP, timeout=10)`, which waits until it is uncovered.
 
 ## Scripting System Events
 
