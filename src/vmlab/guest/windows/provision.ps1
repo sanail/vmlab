@@ -100,6 +100,21 @@ Say 'UTF-8 as the code page of every program (after the reboot)'
 $codepages = 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'
 foreach ($name in 'ACP', 'OEMCP', 'MACCP') { Set-Value $codepages $name '65001' String }
 
+Say 'native code for PowerShell (NGEN; about a minute)'
+# Every call starts PowerShell two or three times. A new Windows has no native images for its
+# own architecture yet, so each start compiles PowerShell's assemblies (~1 s more per start).
+# Windows makes them in idle maintenance, which a Guest loses when it is restored to its Clean
+# state: they go in the Base guest. First load what the calls use (call.ps1, ssh-call.ps1, the
+# UI helper), then compile every assembly this session has loaded from the GAC.
+$null = '{}' | ConvertFrom-Json | ConvertTo-Json
+$null = New-Object -ComObject Schedule.Service
+Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, WindowsBase, System.Windows.Forms, System.Drawing, System.Web.Extensions
+$ngen = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'ngen.exe'
+foreach ($assembly in [AppDomain]::CurrentDomain.GetAssemblies() | Where-Object { $_.GlobalAssemblyCache }) {
+    & $ngen install $assembly.Location /nologo 2>&1 | Out-Null
+    if ($LASTEXITCODE) { Say "  ngen failed for $($assembly.GetName().Name) (exit $LASTEXITCODE): its calls start slower" }
+}
+
 $hostKey = "$env:ProgramData\ssh\ssh_host_ed25519_key.pub"
 for ($i = 0; -not (Test-Path $hostKey) -and $i -lt 100; $i++) { Start-Sleep -Milliseconds 100 }  # sshd writes it when it first starts
 Say ("vmlab-host-key: " + (Get-Content -Raw $hostKey).Trim())

@@ -38,7 +38,7 @@ from vmlab.providers.fusion import (
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
 
-PROVISION_VERSION = 1  # bump when provision.ps1 changes; `base create` then re-provisions
+PROVISION_VERSION = 2  # bump when provision.ps1 changes; `base create` then re-provisions
 PROBE = ["cmd", "/c", "exit 0"]
 ELEVATION_TIMEOUT = 180  # s: Windows cancels an unanswered UAC prompt after about two minutes
 POLICIES = r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -376,7 +376,7 @@ def _provision(wizard, name, vm):
     record["elevated"] = True
     registry.put(name, record)
 
-    wizard.out("provisioning %s (OpenSSH, autologin, no updates or sleep, UTF-8; a few minutes)" % vm.name)
+    wizard.out("provisioning %s (OpenSSH, autologin, no updates or sleep, UTF-8, native PowerShell; a few minutes)" % vm.name)
     creds = credentials(vm.name)
     stdin = json.dumps({
         "script": pkgutil.get_data("vmlab", "guest/windows/provision.ps1").decode("ascii"),

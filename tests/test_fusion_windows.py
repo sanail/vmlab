@@ -55,7 +55,7 @@ class WindowsTestCase(FusionTestCase):
         records = json.loads(path.read_text()) if path.exists() else {}
         records["windows-11"] = {
             "provider": "fusion", "os": "windows", "arch": "arm64", "vm": vm, "vmx": str(vmx), "image": "/somewhere/Windows 11.vmx",
-            "user": "tester", "installed": True, "provisioned": 1, "provisioned_id": provisioned_id, "snapshot": snapshot, "elevated": True,
+            "user": "tester", "installed": True, "provisioned": 2, "provisioned_id": provisioned_id, "snapshot": snapshot, "elevated": True,
         }  # fmt: skip
         path.write_text(json.dumps(records))
         return vmx
@@ -115,7 +115,16 @@ class WindowsDoctorTest(WindowsTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v1\)")
+        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v2\)")
+
+    def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
+        self.set_record(provisioned=1)
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"warn\s+win: Base guest windows-11: provisioned by an older vmlab \(v1; this one provisions v2\)")
+        self.assertIn("fix: vmlab base create windows-11", r.out)
 
     def test_a_guest_that_asks_for_elevation_is_a_warning(self):
         self.set_record(elevated=False)
