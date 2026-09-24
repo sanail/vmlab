@@ -472,37 +472,68 @@ def scenario(g):
 """))
 
     @ui
-    def test_07b_ui_a_stage_closes_the_staged_document_before_it(self):
-        self.assertPassed(*self.target.scenario("ui_restage.py", UI + """
+    def test_07b_ui_close_staged_closes_just_its_staged_document(self):
+        proc, report = self.target.scenario("ui_close_staged.py", UI + """
 import re
 
-FAKE = %r  # the Fake editor opens staged documents only
+FAKE = %r  # the Fake editor opens Staged documents only
 EDITOR = {"macos": ["open", "-a", "TextEdit"], "windows": ["notepad.exe"], "linux": ["gnome-text-editor"]}
+COPY = {"macos": "cmd+c"}
 
 def stems(g, app):
-    # The staged documents the editor shows, by name: in window titles, tabs and proxy icons alike.
-    return sorted({m for n in walk(g.tree(app=app)) for m in re.findall(r"vmlab-stage-[0-9A-Fa-f]{8}", n["name"] or "")})
+    # The documents named like staged ones the editor shows: in window titles, tabs and proxy icons alike.
+    return {m for n in walk(g.tree(app=app)) for m in re.findall(r"vmlab-stage-[0-9A-Fa-f]{8}", n["name"] or "")}
+
+def stem(path):
+    return re.search(r"vmlab-stage-[0-9A-Fa-f]{8}", path).group(0)
 
 def scenario(g):
     tag = uuid.uuid4().hex[:8]
     first = g.stage_text("first " + tag)
     app = first["app"]
     g.type("changed " + tag)  # a document changed since it was staged closes too
-    if not FAKE:
-        kept = g.put("~/vmlab-kept-%%s.txt" %% tag, "kept " + tag)
-        g.spawn(EDITOR[g.os] + [kept])
-        opened = g.wait_for(text="vmlab-kept-" + tag, app=app, timeout=30)
+    own = "vmlab-stage-" + uuid.uuid4().hex[:8]  # the editor's own document, named like a staged one
+    if FAKE:
+        outside = "/home/contract/%%s.txt" %% own
+    else:
+        outside = g.put("~/%%s.txt" %% own, "own " + tag)
+        g.spawn(EDITOR[g.os] + [outside])
+        opened = g.wait_for(text=own, app=app, timeout=30)
         g.check("the editor opened a document of its own", opened["met"], detail=opened)
     second = g.stage_text("second " + tag)
-    stem = re.search(r"vmlab-stage-[0-9A-Fa-f]{8}", second["file"]).group(0)
-    g.check("the second stage leaves just its own staged document", stems(g, app) == [stem], detail=[stems(g, app), second])
     g.check("the second's text is selected and frontmost", (second["selected"], second["frontmost"]) == ("second " + tag, app), detail=second)
+    shown = stems(g, app)
+    g.check("a stage closes nothing", {stem(first["file"]), stem(second["file"])} <= shown and (FAKE or own in shown), detail=sorted(shown))
+
+    closed = g.close_staged(first)
+    g.check("close_staged closes the first", closed == {"file": first["file"], "closed": True}, detail=closed)
+    shown = stems(g, app)
+    g.check("and no other", stem(first["file"]) not in shown and stem(second["file"]) in shown and (FAKE or own in shown), detail=sorted(shown))
+    g.press(COPY.get(g.os, "ctrl+c"))
+    g.check("the second is still in front with its text selected", g.clipboard()["text"] == "second " + tag, detail=g.clipboard())
+    again = g.close_staged(first["file"])
+    g.check("closing it again finds it gone", again == {"file": first["file"], "closed": False}, detail=again)
+    try:
+        g.close_staged(outside)
+        refused = None
+    except Exception as exc:
+        refused = str(exc)
+    g.check("a document outside the staging folder is refused", refused and "not a Staged document" in refused, detail=refused)
     if not FAKE:
-        kept = g.find(text="vmlab-kept-" + tag, app=app)["matches"]
-        g.check("the editor's own document stays open", kept, detail=kept)
-    third = g.stage_text("third " + tag)
-    g.check("so does a third", len(stems(g, app)) == 1 and third["selected"] == "third " + tag, detail=[stems(g, app), third])
-""" % (self.target.provider == "fake")))
+        g.check("and stays open", own in stems(g, app), detail=sorted(stems(g, app)))
+        g.exec(cmd(g, "rm -f '%%s'" %% outside, "Remove-Item -Force -LiteralPath '%%s'" %% outside))
+    # The second stays open: its Run closes it.
+""" % (self.target.provider == "fake"))
+        self.assertPassed(proc, report)
+        [first, second] = report["scenarios"][0]["staged"]
+        self.assertEqual((first["ended"], second["ended"]), ("scenario", "run"), report["scenarios"][0]["staged"])
+        self.assertPassed(*self.target.scenario("ui_close_staged_after.py", UI + """
+import re
+
+def scenario(g):
+    shown = [n["name"] for n in walk(g.tree()) if %r in (n["name"] or "")]
+    g.check("the Staged document the Scenario left open was closed with its Run", not shown, detail=sorted(shown))
+""" % os.path.splitext(os.path.basename(second["file"].replace("\\", "/")))[0]))
 
     @ui
     def test_08_ui_input_clipboard_click_and_wait(self):

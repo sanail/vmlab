@@ -16,6 +16,7 @@
 //   clipboard   {"set": s?}
 //   focus       {"app": name, "window": title substring?, "timeout": seconds}
 //   stage-text  {"text": s, "app": name, "then": {"key", "modifiers"}?, "timeout": seconds}
+//   close-staged {"file": path stage-text returned, "app": name, "timeout": seconds}
 //
 // Traps (README: "macOS Guests with Tart"):
 // - WebKit builds a page's accessibility tree lazily and hands it to the NEXT
@@ -393,29 +394,48 @@ func focus(_ params: [String: Any]) {
     emit(["app": app.localizedName ?? appName, "window": raised, "frontmost": frontmostName()])
 }
 
-/// Close the windows of documents earlier stages left open in the app, so a stage leaves just its
-/// own; the app's other documents stay. Their close buttons ask the app to close them: TextEdit saves
-/// a document itself, even one a Scenario typed into, so nothing asks about saving.
-func closeStaged(_ appName: String, _ deadline: Date) {
-    guard let app = appsFor(appName).first else { return }
+/// The Staged document at path, symlinks resolved; fails unless it is a file stage-text writes.
+func stagedFile(_ path: String) -> URL {
+    let url = URL(fileURLWithPath: path)
+    let staging = URL(fileURLWithPath: NSTemporaryDirectory()).resolvingSymlinksInPath()
+    guard url.lastPathComponent.range(of: "^\(STAGE)[0-9a-fA-F]{8}\\.txt$", options: .regularExpression) != nil,
+          url.deletingLastPathComponent().resolvingSymlinksInPath().path == staging.path
+    else { fail("\(path) is not a Staged document: stage-text writes them to \(staging.path) as \(STAGE)XXXXXXXX.txt") }
+    return url.resolvingSymlinksInPath()
+}
+
+/// The app's window showing file, known by its document's path.
+func documentWindow(_ ax: AXUIElement, _ file: URL) -> AXUIElement? {
+    let windows = attribute(ax, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+    return windows.first { window in
+        guard let doc = text(window, kAXDocumentAttribute as String), let url = URL(string: doc), url.isFileURL else { return false }
+        return url.resolvingSymlinksInPath().path == file.path
+    }
+}
+
+/// Close the Staged document params["file"] in params["app"]; the app's other documents stay. Its
+/// window's close button asks the app to close it: TextEdit saves a document itself, even one a
+/// Scenario typed into, so nothing asks about saving. Pressing it leaves the other windows' order.
+func closeStaged(_ params: [String: Any]) {
+    guard let path = params["file"] as? String, let appName = params["app"] as? String else { fail("close-staged needs file and app") }
+    let file = stagedFile(path)
+    let deadline = Date().addingTimeInterval(params["timeout"] as? Double ?? 30)
+    guard let app = appsFor(appName).first else { return emit(["file": path, "closed": false]) }
     let ax = AXUIElementCreateApplication(app.processIdentifier)
     AXUIElementSetMessagingTimeout(ax, 3)
-    func staged() -> [AXUIElement] {
-        let windows = attribute(ax, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
-        return windows.filter { (text($0, kAXTitleAttribute as String) ?? "").range(of: STAGE + "[0-9a-fA-F]{8}", options: .regularExpression) != nil }
-    }
+    guard documentWindow(ax, file) != nil else { return emit(["file": path, "closed": false]) }
     let closed = waitFor(deadline) { () -> Bool? in
-        let left = staged()
-        if left.isEmpty { return true }
-        if let button = attribute(left[0], kAXCloseButtonAttribute as String), CFGetTypeID(button) == AXUIElementGetTypeID() {
+        guard let window = documentWindow(ax, file) else { return true }
+        if let button = attribute(window, kAXCloseButtonAttribute as String), CFGetTypeID(button) == AXUIElementGetTypeID() {
             AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
         }
         return nil
     }
     if closed == nil {
-        let titles = staged().map { text($0, kAXTitleAttribute as String) ?? "" }
-        fail("\(appName) did not close the documents earlier stage-text calls opened in time; its windows: \(titles)")
+        let windows = attribute(ax, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+        fail("\(appName) did not close \(file.lastPathComponent) in time; its windows: \(windows.map { text($0, kAXTitleAttribute as String) ?? "" })")
     }
+    emit(["file": path, "closed": true])
 }
 
 /// Open text in app, select it all and, in the same call, press the trigger chord,
@@ -423,7 +443,6 @@ func closeStaged(_ appName: String, _ deadline: Date) {
 func stageText(_ params: [String: Any]) {
     guard let s = params["text"] as? String, let appName = params["app"] as? String else { fail("stage-text needs text and app") }
     let deadline = Date().addingTimeInterval(params["timeout"] as? Double ?? 30)
-    closeStaged(appName, deadline)
     let file = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(STAGE)\(UUID().uuidString.prefix(8)).txt")
     do { try s.write(to: file, atomically: true, encoding: .utf8) } catch { fail("cannot write \(file.path): \(error)") }
     let open = Process()
@@ -482,6 +501,7 @@ case "press": pressCommand(params)
 case "type": typeCommand(params)
 case "clipboard": clipboard(params)
 case "stage-text": stageText(params)
+case "close-staged": closeStaged(params)
 case "focus": focus(params)
 default: fail("unknown command \(args[1])")
 }

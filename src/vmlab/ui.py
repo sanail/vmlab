@@ -26,11 +26,13 @@ from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
 POLL_SECONDS = 0.25  # between checks of a wait_for condition or tries of a click with a timeout; they and the timeout decide when it ends
 EXTRA_KEYS = ("native_subrole", "bundle_id")
-STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text) gives up before its call would be killed
+STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text, close-staged) gives up before its call would be killed
 # sh: $1 with a leading ~ expanded to the Guest user's home, as $p
 EXPAND_TILDE = "p=$1; " + sh_expand_tilde("p")
 
 STAGE_APPS = {"macos": "TextEdit", "windows": "Notepad", "linux": "gnome-text-editor"}
+# The name of every file stage-text writes (8 random hex digits); the helper checks its folder.
+STAGED_NAME = re.compile(r"vmlab-stage-[0-9a-f]{8}\.txt", re.I)
 
 # Native roles to cross-OS roles. Anything unlisted becomes its native role, lowercased, without spaces or "AX".
 MACOS_ROLES = {
@@ -593,6 +595,14 @@ class UI:
         pressed = result.get("pressed")
         result["pressed"] = chord_text(pressed["key"], pressed["modifiers"]) if pressed else None
         return result
+
+    def close_staged(self, file, app=None):
+        """Close the Staged document at the Guest path file in the editor app (default: the OS's
+        stock one), saving it first. {"file", "closed"}; closed is false when it was not open."""
+        if not STAGED_NAME.fullmatch(re.split(r"[\\/]", file)[-1]):
+            raise UsageError("%s is not a Staged document: close-staged takes the \"file\" a stage-text returned" % file)
+        params = {"file": file, "app": app or STAGE_APPS.get(self.os, "TextEdit")}
+        return {"file": file, "closed": bool(self._call_with_deadline("close-staged", params)["closed"])}
 
     def ask(self, condition, argv, timeout, answers=None):
         """The result of condition's command argv, as the Guest answered it. NoAnswer when it came

@@ -183,41 +183,73 @@ function focus(params) {
   return { app: ObjC.unwrap(app.localizedName) || params.app, window: raised, frontmost: front.isNil() ? "" : ObjC.unwrap(front.localizedName) };
 }
 
-// Close the windows of documents earlier stages left open in the app, so a stage leaves just its
-// own; the app's other documents stay. Their close buttons ask the app to close them: TextEdit saves
-// a document itself, even one a Scenario typed into, so nothing asks about saving.
-function closeStaged(appName, deadline) {
-  // Through System Events, not nsApps: NSWorkspace's list of apps, once read, never refreshes
-  // here (delay does not run the run loop), so stageText would not see the app it opens next.
-  const procs = events.processes.whose({ _or: [{ name: appName }, { bundleIdentifier: appName }] })();
-  if (!procs.length) return;
-  const staged = () => {
+// A path with symlinks resolved, as NSString resolves them (both sides of a comparison alike).
+function resolved(path) {
+  return ObjC.unwrap($(path).stringByResolvingSymlinksInPath);
+}
+
+// The Staged document at path, resolved; fails unless it is a file stage-text writes.
+function stagedFile(path) {
+  const staging = resolved(ObjC.unwrap($.NSTemporaryDirectory()));
+  const name = ObjC.unwrap($(path).lastPathComponent);
+  if (!new RegExp("^" + STAGE + "[0-9a-fA-F]{8}\\.txt$").test(name) || resolved(ObjC.unwrap($(path).stringByDeletingLastPathComponent)) !== staging) {
+    fail(path + " is not a Staged document: stage-text writes them to " + staging + " as " + STAGE + "XXXXXXXX.txt");
+  }
+  return resolved(path);
+}
+
+// The window of proc showing file, known by its document's path; null if none.
+function documentWindow(proc, file) {
+  let windows;
+  try {
+    windows = proc.windows();
+  } catch (e) {
+    return null; // the app quit meanwhile
+  }
+  return windows.find((w) => {
     try {
-      return procs[0].windows().filter((w) => new RegExp(STAGE + "[0-9a-fA-F]{8}").test(str(w.name()) || ""));
+      const url = $.NSURL.URLWithString(w.attributes.byName("AXDocument").value());
+      return !url.isNil() && url.isFileURL && resolved(ObjC.unwrap(url.path)) === file;
     } catch (e) {
-      return []; // the app quit meanwhile
+      return false; // no document, or the window closed meanwhile
     }
-  };
-  // One at a time: System Events names a window by its index, which the closing of another shifts.
+  }) || null;
+}
+
+// Close the Staged document params.file in params.app; the app's other documents stay. Its
+// window's close button asks the app to close it: TextEdit saves a document itself, even one a
+// Scenario typed into, so nothing asks about saving. Pressing it leaves the other windows' order.
+function closeStaged(params) {
+  if (!params.file || !params.app) fail("close-staged needs file and app");
+  const file = stagedFile(params.file);
+  const deadline = Date.now() + (params.timeout || 30) * 1000;
+  // Through System Events, not nsApps: NSWorkspace's list of apps, once read, never refreshes
+  // here (delay does not run the run loop).
+  const procs = events.processes.whose({ _or: [{ name: params.app }, { bundleIdentifier: params.app }] })();
+  if (!procs.length || !documentWindow(procs[0], file)) return { file: params.file, closed: false };
   const closed = waitFor(deadline, () => {
-    const left = staged();
-    if (!left.length) return true;
+    const window = documentWindow(procs[0], file);
+    if (!window) return true;
     try {
-      left[0].buttons.whose({ subrole: "AXCloseButton" })()[0].click();
+      window.buttons.whose({ subrole: "AXCloseButton" })()[0].click();
     } catch (e) {
-      // closed meanwhile; one that stays is named below
+      // closed meanwhile
     }
     return false;
   });
   if (!closed) {
-    fail(appName + " did not close the documents earlier stage-text calls opened in time; its windows: " + JSON.stringify(staged().map((w) => str(w.name()))));
+    let titles = [];
+    try {
+      titles = procs[0].windows().map((w) => str(w.name()));
+    } catch (e) {}
+    fail(params.app + " did not close " + ObjC.unwrap($(file).lastPathComponent) + " in time; its windows: " + JSON.stringify(titles));
   }
+  return { file: params.file, closed: true };
 }
 
 function stageText(params) {
   const deadline = Date.now() + (params.timeout || 30) * 1000;
-  closeStaged(params.app, deadline);
-  const stem = STAGE + Math.random().toString(16).slice(2, 10);
+  const stem = STAGE + ObjC.unwrap($.NSUUID.UUID.UUIDString).slice(0, 8);
   const file = ObjC.unwrap($.NSTemporaryDirectory()) + stem + ".txt";
   $(params.text).writeToFileAtomicallyEncodingError(file, true, $.NSUTF8StringEncoding, null);
   const shell = Application.currentApplication();
@@ -271,6 +303,7 @@ function run(argv) {
     case "type": events.keystroke(params.text); result = { typed: Array.from(params.text).length }; break;
     case "clipboard": result = clipboard(params); break;
     case "stage-text": result = stageText(params); break;
+    case "close-staged": result = closeStaged(params); break;
     case "focus": result = focus(params); break;
     default: fail("unknown command " + command);
   }

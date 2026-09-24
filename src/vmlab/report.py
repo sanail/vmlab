@@ -4,7 +4,7 @@ import json
 import shlex
 import xml.etree.ElementTree as ET
 
-from vmlab.scenario import BY_ITSELF, BY_SCENARIO, OUTPUT_TAIL, STILL_RUNNING, VISUAL, WITH_RUN
+from vmlab.scenario import ALREADY_GONE, BY_ITSELF, BY_SCENARIO, OUTPUT_TAIL, STILL_OPEN, STILL_RUNNING, VISUAL, WITH_RUN
 
 STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
 # How a spawned process ended: its report entry's "ended".
@@ -13,6 +13,13 @@ ENDED = {
     WITH_RUN: "stopped at the end of the Run",
     BY_ITSELF: "had exited by itself",
     STILL_RUNNING: "still running: vmlab could not stop it",
+}
+# How a Staged document ended: its report entry's "ended".
+CLOSED = {
+    BY_SCENARIO: "closed by the Scenario",
+    WITH_RUN: "closed at the end of the Run",
+    ALREADY_GONE: "already closed at the end of the Run",
+    STILL_OPEN: "still open: vmlab could not close it",
 }
 
 
@@ -83,6 +90,11 @@ def still_running(lab, scenario, entry):
         lab, scenario, command_line(entry["argv"]), entry["pid"], entry["stop_error"].splitlines()[0])
 
 
+def still_open(lab, scenario, entry):
+    """The warning about a Staged document vmlab could not close (its report entry)."""
+    return "warning: %s/%s: Staged document %s is still open in %s: %s" % (lab, scenario, entry["file"], entry["app"], entry["close_error"].splitlines()[0])
+
+
 def _evidence(scenario):
     return "\n".join(["evidence:"] + scenario["screenshots"]) if scenario["screenshots"] else ""
 
@@ -127,6 +139,10 @@ def _markdown(report):
             lines.append("- Channel %s failed (%s); %s served %s" % (f["from"], f["reason"], f["to"], f["argv"]))
         if s["error"]:
             lines += ["", "```", s["error"], "```"]
+        for d in s["staged"]:
+            lines += ["", "- Staged document %s: %s" % (d["file"], CLOSED[d["ended"]])]
+            if d.get("close_error"):
+                lines.append("  %s" % d["close_error"].splitlines()[0])
         for p in s["spawned"]:
             lines += ["", "- spawned `%s` (pid %s, output in %s): %s" % (command_line(p["argv"]), p["pid"], p["log"], ENDED[p["ended"]])]
             if p.get("stop_error"):

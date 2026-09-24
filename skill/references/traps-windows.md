@@ -1,6 +1,6 @@
 # Windows Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing pace, earlier staged documents piling up as Notepad tabs (each `stage-text` saves and closes them; the tabs a Scenario opened itself stay), output encoding (UTF-8 everywhere), sound (Guests have no sound device, so nothing reaches the Host's speakers), and OneDrive's prompts (OneDrive is off).
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing pace, output encoding (UTF-8 everywhere), sound (Guests have no sound device, so nothing reaches the Host's speakers), and OneDrive's prompts (OneDrive is off).
 
 ## Installing needs elevation
 

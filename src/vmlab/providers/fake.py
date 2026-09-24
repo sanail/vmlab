@@ -4,7 +4,7 @@ It is shipped (not test-only) so the CLI can be exercised end to end without a
 hypervisor. The Guest's filesystem is a plain directory; commands run on the
 Host with that directory as the working directory and are recorded in
 commands.jsonl. The UI contract serves the scripted tree and emulates a text
-editor for stage-text (ui_call). Options, under [labs.<name>.fake]:
+editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fake]:
 
     ui_tree = "path/to/tree.json"   # scripted UI tree, relative to the config file
     channels = ["ssh", "exec"]      # Channel names, preferred first
@@ -33,6 +33,7 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
+FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are (only by name: nothing is written there)
 OPTIONS = ("ui_tree", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds")
 
 
@@ -169,7 +170,8 @@ class FakeProvider(Provider):
             raise ConfigError(config_path, key + ".boot_seconds", "must be a number >= 0", "e.g. boot_seconds = 2")
 
     def ui_call(self, command, params, timeout):
-        """The UI contract without a helper: the scripted tree, plus a text editor that stage-text opens.
+        """The UI contract without a helper: the scripted tree, plus a text editor with a window per
+        Staged document, the front one first: stage-text opens one, close-staged closes one.
 
         Clicks and key presses are recorded; a click on a scripted element with "covered_by" refuses,
         as a helper does when something else is on top of it. In the editor, a click focuses the text
@@ -236,18 +238,33 @@ class FakeProvider(Provider):
             self._save_ui_state(state)
             return {"app": app["name"], "window": window, "frontmost": app["name"]}
         if command == "stage-text":
-            # A document of its own, in place of the one the stage before opened, as the helpers do.
-            path = "/tmp/vmlab-stage-%s.txt" % uuid.uuid4().hex[:8]
+            path = "%s/vmlab-stage-%s.txt" % (FAKE_TEMP, uuid.uuid4().hex[:8])
             window = {"role": "window", "name": os.path.basename(path), "bounds": {"x": 100, "y": 100, "w": 600, "h": 400}, "children": [
                 {"role": "textarea", "value": params["text"], "focused": True, "bounds": {"x": 100, "y": 130, "w": 600, "h": 370}},
             ]}  # fmt: skip
-            state["editor"] = {"role": "application", "name": params["app"], "pid": 0, "focused": True, "children": [window]}
+            for earlier in editor["children"] if editor else []:
+                earlier["children"][0]["focused"] = False
+            state["editor"] = {"role": "application", "name": params["app"], "pid": 0, "focused": True, "children": [window] + (editor["children"] if editor else [])}
             state["selected"], state["frontmost"] = True, params["app"]
             pressed = params.get("then")
             if pressed and _shortcut(pressed) == "c":
                 state["clipboard"] = params["text"]
             self._save_ui_state(state)
             return {"app": params["app"], "file": path, "frontmost": params["app"], "selected": params["text"], "pressed": pressed}
+        if command == "close-staged":
+            folder, name = os.path.split(params["file"])
+            if folder != FAKE_TEMP:
+                raise GuestError("UI close-staged failed in the Guest (fake): %s is not a Staged document: it is not in %s" % (params["file"], FAKE_TEMP))
+            windows = editor["children"] if editor else []
+            left = [w for w in windows if w["name"] != name]
+            if len(left) < len(windows):
+                if windows[0]["name"] == name:  # the front one: the next comes to the front
+                    state["selected"] = False
+                    if left:
+                        left[0]["children"][0]["focused"] = True
+                state["editor"] = dict(editor, children=left) if left else None
+                self._save_ui_state(state)
+            return {"file": params["file"], "closed": len(left) < len(windows)}
         raise GuestError("unknown UI command %r" % command)
 
     def ui_helper(self):

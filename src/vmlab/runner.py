@@ -25,7 +25,7 @@ from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
-from vmlab.scenario import STILL_RUNNING, ChannelUse, Guest, run_scenario
+from vmlab.scenario import STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, run_scenario
 
 
 def discover(project, names):
@@ -283,8 +283,9 @@ class _LabRun:
         for path in scenarios:
             guest = Guest(lab, provider, self.run_dir, launch_app)
             provider.on_exec = guest.channel_use.record
+            left_open = lambda entry: out(report.still_open(lab.name, path.stem, entry))  # noqa: E731
             still_running = lambda entry: out(report.still_running(lab.name, path.stem, entry))  # noqa: E731
-            results.append(run_scenario(path, guest, prepare, still_running))
+            results.append(run_scenario(path, guest, prepare, left_open, still_running))
         return results
 
 
@@ -305,6 +306,9 @@ def _print_summary(data, out):
     if data["error"]:
         out("ERROR %s: %s" % (data["lab"], data["error"]))
     for s in data["scenarios"]:
+        for d in s["staged"]:
+            if d["ended"] == STILL_OPEN:
+                out(report.still_open(data["lab"], s["name"], d))
         for p in s["spawned"]:
             if p["ended"] == STILL_RUNNING:
                 out(report.still_running(data["lab"], s["name"], p))

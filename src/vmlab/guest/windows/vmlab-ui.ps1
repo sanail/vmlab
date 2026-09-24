@@ -53,11 +53,10 @@ public class Win {
     public string Title;
 }
 
-/// A document stage-text opened: a tab of an editor's window, or the window itself.
+/// A Staged document open in an editor: a tab of its window, or the window itself.
 public class Staged {
     public Win Window;
     public AutomationElement Tab;  // null: an editor without tabs
-    public string Stem;  // vmlab-stage-XXXXXXXX
 }
 
 static class Native {
@@ -112,7 +111,7 @@ public static class Helper {
     // dropped some in one call of three, 15 and 30 ms none in eleven.
     const int TYPE_PAUSE_MS = 20;
     const string STAGE = "vmlab-stage-";  // + 8 hex digits: the name of every file stage-text opens
-    static Regex STAGED = new Regex(STAGE + "[0-9a-fA-F]{8}");
+    static Regex STAGED = new Regex("^" + STAGE + "[0-9a-fA-F]{8}\\.txt$", RegexOptions.IgnoreCase);
     const double CLOSE_WAIT = 5;  // s for one staged document to close
 
     static int nodes;
@@ -177,6 +176,7 @@ public static class Helper {
                 return Obj("text", Clipboard());
             case "focus": return Focus(p);
             case "stage-text": return StageText(p);
+            case "close-staged": return CloseStaged(p);
         }
         throw new Fail("unknown command " + command);
     }
@@ -696,72 +696,121 @@ public static class Helper {
         }
     }
 
-    /// The staged document named in text (a title, a tab's name), or null.
-    static string Stem(string text) {
-        Match found = STAGED.Match(text);
-        return found.Success ? found.Value : null;
+    /// The file name of the Staged document at path; fails unless it is a file stage-text writes.
+    static string StagedName(string path) {
+        string staging = Path.GetFullPath(Path.GetTempPath()).TrimEnd('\\'), name = null, folder = null;
+        try {
+            name = Path.GetFileName(path);
+            folder = Path.GetFullPath(Path.GetDirectoryName(path) ?? "").TrimEnd('\\');
+        } catch (Exception) {
+            // not a path at all: refused below
+        }
+        if (name == null || !STAGED.IsMatch(name) || !string.Equals(folder, staging, StringComparison.OrdinalIgnoreCase))
+            throw new Fail(path + " is not a Staged document: stage-text writes them to " + staging + " as " + STAGE + "XXXXXXXX.txt");
+        return name;
     }
 
-    /// The documents earlier stages left open in app, frontmost window first.
-    static List<Staged> StagedDocuments(string app) {
-        List<Staged> found = new List<Staged>();
+    /// Does text (a title, a tab's name) name the document name? Its name without .txt, and no more
+    /// hex digits after it, so another Staged document's name never counts.
+    static bool Names(string text, string name) {
+        return Regex.IsMatch(text ?? "", Regex.Escape(Path.GetFileNameWithoutExtension(name)) + "(?![0-9a-fA-F])");
+    }
+
+    static AutomationElementCollection Tabs(Win w) {
+        return AutomationElement.FromHandle(w.Handle).FindAll(TreeScope.Descendants,
+            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.TabItem));
+    }
+
+    /// The window (and tab) of app showing the document name, or null. The editor names a document
+    /// by its file's name alone; the name's random hex digits are one stage-text's, and its folder is
+    /// checked before (StagedName).
+    static Staged StagedDocument(string app, string name) {
         foreach (Win w in Windows()) {
             if (!IsApp(w.Pid, app)) continue;
             AutomationElementCollection tabs;
             try {
-                tabs = AutomationElement.FromHandle(w.Handle).FindAll(TreeScope.Descendants,
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.TabItem));
+                tabs = Tabs(w);
             } catch (ElementNotAvailableException) {
                 continue;  // the window closed meanwhile
             }
             foreach (AutomationElement tab in tabs) {
-                string stem;
-                try { stem = Stem(tab.Current.Name); } catch (ElementNotAvailableException) { continue; }
-                if (stem != null) { Staged d = new Staged(); d.Window = w; d.Tab = tab; d.Stem = stem; found.Add(d); }
+                string tabName;
+                try { tabName = tab.Current.Name; } catch (ElementNotAvailableException) { continue; }
+                if (Names(tabName, name)) { Staged d = new Staged(); d.Window = w; d.Tab = tab; return d; }
             }
-            if (tabs.Count == 0 && Stem(w.Title) != null) { Staged d = new Staged(); d.Window = w; d.Stem = Stem(w.Title); found.Add(d); }
+            if (tabs.Count == 0 && Names(w.Title, name)) { Staged d = new Staged(); d.Window = w; return d; }
         }
-        return found;
+        return null;
     }
 
-    /// Close the documents earlier stages left open in app, so a stage leaves just its own; the app's
-    /// other documents stay. Each is saved first (it is the helper's file, and a Scenario may have typed
-    /// into it), so the editor does not ask about saving. Keys go to the tab in front, the one the
-    /// window's title names.
-    static void CloseStaged(string app, DateTime deadline) {
-        List<string> ctrl = new List<string> { "ctrl" };
-        while (true) {
-            List<Staged> staged = StagedDocuments(app);
-            if (staged.Count == 0) return;
-            Staged d = staged[0];
-            if (DateTime.UtcNow >= deadline)
-                throw new Fail(app + " did not close the document an earlier stage-text opened, " + d.Stem + ".txt, in time; its windows: "
-                    + json.Serialize(staged.ConvertAll(delegate(Staged s) { return s.Window.Title; })));
-            DateTime wait = DateTime.UtcNow.AddSeconds(CLOSE_WAIT), soon = wait < deadline ? wait : deadline;
-            BringToFront(d.Window.Handle, app, deadline);
-            if (d.Tab != null) {
+    /// The tab in front of a window (the selected one), or null.
+    static AutomationElement SelectedTab(Win w) {
+        try {
+            foreach (AutomationElement tab in Tabs(w)) {
                 object pattern;
-                try {
-                    if (d.Tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) ((SelectionItemPattern)pattern).Select();
-                } catch (ElementNotAvailableException) {
-                    continue;
-                }
-                if (WaitFor<string>(soon, delegate() { return Title(d.Window.Handle).Contains(d.Stem) ? d.Stem : null; }) == null) continue;
-                Press("s", ctrl);
-                Press("w", ctrl);
-            } else {
-                Press("s", ctrl);
-                Native.PostMessage(d.Window.Handle, 0x0010, IntPtr.Zero, IntPtr.Zero);  // WM_CLOSE
+                if (tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern) && ((SelectionItemPattern)pattern).Current.IsSelected) return tab;
             }
-            WaitFor<string>(soon, delegate() { return StagedDocuments(app).Exists(delegate(Staged s) { return s.Stem == d.Stem; }) ? null : ""; });
+        } catch (ElementNotAvailableException) {
+            // the window closed meanwhile
         }
+        return null;
+    }
+
+    static void SelectTab(AutomationElement tab) {
+        object pattern;
+        if (tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) ((SelectionItemPattern)pattern).Select();
+    }
+
+    /// Save and close the Staged document p["file"] in p["app"]; the app's other documents stay, and
+    /// the tab in front of its window before comes back to the front. Saved first (a Scenario may have
+    /// typed into it), so the editor does not ask about saving. Keys go to the tab in front, the one
+    /// the window's title names.
+    static Dictionary<string, object> CloseStaged(Dictionary<string, object> p) {
+        string path = Str(p, "file"), app = Str(p, "app");
+        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(app)) throw new Fail("close-staged needs file and app");
+        string name = StagedName(path);
+        DateTime deadline = Deadline(p);
+        List<string> ctrl = new List<string> { "ctrl" };
+        Staged d = StagedDocument(app, name);
+        if (d == null) return Obj("file", path, "closed", false);
+        AutomationElement before = d.Tab == null ? null : SelectedTab(d.Window);
+        string beforeName = null;
+        try { if (before != null) beforeName = before.Current.Name; } catch (ElementNotAvailableException) { }
+        while (true) {
+            BringToFront(d.Window.Handle, app, deadline);
+            if (d.Tab == null) break;
+            DateTime wait = DateTime.UtcNow.AddSeconds(CLOSE_WAIT), soon = wait < deadline ? wait : deadline;
+            try { SelectTab(d.Tab); } catch (ElementNotAvailableException) { }
+            IntPtr handle = d.Window.Handle;
+            if (WaitFor<string>(soon, delegate() { return Names(Title(handle), name) ? name : null; }) != null) break;
+            if (DateTime.UtcNow >= deadline)
+                throw new Fail(app + " did not bring " + name + " to the front of its window in time; the window: " + Title(handle));
+            d = StagedDocument(app, name);
+            if (d == null) return Obj("file", path, "closed", false);  // closed meanwhile
+        }
+        Press("s", ctrl);
+        if (d.Tab != null) Press("w", ctrl);
+        else Native.PostMessage(d.Window.Handle, 0x0010, IntPtr.Zero, IntPtr.Zero);  // WM_CLOSE
+        if (WaitFor<string>(deadline, delegate() { return StagedDocument(app, name) == null ? "" : null; }) == null)
+            throw new Fail(app + " did not close " + name + " in time; its windows: "
+                + json.Serialize(Windows().FindAll(delegate(Win w) { return IsApp(w.Pid, app); }).ConvertAll(delegate(Win w) { return w.Title; })));
+        if (beforeName != null && !Names(beforeName, name)) {
+            try {
+                SelectTab(before);
+                DateTime wait = DateTime.UtcNow.AddSeconds(CLOSE_WAIT), soon = wait < deadline ? wait : deadline;
+                IntPtr handle = d.Window.Handle;
+                WaitFor<string>(soon, delegate() { return Title(handle).Contains(beforeName) ? "" : null; });
+            } catch (ElementNotAvailableException) {
+                // closed meanwhile
+            }
+        }
+        return Obj("file", path, "closed", true);
     }
 
     static Dictionary<string, object> StageText(Dictionary<string, object> p) {
         string text = Str(p, "text"), app = Str(p, "app");
         if (text == null || string.IsNullOrEmpty(app)) throw new Fail("stage-text needs text and app");
         DateTime deadline = Deadline(p);
-        CloseStaged(app, deadline);
         string stem = STAGE + Guid.NewGuid().ToString("N").Substring(0, 8);
         string path = Path.Combine(Path.GetTempPath(), stem + ".txt");
         File.WriteAllText(path, text, new UTF8Encoding(false));

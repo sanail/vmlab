@@ -279,8 +279,11 @@ def _ui_parser(sub):
     p.add_argument("--set", metavar="TEXT")
     p = ui_sub.add_parser("stage-text", parents=[common], help="open text in a third-party editor, select it all, then press --then; one Guest call")
     p.add_argument("text")
-    p.add_argument("--app", help="the editor (default: TextEdit, Notepad or gedit)")
+    p.add_argument("--app", help="the editor (default: TextEdit, Notepad or gnome-text-editor)")
     p.add_argument("--then", metavar="CHORD", help="chord to press once the text is selected")
+    p = ui_sub.add_parser("close-staged", parents=[common], help="save and close the Staged document a stage-text opened")
+    p.add_argument("--file", required=True, metavar="PATH", help='the "file" stage-text printed')
+    p.add_argument("--app", help="the editor it is open in (default: TextEdit, Notepad or gnome-text-editor)")
     p = ui_sub.add_parser("screenshot", parents=[common], help="save a PNG of the Guest's screen")
     p.add_argument("--out", help="where to save it (default: .vmlab/runs/<time>-<lab>-screenshot.png)")
 
@@ -366,6 +369,8 @@ def _ui(project, args):
         result = contract.focus(args.app, window=args.window)
     elif c == "stage-text":
         result = contract.stage_text(args.text, app=args.app, then=args.then)
+    elif c == "close-staged":
+        result = contract.close_staged(args.file, app=args.app)
     else:
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         dest = Path(args.out) if args.out else project.runs_dir / ("%s-%s-screenshot.png" % (stamp, lab.name))

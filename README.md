@@ -282,6 +282,7 @@ Scenarios and the agent read and drive the Guest's UI with the same commands and
 | `ui focus --app APP [--window TITLE]` | `g.focus(app, window=None)` | `{"app", "window", "frontmost"}` |
 | `ui clipboard [--set TEXT]` | `g.clipboard()`, `g.set_clipboard(text)` | `{"text"}` |
 | `ui stage-text TEXT [--app APP] [--then CHORD]` | `g.stage_text(text, app=None, then=None)` | `{"app", "file", "frontmost", "selected", "pressed"}` |
+| `ui close-staged --file PATH [--app APP]` | `g.close_staged(staged)` | `{"file", "closed"}` |
 | `ui wait-for CONDITION [--gone] [--timeout S]` | `g.wait_for(..., gone=False, timeout=None)` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "error"]}` |
 | `ui screenshot [--out PATH]` | `g.screenshot(name)` | `{"path"}` (Scenarios: the path in the Run folder) |
 
@@ -291,7 +292,7 @@ Every node has `role` (cross-OS: `application`, `window`, `button`, `textfield`,
 - `click` clicks the middle of the first match (or the `--index`th) with a real mouse event, after checking the element is what lies under that point. Without `--timeout` it fails at once when nothing matches or something covers the element; with it, it tries again until the element is there and uncovered, then fails with the last reason. `--at` ignores `--timeout`.
 - Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key: `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`, `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...). An unknown key is a usage error (exit 2).
 - `focus` brings a running app to the front and waits until it is frontmost; `--window` first raises its first window whose title contains TITLE. An app that is not running, or a window that is not there, is an error naming what is.
-- `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or GNOME Text Editor, `gnome-text-editor`), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between.
+- `stage-text` opens the text in a third-party editor (default: TextEdit, Notepad or GNOME Text Editor, `gnome-text-editor`), selects it all, and presses `--then` in the same Guest call, so nothing can steal focus in between. It closes nothing: its `"file"` is the Staged document, which `close-staged` saves and closes (`g.close_staged` takes the `stage_text` result or that path), leaving the editor's other documents, and the one in front, as they were; `"closed"` is false when it was no longer open. A path that is not a file `stage-text` wrote to the Guest's temp folder is refused. In a Scenario, what it leaves open is closed at the end of its Run.
 - `wait-for` takes exactly one condition: an element (`--text`/`--role`, narrowed to one app by `--app`, which goes with them only), `--process NAME`, `--file PATH`, `--log PATH --pattern REGEX`, or a command, `--exec ARG...` (last, since everything after it is the command; `g.wait_for(exec=[...])`): it exits 0, or with `--pattern` its stdout matches whatever the exit code, and the result carries the last answer's `code` and the tail of its `stdout`. `--gone` inverts any condition. It polls until the condition holds or the timeout (default: the Lab's `step_timeout`) passes, never with fixed sleeps. A poll that gets no answer from the Guest (a failed Channel, a hung call) is "not met yet", `--gone` or not, with `"error"` saying why; a command the Guest does not have (exit 127 or 9009, PowerShell's CommandNotFoundException) fails at once, so wait for an installed command's file first. `--process` matches the name exactly; on Linux, a name longer than the 15 bytes the kernel keeps is confirmed against the command line. Unmet, the CLI exits 1 and a Scenario gets `"met": false` to check.
 - UI commands need a running Guest (`vmlab up` or `vmlab deploy`). In a Scenario they count against its timeout like `g.exec`.
 
@@ -350,7 +351,7 @@ vmlab doctor [LAB...] [--json] [--bench [--calls N]]
                                          # Host, arch coverage, Provider, Base guest, clone, Guest, per-Channel, screenshot and
                                          # UI helper checks with fixes; exit 1 on FAIL. --bench times each Channel of running Guests.
                                          # Outside a project: the Host only (which OSes it can test, which hypervisors it has)
-vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
+vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|close-staged|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
 vmlab exec [--lab LAB] [--timeout S] -- COMMAND ...   # one command in a running Guest; its output and exit code
 vmlab put GUEST_PATH [--from HOSTFILE] [--lab LAB]    # write a Guest file from piped stdin (or HOSTFILE); prints its Guest path
 vmlab get GUEST_PATH [--lab LAB]                      # print a Guest file to stdout, byte for byte

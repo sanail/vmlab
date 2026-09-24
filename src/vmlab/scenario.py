@@ -36,6 +36,8 @@ DETERMINISTIC, VISUAL = "deterministic", "visual, unverified"
 OUTPUT_TAIL = 2000  # characters of a spawned process's output in the report of a Run that did not pass
 # How a spawned process ended: its report entry's "ended".
 BY_SCENARIO, WITH_RUN, BY_ITSELF, STILL_RUNNING = "scenario", "run", "exited", "failed"
+# How a Staged document ended: its report entry's "ended" (BY_SCENARIO and WITH_RUN too).
+ALREADY_GONE, STILL_OPEN = "gone", "failed"
 
 
 class ScenarioError(Exception):
@@ -73,6 +75,7 @@ class Guest:
         self.checks = []
         self.screenshots = []
         self.spawned = []  # every process the Scenario spawned (Spawned), stopped at the end of the Run
+        self.staged = []  # every Staged document it opened ({"file", "app", "ended"}), closed at the end of the Run
         self._spawner = provider.spawner()
         self.channel_use = ChannelUse()  # this Run's calls, including its app reset and launch
 
@@ -141,11 +144,12 @@ class Guest:
         self._remaining(what)
         return self._on_clock(doing, lambda call_timeout: fn(self._spawner, call_timeout(what)))
 
-    def _end_spawned(self, with_output):
-        """Stop what the Scenario spawned and left running, best-effort and off its clock. Returns the
-        report's entries; with_output adds the tail of each process's output. Once a call finds no
-        Guest, the rest are not tried."""
-        entries, unreachable = [], []
+    def _end_run(self, with_output):
+        """End what the Scenario left behind in the Guest, best-effort and off its clock: close its
+        Staged documents, stop what it spawned. Returns the report's entries (staged, spawned);
+        with_output adds the tail of each spawned process's output. Once a call finds no Guest, the
+        rest are not tried."""
+        unreachable = []
 
         def attempt(fn):
             if unreachable:
@@ -156,6 +160,21 @@ class Guest:
                 unreachable.append(str(exc).splitlines()[0])
                 raise
 
+        return self._close_staged_left(attempt), self._end_spawned(attempt, with_output)
+
+    def _close_staged_left(self, attempt):
+        contract = ui.UI(self._provider, lambda what: self._step_timeout)
+        for doc in self.staged:
+            if doc["ended"] is None:
+                try:
+                    closed = attempt(lambda: contract.close_staged(doc["file"], app=doc["app"]))["closed"]
+                    doc["ended"] = WITH_RUN if closed else ALREADY_GONE
+                except Exception as exc:  # noted in the report; it never changes the Run's result
+                    doc["ended"], doc["close_error"] = STILL_OPEN, str(exc) or type(exc).__name__
+        return [dict(doc) for doc in self.staged]
+
+    def _end_spawned(self, attempt, with_output):
+        entries = []
         for handle in self.spawned:
             entry = {"argv": handle.argv, "pid": handle.pid, "log": handle.log, "ended": handle._ended}
             if entry["ended"] is None:
@@ -208,8 +227,26 @@ class Guest:
         return self._ui_call(lambda contract: contract.focus(app, window=window))
 
     def stage_text(self, text, app=None, then=None):
-        """Open text in a third-party editor, select it all and press the chord then, all in one Guest call."""
-        return self._ui_call(lambda contract: contract.stage_text(text, app=app, then=then))
+        """Open text in a third-party editor, select it all and press the chord then, all in one Guest
+        call. The result's "file" is the Staged document: close it with close_staged when done;
+        whatever is left open is closed at the end of the Run."""
+        result = self._ui_call(lambda contract: contract.stage_text(text, app=app, then=then))
+        self.staged.append({"file": result["file"], "app": result["app"], "ended": None})
+        return result
+
+    def close_staged(self, staged):
+        """Save and close one Staged document: a stage_text result, or its "file". Returns
+        {"file", "closed"}; closed is false when it was no longer open."""
+        file, app = (staged.get("file"), staged.get("app")) if isinstance(staged, dict) else (staged, None)
+        if not isinstance(file, str):
+            raise UsageError("close_staged takes a stage_text result or its \"file\", not %r" % (staged,))
+        doc = next((d for d in self.staged if d["file"] == file), None)
+        if doc:
+            app = doc["app"]
+        result = self._ui_call(lambda contract: contract.close_staged(file, app=app))
+        if doc and doc["ended"] is None:
+            doc["ended"] = BY_SCENARIO
+        return result
 
     def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, timeout=None):
         """Wait until one condition holds: an element appears, a process runs, a file exists, a log
@@ -317,22 +354,27 @@ def decode_content(guest_path, data):
         raise UsageError("%s is not UTF-8 text (%s); read it with binary=True" % (guest_path, exc.reason))
 
 
-def run_scenario(path, guest, prepare, still_running):
+def run_scenario(path, guest, prepare, left_open, still_running):
     """Execute one Scenario file against guest and return its result dict.
 
     prepare(fresh, launch) readies the Guest (restore, app reset and launch)
     before the Scenario's clock starts, per its FRESH and LAUNCH declarations.
 
-    What the Scenario spawned ends with the Run, however it ends. When it ends
-    with no result (a ConfigError, Ctrl-C, sys.exit()), the exception goes on
-    after that, and still_running(entry) is called for each process vmlab
-    could not stop, since no report will name it.
+    What the Scenario staged and spawned ends with the Run, however it ends.
+    When it ends with no result (a ConfigError, Ctrl-C, sys.exit()), the
+    exception goes on after that, and left_open(entry) is called for each
+    Staged document vmlab could not close and still_running(entry) for each
+    process it could not stop, since no report will name them.
     """
     started = time.time()
     try:
         error = _execute(path, guest, prepare)
     except BaseException:
-        for entry in guest._end_spawned(with_output=False):
+        staged, spawned = guest._end_run(with_output=False)
+        for entry in staged:
+            if entry["ended"] == STILL_OPEN:
+                left_open(entry)
+        for entry in spawned:
             if entry["ended"] == STILL_RUNNING:
                 still_running(entry)
         raise
@@ -343,7 +385,7 @@ def run_scenario(path, guest, prepare, still_running):
         status = "passed"
     else:
         status = "failed"
-    spawned = guest._end_spawned(with_output=status != "passed")
+    staged, spawned = guest._end_run(with_output=status != "passed")
     return {
         "name": path.stem,
         "file": str(path),
@@ -352,6 +394,7 @@ def run_scenario(path, guest, prepare, still_running):
         "error": error,
         "checks": guest.checks,
         "screenshots": guest.screenshots,
+        "staged": staged,
         "spawned": spawned,
         "channels": guest.channel_use.channels,
         "fallbacks": guest.channel_use.fallbacks,

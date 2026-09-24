@@ -54,7 +54,8 @@ REPROVISION = "re-provision the Base guest: vmlab base create NAME --reprovision
 SELECT_ALL = ("a", ["ctrl"])
 SAVE, CLOSE = ("s", ["ctrl"]), ("w", ["ctrl"])
 STAGE = "vmlab-stage-"  # + 8 hex digits: the name of every file stage-text opens
-STAGED = re.compile(STAGE + "[0-9a-fA-F]{8}")
+STAGED = re.compile(STAGE + "[0-9a-fA-F]{8}\\.txt")
+STAGING = "/tmp"  # where stage-text writes them
 CLOSE_WAIT = 5  # s for one staged document to close
 
 # linux/input-event-codes.h, for the Wayland session
@@ -131,10 +132,18 @@ def session():
     return kind
 
 
-def stem(text):
-    """The staged document named in text (a title, a tab's name), or None."""
-    found = STAGED.search(text)
-    return found.group(0) if found else None
+def staged_path(path):
+    """The name of the Staged document at path; fails unless it is a file stage-text writes."""
+    name = os.path.basename(path)
+    if not STAGED.fullmatch(name) or os.path.dirname(os.path.realpath(path)) != os.path.realpath(STAGING):
+        fail("%s is not a Staged document: stage-text writes them to %s as %sXXXXXXXX.txt" % (path, STAGING, STAGE))
+    return name
+
+
+def names(text, name):
+    """Does text (a title, a tab's name) name the document name? Its name without .txt, and no more
+    hex digits after it, so another Staged document's name never counts."""
+    return re.search(re.escape(name[: -len(".txt")]) + "(?![0-9a-fA-F])", text) is not None
 
 
 def process_name(pid):
@@ -695,10 +704,11 @@ class UI:
             stack.extend(self.children(node))
         return tabs
 
-    def staged_documents(self, wanted):
-        """[(Window, its accessible, page tab or None, stem)] of the documents earlier stages left open in the app."""
-        tops = {pid: self.toplevels(app) for app, name, pid in self.apps() if self.matches(name, pid, wanted)}
-        found = []
+    def staged_document(self, wanted, name):
+        """(Window, its accessible, page tab or None) showing the Staged document name in the app, or
+        None. A tab whose description is a path (gnome-text-editor's: its tooltip) must be the
+        document's; otherwise the file's name, whose random hex digits are one stage-text's, tells."""
+        tops = {pid: self.toplevels(app) for app, n, pid in self.apps() if self.matches(n, pid, wanted)}
         for window in reversed(self.windows):
             if window.pid not in tops or window.background:
                 continue
@@ -708,56 +718,87 @@ class UI:
                 continue
             tabs = self.page_tabs(top)
             for tab in tabs:
-                name = stem(tab.get_name() or "")
-                if name:
-                    found.append((window, top, tab, name))
-            if not tabs and stem(window.title):
-                found.append((window, top, None, stem(window.title)))
-        return found
+                if names(tab.get_name() or "", name) and self.tab_path(tab) in (None, os.path.join(os.path.realpath(STAGING), name)):
+                    return window, top, tab
+            if not tabs and names(window.title, name):
+                return window, top, None
+        return None
 
-    def close_staged(self, wanted, deadline):
-        """Close the documents earlier stages left open in the app, so a stage leaves just its own; the
-        app's other documents stay. Each is saved first (it is the helper's file, and a Scenario may
-        have typed into it), so the editor does not ask about saving. Keys go to the tab in front, the
-        one the window's title names: a tab is clicked to bring it there (GTK's tabs take no action)."""
-        while True:
+    def tab_path(self, tab):
+        """The file a tab's description names (symlinks resolved), or None if it names none."""
+        try:
+            description = tab.get_description() or ""
+        except Exception:
+            return None
+        return os.path.realpath(description) if description.startswith("/") else None
+
+    def select_tab(self, window, top, tab, shown, deadline):
+        """Bring a tab to the front of its window: keys go to the tab in front, the one the window's
+        title names. It is clicked (GTK's tabs take no action). False if shown(the window's title)
+        does not hold in time."""
+        b = self.bounds(tab, self.placement(top, window.pid))
+        if b:
+            self.ws.click(b["x"] + b["w"] // 3, b["y"] + b["h"] // 2)  # its title, clear of its close button
+
+        def in_front():
             self.refresh()
-            staged = self.staged_documents(wanted)
-            if not staged:
-                return
-            window, top, tab, name = staged[0]
+            return True if any(w.id == window.id and shown(w.title) for w in self.windows) else None
+
+        return self.wait_for(deadline, in_front) is not None
+
+    def close_staged(self, params):
+        """Save and close the Staged document params["file"] in params["app"]; the app's other
+        documents stay, and the tab in front of its window before comes back to the front. Saved
+        first (a Scenario may have typed into it), so the editor does not ask about saving."""
+        path, app = params.get("file"), params.get("app")
+        if not path or not app:
+            fail("close-staged needs file and app")
+        name = staged_path(path)
+        deadline = time.time() + float(params.get("timeout") or 30)
+        self.refresh()
+        found = self.staged_document(app, name)
+        if found is None:
+            emit({"file": path, "closed": False})
+            return
+        window, top, tab = found
+        # The tab in front of that window: its name is in the window's title.
+        before = next((n for n in (t.get_name() or "" for t in self.page_tabs(top)) if n and n in window.title and not names(n, name)), None)
+        while tab is not None:
+            self.bring_to_front(window, app, deadline)
+            if self.select_tab(window, top, tab, lambda title: names(title, name), min(deadline, time.time() + CLOSE_WAIT)):
+                break
             if time.time() >= deadline:
-                fail("%s did not close the document an earlier stage-text opened, %s.txt, in time; its windows: %s" % (wanted, name, [w.title for w, _, _, _ in staged]))
-            soon = min(deadline, time.time() + CLOSE_WAIT)
-            self.bring_to_front(window, wanted, deadline)
-            if tab is not None:
-                b = self.bounds(tab, self.placement(top, window.pid))
-                if b:
-                    self.ws.click(b["x"] + b["w"] // 3, b["y"] + b["h"] // 2)  # its title, clear of its close button
+                fail("%s did not bring %s to the front of its window in time; the window: %s" % (app, name, window.title))
+            self.refresh()
+            found = self.staged_document(app, name)
+            if found is None:  # closed meanwhile
+                emit({"file": path, "closed": False})
+                return
+            window, top, tab = found
+        else:
+            self.bring_to_front(window, app, deadline)
+        self.press(*SAVE)
+        self.press(*CLOSE)
 
-                def in_front():
-                    self.refresh()
-                    return True if any(w.id == window.id and name in w.title for w in self.windows) else None
+        def closed():
+            self.refresh()
+            return None if self.staged_document(app, name) else True
 
-                if self.wait_for(soon, in_front) is None:
-                    continue
-            self.press(*SAVE)
-            self.press(*CLOSE)
-
-            def closed():
-                self.refresh()
-                return None if any(n == name for _, _, _, n in self.staged_documents(wanted)) else True
-
-            self.wait_for(soon, closed)
+        if self.wait_for(deadline, closed) is None:
+            fail("%s did not close %s in time; its windows: %s" % (app, name, [w.title for w in self.windows if w.pid == window.pid]))
+        if before and not any(w.id == window.id and before in w.title for w in self.windows):
+            back = next((b for b in self.page_tabs(top) if (b.get_name() or "") == before), None)
+            if back is not None:
+                self.select_tab(window, top, back, lambda title: before in title, min(deadline, time.time() + CLOSE_WAIT))
+        emit({"file": path, "closed": True})
 
     def stage_text(self, params):
         text, app = params.get("text"), params.get("app")
         if text is None or not app:
             fail("stage-text needs text and app")
         deadline = time.time() + float(params.get("timeout") or 30)
-        self.close_staged(app, deadline)
         doc = STAGE + uuid.uuid4().hex[:8]
-        path = "/tmp/%s.txt" % doc
+        path = os.path.join(STAGING, doc + ".txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
         try:
@@ -822,6 +863,8 @@ def main(argv):
         ui.focus(params)
     elif command == "stage-text":
         ui.stage_text(params)
+    elif command == "close-staged":
+        ui.close_staged(params)
     else:
         fail("unknown command %s" % command)
 

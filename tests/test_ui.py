@@ -176,14 +176,39 @@ class UiCliTest(UiTestCase):
         [area] = self.ui("find", "--role", "textarea", "--app", staged["app"])["matches"]
         self.assertEqual(area["value"], "Ohm law")
 
-    def test_a_stage_closes_the_document_the_stage_before_opened(self):
+    def editor_windows(self, app):
+        return [n["name"] for n in walk(self.ui("tree", "--app", app)) if n["role"] == "window"]
+
+    def test_a_stage_closes_nothing(self):
         first = self.ui("stage-text", "first")
         second = self.ui("stage-text", "second")
         self.assertNotEqual(first["file"], second["file"])
-        windows = [n["name"] for n in walk(self.ui("tree", "--app", second["app"])) if n["role"] == "window"]
-        self.assertEqual(windows, [Path(second["file"]).name])
-        [area] = self.ui("find", "--role", "textarea", "--app", second["app"])["matches"]
+        self.assertEqual(sorted(self.editor_windows(second["app"])), sorted([Path(first["file"]).name, Path(second["file"]).name]))
+        [area, _] = self.ui("find", "--role", "textarea", "--app", second["app"])["matches"]
         self.assertEqual((area["value"], second["selected"]), ("second", "second"))
+
+    def test_close_staged_closes_just_that_staged_document(self):
+        first = self.ui("stage-text", "first")
+        second = self.ui("stage-text", "second")
+        self.assertEqual(self.ui("close-staged", "--file", first["file"]), {"file": first["file"], "closed": True})
+        self.assertEqual(self.editor_windows(second["app"]), [Path(second["file"]).name])
+        [area] = self.ui("find", "--role", "textarea", "--app", second["app"])["matches"]
+        self.assertEqual(area["value"], "second")
+
+    def test_closing_a_staged_document_that_is_gone_succeeds(self):
+        staged = self.ui("stage-text", "text")
+        self.ui("close-staged", "--file", staged["file"])
+        self.assertEqual(self.ui("close-staged", "--file", staged["file"]), {"file": staged["file"], "closed": False})
+
+    def test_close_staged_refuses_a_file_not_named_as_staged(self):
+        r = self.ui("close-staged", "--file", "/tmp/notes.txt", code=2)
+        self.assertIn("not a Staged document", r.err)
+
+    def test_close_staged_refuses_a_file_outside_the_staging_folder(self):
+        staged = self.ui("stage-text", "text")
+        r = self.ui("close-staged", "--file", "/home/me/" + Path(staged["file"]).name, code=1)
+        self.assertIn("not a Staged document", r.err)
+        self.assertEqual(self.editor_windows(staged["app"]), [Path(staged["file"]).name])
 
     def test_typing_replaces_the_selection(self):
         staged = self.ui("stage-text", "old text")
@@ -345,6 +370,80 @@ class UiCliTest(UiTestCase):
         self.assertEqual(self.ui("tree", "--lab", "win")["role"], "desktop")
 
 
+class StagedCleanupTest(UiTestCase):
+    """What a Scenario stages and leaves open is closed at the end of its Run, however the Run ends."""
+
+    def run_leaving_it_open(self, ending):
+        self.project.scenario("stage.py", """
+            def scenario(g):
+                kept = g.stage_text("kept")
+                g.close_staged(g.stage_text("closed"))
+                g.check("staged", kept["selected"] == "kept")
+                %s
+        """ % ending)
+        r = self.project.vmlab("run")
+        return r, self.project.report()["scenarios"][0]
+
+    def assertClosed(self, scenario):
+        kept, closed = scenario["staged"]
+        self.assertEqual(closed["ended"], "scenario", closed)
+        self.assertEqual(kept["ended"], "run", kept)
+        self.assertEqual(self.ui("find", "--role", "textarea")["matches"], [])
+        self.assertIn("%s: closed at the end of the Run" % kept["file"], (self.project.only_run_dir() / "summary.md").read_text())
+
+    def test_a_passing_scenario(self):
+        r, scenario = self.run_leaving_it_open("pass")
+        self.assertEqual(scenario["status"], "passed", scenario)
+        self.assertClosed(scenario)
+
+    def test_a_failing_scenario(self):
+        r, scenario = self.run_leaving_it_open('g.check("fails", False)')
+        self.assertEqual(scenario["status"], "failed", scenario)
+        self.assertClosed(scenario)
+
+    def test_an_erroring_scenario(self):
+        r, scenario = self.run_leaving_it_open('raise RuntimeError("boom")')
+        self.assertEqual(scenario["status"], "error", scenario)
+        self.assertClosed(scenario)
+
+    def test_one_the_app_closed_is_noted_as_gone(self):
+        r, scenario = self.run_leaving_it_open('g.exec(["sh", "-c", \'rm "$VMLAB_HOME"/fake/*/fs/ui-state.json\'])')
+        self.assertEqual(scenario["staged"][0]["ended"], "gone", scenario)
+
+    def test_one_vmlab_cannot_close_is_a_warning_and_the_result_stands(self):
+        # The Scenario takes the Fake Guest down under vmlab, as a Guest that stopped answering.
+        r, scenario = self.run_leaving_it_open('g.exec(["sh", "-c", \'rm "$VMLAB_HOME"/fake/*/running\'])')
+        self.assertEqual(scenario["status"], "passed", scenario)
+        self.assertExit(r, 0)
+        kept = scenario["staged"][0]
+        self.assertEqual(kept["ended"], "failed", kept)
+        self.assertIn("not running", kept["close_error"])
+        self.assertIn("warning: mac/stage: Staged document %s is still open" % kept["file"], r.out)
+        self.assertIn("still open", (self.project.only_run_dir() / "summary.md").read_text())
+
+
+    def test_one_vmlab_cannot_close_is_warned_about_when_the_run_ends_with_no_report(self):
+        # A path outside the Guest is a ConfigError under the Fake Provider: the Run ends with no report.
+        self.project.scenario("stage.py", """
+            def scenario(g):
+                staged = g.stage_text("kept")
+                g.exec(["sh", "-c", 'rm "$VMLAB_HOME"/fake/*/running'])
+                g.put("/../../outside", "x")
+        """)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 2)
+        self.assertIn("leaves the Guest", r.err)
+        self.assertRegex(r.out, r"warning: mac/stage: Staged document /tmp/vmlab-stage-[0-9a-f]{8}\.txt is still open")
+
+    def test_close_staged_needs_a_stage_text_result_or_its_file(self):
+        self.project.scenario("stage.py", """
+            def scenario(g):
+                g.close_staged({"app": "TextEdit"})
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertIn("close_staged takes a stage_text result", self.project.report()["scenarios"][0]["error"])
+
+
 class LinuxProcessWaitTest(UiTestCase):
     def setUp(self):
         VmlabTestCase.setUp(self)
@@ -482,6 +581,19 @@ class UiScenarioTest(UiTestCase):
         """)
         r = self.project.vmlab("run")
         self.assertExit(r, 0)
+
+    def test_close_staged_takes_a_stage_text_result_or_its_file(self):
+        self.project.scenario("close.py", """
+            def scenario(g):
+                first, second = g.stage_text("first"), g.stage_text("second")
+                g.check("by result", g.close_staged(first) == {"file": first["file"], "closed": True})
+                g.check("by file", g.close_staged(second["file"]) == {"file": second["file"], "closed": True})
+                g.check("gone", g.close_staged(second)["closed"] is False)
+                g.check("no editor", not g.find(role="textarea")["matches"])
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+        [scenario] = self.project.report()["scenarios"]
+        self.assertEqual([d["ended"] for d in scenario["staged"]], ["scenario", "scenario"])
 
     def test_bad_chord_in_a_scenario_errors_with_its_line(self):
         self.project.scenario("chord.py", """
