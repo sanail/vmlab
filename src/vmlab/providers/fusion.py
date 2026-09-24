@@ -422,7 +422,7 @@ def sound_findings():
     with a sound device. [(check, status, detail, fix)]"""
     try:
         vms = HostVMs().vms()
-        base_names = {r.get("vm"): name for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
+        base_names = {vm: name for vm, (name, _) in fusion_bases().items()}
     except GuestError:
         return []  # Fusion or the registry cannot be asked: the Labs' own checks say so
     effect = "it plays through the Host's speakers or headset while it runs, and can take a Bluetooth headset"
@@ -446,6 +446,11 @@ def sound_findings():
 def provisioned_snapshot(provisioned_id):
     """A Base guest's snapshot for one provisioning (bases.provisioning)."""
     return PROVISIONED_PREFIX + provisioned_id[:12]
+
+
+def fusion_bases():
+    """The registered Fusion Base guests, as {VM name: (Base guest name, registry record)}."""
+    return {r.get("vm") or bases.vm_name(name): (name, r) for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
 
 
 def stop_hint(name):
@@ -499,7 +504,7 @@ def old_snapshots(vms=None, only=None):
     are its own, and a Windows Lab's copy is made again after the next provisioning. A VM whose snapshots
     cannot be listed is skipped: its Lab's own checks say what is wrong."""
     vms = HostVMs().vms() if vms is None else vms
-    registry = {r.get("vm") or bases.vm_name(name): (name, r) for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
+    registry = fusion_bases()
     found = []
     for vm_name, running in sorted(vms.items()):
         if vm_name not in registry or (only and vm_name != only):
@@ -1183,8 +1188,8 @@ class HostVMs:
         )
 
     def stop_hint(self, name):
-        base = {r.get("vm") or bases.vm_name(b): b for b, r in bases.Registry().all().items() if r.get("provider") == "fusion"}.get(name)
-        return stop_hint(base) if base else "vmrun stop '%s'" % vmx_path(name)
+        base = fusion_bases().get(name)
+        return stop_hint(base[0]) if base else "vmrun stop '%s'" % vmx_path(name)
 
     def old_snapshots(self, vms):
         return old_snapshots(vms)
