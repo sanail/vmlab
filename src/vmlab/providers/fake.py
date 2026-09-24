@@ -193,8 +193,9 @@ class FakeProvider(Provider):
             apps = tree.get("children", []) + ([editor] if editor else [])
             if state.get("frontmost"):
                 apps = [dict(a, focused=a.get("name") == state["frontmost"]) for a in apps]
-            if params.get("app"):
-                apps = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()]
+            if params.get("app"):  # by the app's name or bundle id, as on macOS
+                wanted = params["app"].lower()
+                apps = [a for a in apps if a.get("role") == "application" and wanted in (a.get("name", "").lower(), (a.get("bundle_id") or "").lower())]
             return dict(tree, children=apps)
         if command == "click":
             cover = _cover(self._scripted_tree(), params.get("expect", {}).get("bounds"))

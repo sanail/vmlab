@@ -77,7 +77,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 - A command the Guest does not have (exit 127, 9009 on Windows, or PowerShell's CommandNotFoundException) raises at once, so a typo in `exec=` does not wait out the timeout. To wait for a command an install is still putting in place, wait for its file (`file=`) first.
 - `process=` matches a process's name exactly, as text. Linux keeps only the first 15 bytes of a longer name; vmlab matches those, then the full name in the process's command line.
 - To show that nothing happens for N seconds, wait for it with `timeout=N` and check `"met"` is false.
-- App names: macOS and Linux use the application's name; Windows uses the process name (`Notepad`, `explorer`), and the taskbar belongs to `explorer`. `g.tray` takes the app's own name on every OS.
+- App names (`app=`, `--app`): macOS takes the app's name, executable name or bundle id (`com.apple.TextEdit`); Linux the AT-SPI application name or the process name (only its first 15 bytes); Windows the process name (`Notepad`, `explorer`), and the taskbar belongs to `explorer`. A match's `"app"` is the application node's `name` whichever you gave. `g.tray` takes the app's own name on every OS.
 
 ```python
 def scenario(g):

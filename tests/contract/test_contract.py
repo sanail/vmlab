@@ -535,6 +535,34 @@ def scenario(g):
 """))
 
     @ui
+    def test_07a_ui_an_app_is_found_by_its_other_names_too(self):
+        # The helper chooses an app by more than its name: on macOS by its bundle id, on Linux by
+        # its process name (gnome-text-editor's is cut to 15 bytes). Element queries take either.
+        if self.target.provider == "fake":
+            self.skipTest("the Fake's apps are scripted: tests/test_ui.py covers a bundle id")
+        if self.target.os == "windows":
+            self.skipTest("Windows chooses apps by their process name alone, which is the app node's name")
+        self.assertPassed(*self.target.scenario("ui_app_alias.py", UI + """
+def scenario(g):
+    text = "vmlab alias " + uuid.uuid4().hex[:8]
+    staged = g.stage_text(text)
+    app = staged["app"]
+    [node] = [a for a in g.tree(app=app)["children"] if a["name"] == app]
+    if g.os == "macos":
+        alias = g.exec(["osascript", "-e", 'id of app "%s"' % app]).stdout.strip()  # the bundle id
+    else:
+        alias = g.exec(["cat", "/proc/%d/comm" % node["pid"]]).stdout.strip()  # the process name
+    g.check("the app has another name", alias and alias.lower() != app.lower(), detail=[app, alias])
+    by_name = g.find(role="textarea", text=text, app=app)["matches"]
+    by_alias = g.find(role="textarea", text=text, app=alias)["matches"]
+    g.check("find by it matches the same, naming the app by its name", by_name and by_alias == by_name, detail=[by_name, by_alias])
+    waited = g.wait_for(role="textarea", text=text, app=alias, timeout=10)
+    g.check("wait-for by it is met", waited["met"], detail=waited)
+    clicked = g.click(role="textarea", text=text, app=alias)
+    g.check("click by it lands", clicked["element"]["app"] == app, detail=clicked)
+"""))
+
+    @ui
     def test_07b_ui_close_staged_closes_just_its_staged_document(self):
         proc, report = self.target.scenario("ui_close_staged.py", UI + """
 import re

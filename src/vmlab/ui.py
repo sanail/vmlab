@@ -213,8 +213,10 @@ def label(node):
 
 class Query:
     """Which elements: by text (name, value or description; exact matches win,
-    otherwise substrings), by role (cross-OS or native), inside app (by name,
-    case-insensitive). Any may be None."""
+    otherwise substrings), by role (cross-OS or native), inside app. Any may be None.
+
+    The Guest's helper chooses the app (by name, bundle id or process name, per OS):
+    matches takes the tree tree(app) returns and does not filter by app again."""
 
     def __init__(self, text=None, role=None, app=None):
         self.text, self.role, self.app = text, role, app
@@ -228,15 +230,13 @@ class Query:
         return ", ".join("%s=%r" % kv for kv in (("text", self.text), ("role", self.role), ("app", self.app)) if kv[1] is not None)
 
     def matches(self, tree):
-        """Matching elements in tree order, without their children, each with its "app"."""
+        """Matching elements of tree (as tree(self.app) returns it) in tree order, without their children, each with its app's name as "app"."""
         candidates = []
 
         def visit(node, app_name):
             if node["role"] == "application":
                 app_name = node["name"]
             if node["role"] != "desktop":
-                if self.app and (app_name or "").lower() != self.app.lower():
-                    return
                 if self.role is None or self.role in (node["role"], node["native_role"]):
                     candidates.append((node, app_name))
             for child in node["children"]:

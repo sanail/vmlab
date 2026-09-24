@@ -19,6 +19,7 @@ TREE = {
         {
             "role": "application",
             "name": "MyApp",
+            "bundle_id": "com.example.myapp",
             "children": [
                 {
                     "role": "window",
@@ -86,6 +87,14 @@ class UiCliTest(UiTestCase):
     def test_tree_of_one_app(self):
         tree = self.ui("tree", "--app", "myapp")
         self.assertEqual([a["name"] for a in tree["children"]], ["MyApp"])
+
+    def test_tree_of_one_app_by_its_bundle_id(self):
+        tree = self.ui("tree", "--app", "com.example.MyApp")
+        self.assertEqual([a["name"] for a in tree["children"]], ["MyApp"])
+
+    def test_find_by_the_apps_bundle_id_names_the_app_by_its_name(self):
+        matches = self.ui("find", "--text", "Run", "--app", "com.example.myapp")["matches"]
+        self.assertEqual([(m["name"], m["app"]) for m in matches], [("Run", "MyApp")])
 
     def test_find_prefers_exact_text_over_substring(self):
         found = self.ui("find", "--text", "Run", "--app", "MyApp")
@@ -712,6 +721,17 @@ class UiScenarioTest(UiTestCase):
         """)
         r = self.project.vmlab("run")
         self.assertExit(r, 0)
+
+    def test_app_may_be_given_by_its_bundle_id(self):
+        self.project.scenario("bundle.py", """
+            def scenario(g):
+                [match] = g.find(text="Run", app="com.example.myapp")["matches"]
+                g.check("find", match["app"] == "MyApp")
+                clicked = g.click(text="Run", app="com.example.myapp")
+                g.check("click", (clicked["x"], clicked["element"]["app"]) == (250, "MyApp"))
+                g.check("wait", g.wait_for(text="Run", app="com.example.myapp", timeout=5)["met"])
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
 
     def test_close_staged_takes_a_stage_text_result_or_its_file(self):
         self.project.scenario("close.py", """
