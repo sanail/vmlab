@@ -515,6 +515,8 @@ def scenario(g):
     g.check("the chord pressed in the staging call copied the selection", g.clipboard()["text"] == "copy me " + tag, detail=g.clipboard())
     g.set_clipboard("clip " + tag)
     g.check("the clipboard can be set", g.clipboard()["text"] == "clip " + tag)
+    emptied = g.set_clipboard("")
+    g.check("the clipboard can be emptied", (emptied["text"], g.clipboard()["text"]) == ("", ""), detail=[emptied, g.clipboard()])
     # The JXA fallback types through System Events, which follows the keyboard layout: ASCII only.
     typed = ("typed u " if os.environ.get("VMLAB_UI_HELPER") == "jxa" else "typed \u00fc ") + tag
     g.check("type reports what it typed", g.type(typed)["typed"] == len(typed))
