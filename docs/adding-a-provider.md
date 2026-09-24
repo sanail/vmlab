@@ -40,6 +40,8 @@ Every call into the hypervisor must be bounded: `start`, `stop`, `restore`, `cop
 
 `guest_id` names the Guest uniquely per project and Lab. Use it for the hypervisor's VM name, so projects never share a Guest by accident.
 
+Guests have no sound device: nothing a Guest plays may reach the Host's speakers or headset, and a Guest must never take the Host's Bluetooth headset. Start every Guest without one, and make sure a snapshot revert cannot bring it back (Tart runs Guests with `--no-audio`; Fusion sets `sound.present = "FALSE"` at every start), and have `doctor` warn about any of the Provider's VMs that still has one (Fusion: `sound_findings()`, a Host check).
+
 Keep anything machine-specific or secret out of the project: keys, known_hosts, passwords and registries go under `vmlab.home.vmlab_home()` (mode 0700) or the Keychain.
 
 ## 2. Implement its Channels

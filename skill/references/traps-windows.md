@@ -1,6 +1,6 @@
 # Windows Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing pace, output encoding (UTF-8 everywhere), and sound (Guests have no sound device, so nothing reaches the Host's speakers).
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing pace, output encoding (UTF-8 everywhere), sound (Guests have no sound device, so nothing reaches the Host's speakers), and OneDrive's prompts (OneDrive is off).
 
 ## Installing needs elevation
 
@@ -45,6 +45,10 @@ Read the app's toasts from the Action Center's history rather than the screen: i
 ## No sound device
 
 A Guest has no sound device, so Windows shows a crossed-out speaker in the tray, and nothing covers the app for it. Playing a sound succeeds without error and nobody hears it. An app that refuses to start or shows its own "no audio output" error without one behaves the same on a user's PC with no speakers: a Check can expect it. A Scenario cannot test what the app sounds like; vmlab has no setting that gives a Guest sound.
+
+## No OneDrive
+
+Provisioning turns OneDrive off by policy (`DisableFileSyncNGSC`): it quits as soon as anything starts it, so its "Turn On Windows Backup" prompt never covers the app. A Scenario cannot test what the app does with OneDrive (syncing, files on demand, backed-up folders); Documents and Desktop are plain local folders.
 
 ## PowerShell parses twice
 

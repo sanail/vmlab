@@ -1,7 +1,7 @@
 """`vmlab doctor`: can this Host run each Lab, and what exactly is wrong if not?
 
-Host first (hypervisors, vmlab's home, key and credentials, the Base guest
-registry), then per Lab: its arch, its Provider, what its Guest is made from
+Host first (hypervisors, vmlab's home, key and credentials, Fusion VMs with a
+sound device, the Base guest registry), then per Lab: its arch, its Provider, what its Guest is made from
 (Base guest, clone), and for a running Guest its Channels, the Provider's own
 checks, screenshots and the UI helper. With bench, each Channel of a running
 Guest is timed over several no-op calls.
@@ -94,6 +94,8 @@ def _diagnose_host():
         add("Guest credentials", WARN, "readable by others: %s" % ", ".join(loose), "chmod 600 %s" % " ".join(loose))
     elif credentials:
         add("Guest credentials", OK, "%d file(s), readable by you only" % len(credentials))
+    for check, status, detail, fix in fusion.sound_findings():
+        add(check, status, detail, fix)
 
     registry = bases.Registry()
     try:

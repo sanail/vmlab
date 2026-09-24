@@ -296,12 +296,12 @@ class FusionVM:
 
     def _leased_ip(self):
         """The address Fusion's NAT DHCP server last leased to this VM's MAC, or None."""
-        match = re.search(r'^ethernet0\.generatedAddress = "([0-9a-f:]+)"', self.vmx.read_text(encoding="utf-8"), re.M) if self.exists() else None
+        mac = self.config("ethernet0.generatedAddress") if self.exists() else None
         try:
             leases = Path(DHCP_LEASES).read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
-        found = re.findall(r"lease (\S+) \{[^}]*hardware ethernet %s;" % re.escape(match.group(1)), leases) if match else []
+        found = re.findall(r"lease (\S+) \{[^}]*hardware ethernet %s;" % re.escape(mac), leases) if mac else []
         return found[-1] if found else None  # the file only grows: the last lease is the newest
 
     def forget_ip(self):
@@ -391,12 +391,41 @@ class FusionVM:
 
 
 def sound_off(vm, out):
-    """Take a stopped Base guest's sound device away (Fusion's Get Windows VM has one), so it
-    plays nothing through the Host's speakers and takes no Bluetooth headset while it runs.
-    A running VM is left alone: Fusion rewrites its .vmx."""
-    if vm.exists() and not vm.is_running() and vm.has_sound():
+    """Take a Base guest's sound device away (Fusion's Get Windows VM has one), so it plays
+    nothing through the Host's speakers and takes no Bluetooth headset while it runs. A running
+    one is shut down first: Fusion rewrites a running VM's .vmx."""
+    if vm.exists() and vm.has_sound():
+        if vm.is_running():
+            out("  shutting %s down to take its sound device away" % vm.name)
+            vm.stop()
         vm.set_config({"sound.present": "FALSE"})
-        out("  turned %s's sound device off: Guests play nothing on the Mac" % vm.name)
+        out("  turned %s's sound device off: Guests play nothing on the Host" % vm.name)
+
+
+def sound_findings():
+    """doctor's Host check: vmlab's Fusion VMs (every Base guest and Lab clone, of any project)
+    with a sound device. [(check, status, detail, fix)]"""
+    try:
+        vms = HostVMs().vms()
+        base_names = {r.get("vm"): name for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
+    except GuestError:
+        return []  # Fusion or the registry cannot be asked: the Labs' own checks say so
+    effect = "it plays through the Host's speakers or headset while it runs, and can take a Bluetooth headset"
+    findings = []
+    for vm, running in sorted(vms.items()):
+        if not FusionVM(vmx_path(vm)).has_sound():
+            continue
+        clone = _clone_record(vm)
+        if vm in base_names:
+            what, fix = "Base guest %s" % base_names[vm], "vmlab base create %s   (shuts it down if it runs, then takes the device away)" % base_names[vm]
+        elif clone.get("lab") and clone.get("project"):
+            lab = clone["lab"]
+            what = "Lab %s of %s" % (lab, clone["project"])
+            fix = "in %s: %s   (vmlab takes the device away at every start)" % (clone["project"], "vmlab down %s && vmlab up %s" % (lab, lab) if running else "vmlab up %s" % lab)
+        else:
+            what, fix = "VM %s" % vm, "vmlab clean   (no known Lab needs it)"
+        findings.append(("Guest sound", WARN, "%s has a sound device: %s" % (what, effect), fix))
+    return findings
 
 
 def _credentials_path(base_vm):
@@ -671,23 +700,7 @@ class FusionProvider(Provider):
             else:
                 findings.append(("Display language", INFO, "not recorded for Base guest %s (provisioned by an older vmlab); checked while the Guest runs" % name,
                                  "vmlab base create %s --reprovision   (records it)" % name))  # fmt: skip
-        return findings + self._diagnose_sound(base, running) + self._diagnose_clone(record)
-
-    def _diagnose_sound(self, base, base_running):
-        """Guests play nothing on the Host: Base guests and Lab clones without a sound device."""
-        findings = []
-        what = "plays through the Mac's speakers or headset while it runs, and can take a Bluetooth headset"
-        if base.has_sound():
-            fix = "vmlab base create %s   (turns it off while the VM is stopped)" % self.base_name
-            if base_running:
-                stop = "shut Windows down from its Start menu" if self.windows else "'%s' -T fusion stop '%s'" % (vmrun_binary(), base.vmx)
-                fix = "stop it first (%s), then run `vmlab base create %s`, which turns it off" % (stop, self.base_name)
-            findings.append(("Sound", WARN, "Base guest %s has a sound device: it %s" % (self.base_name, what), fix))
-        if self.vm.exists() and self.vm.has_sound():
-            fix = ("vmlab down %s && vmlab up %s" % (self.lab.name, self.lab.name) if self.vm.is_running() else "vmlab up %s" % self.lab.name) + \
-                "   (vmlab turns it off at every start)"
-            findings.append(("Sound", WARN, "the Guest has a sound device: it %s" % what, fix))
-        return findings
+        return findings + self._diagnose_clone(record)
 
     def _language_finding(self, language, where, status):
         """Does where (the Base guest as recorded, or the running Guest) show Windows in the Lab's language?

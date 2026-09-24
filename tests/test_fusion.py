@@ -148,7 +148,7 @@ class FusionTestCase(VmlabTestCase):
     def base_guest(self, provisioned_id="first", name="ubuntu-26.04"):
         """A provisioned Base guest: its VM, its snapshot and its registry record."""
         vm = "vmlab-base-%s" % name
-        vmx = self.project.home / "fusion" / ("%s.vmwarevm" % vm) / ("%s.vmx" % vm)
+        vmx = self.base_vmx_path(name)
         vmx.parent.mkdir(parents=True, exist_ok=True)
         vmx.write_text('displayName = "%s"\n' % vm)
         snapshot = "vmlab-provisioned-%s" % provisioned_id
@@ -166,6 +166,20 @@ class FusionTestCase(VmlabTestCase):
 
     def clones(self):
         return {path: vm for path, vm in self.vms().items() if "vmlab-base-" not in path}
+
+    def base_vmx_path(self, name="ubuntu-26.04"):
+        vm = "vmlab-base-%s" % name
+        return self.project.home / "fusion" / ("%s.vmwarevm" % vm) / ("%s.vmx" % vm)
+
+    def set_sound(self, vmx, on):
+        """Give the VM a sound device (as Fusion's Get Windows does), or take it away."""
+        text = "\n".join(line for line in vmx.read_text().splitlines() if not line.startswith("sound."))
+        vmx.write_text(text + ('\nsound.present = "TRUE"\nsound.virtualDev = "hdaudio"\n' if on else '\nsound.present = "FALSE"\n'))
+
+    def assertNoSound(self, vmx):
+        text = Path(vmx).read_text()
+        self.assertIn('sound.present = "FALSE"', text)
+        self.assertNotIn('sound.present = "TRUE"', text)
 
 
 class FusionConfigTest(FusionTestCase):
@@ -297,47 +311,40 @@ class FusionDoctorTest(FusionTestCase):
         self.assertRegex(r.out, r"info\s+linux: Clone: made for the Wayland session")
         self.assertIn("vmlab up linux", r.out)
 
-    def set_sound(self, vmx, on):
-        text = "\n".join(line for line in vmx.read_text().splitlines() if not line.startswith("sound.present"))
-        vmx.write_text(text + '\nsound.present = "%s"\n' % ("TRUE" if on else "FALSE"))
-
     def test_a_base_guest_with_a_sound_device_is_a_warning_that_base_create_fixes(self):
         self.project.config(FUSION_LAB)
         self.ready_base()
-        vmx = self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.vmwarevm" / "vmlab-base-ubuntu-26.04.vmx"
-        self.set_sound(vmx, True)
+        self.set_sound(self.base_vmx_path(), True)
 
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"warn\s+linux: Sound: Base guest ubuntu-26.04 has a sound device")
+        self.assertRegex(r.out, r"warn\s+Host: Guest sound: Base guest ubuntu-26.04 has a sound device: it plays through the Host's speakers")
         self.assertIn("fix: vmlab base create ubuntu-26.04", r.out)
 
         r = self.vmlab("base", "create", "ubuntu-26.04")
 
         self.assertExit(r, 0)
         self.assertIn("sound device off", r.out)
-        self.assertIn('sound.present = "FALSE"', vmx.read_text())
-        self.assertNotIn('sound.present = "TRUE"', vmx.read_text())
-        self.assertNotRegex(self.vmlab("doctor").out, r"linux: Sound")
+        self.assertNoSound(self.base_vmx_path())
+        self.assertNotIn("Guest sound", self.vmlab("doctor").out)
 
-    def test_a_running_base_guest_with_a_sound_device_must_be_stopped_first(self):
+    def test_base_create_shuts_a_running_base_guest_down_to_take_its_sound_device_away(self):
+        # Fusion rewrites a running VM's .vmx, and a headless Base guest has no window to shut it down in.
         self.project.config(FUSION_LAB)
         self.ready_base()
-        vmx = self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.vmwarevm" / "vmlab-base-ubuntu-26.04.vmx"
-        self.set_sound(vmx, True)
+        self.set_sound(self.base_vmx_path(), True)
         state = json.loads(self.state_path.read_text())
         for vm in state["vms"].values():
             vm["running"] = True
         self.state_path.write_text(json.dumps(state))
 
-        r = self.vmlab("doctor")
+        r = self.vmlab("base", "create", "ubuntu-26.04")
 
-        self.assertRegex(r.out, r"warn\s+linux: Sound: Base guest ubuntu-26.04 has a sound device")
-        self.assertRegex(r.out, r"fix: stop it first .*then run `vmlab base create ubuntu-26.04`")
-
-        self.vmlab("base", "create", "ubuntu-26.04")
-        self.assertIn('sound.present = "TRUE"', vmx.read_text(), "a running VM's .vmx is never changed")
+        self.assertExit(r, 0)
+        self.assertIn("shutting vmlab-base-ubuntu-26.04 down", r.out)
+        self.assertEqual(len(self.calls("stop")), 1)
+        self.assertNoSound(self.base_vmx_path())
 
     def test_a_lab_with_a_sound_device_is_a_warning_until_its_next_start(self):
         self.project.config(FUSION_LAB)
@@ -348,16 +355,38 @@ class FusionDoctorTest(FusionTestCase):
 
         r = self.vmlab("doctor")
 
-        self.assertRegex(r.out, r"warn\s+linux: Sound: the Guest has a sound device")
-        self.assertIn("fix: vmlab down linux && vmlab up linux", r.out)
+        self.assertRegex(r.out, r"warn\s+Host: Guest sound: Lab linux of \S+ has a sound device")
+        self.assertRegex(r.out, r"fix: in \S+: vmlab down linux && vmlab up linux")
 
         self.vmlab("down")
-        r = self.vmlab("doctor")
-        self.assertRegex(r.out, r"warn\s+linux: Sound: the Guest has a sound device")
-        self.assertIn("fix: vmlab up linux", r.out)
+        self.assertRegex(self.vmlab("doctor").out, r"fix: in \S+: vmlab up linux ")
 
         self.vmlab("up")
-        self.assertNotRegex(self.vmlab("doctor").out, r"linux: Sound")
+        self.assertNotIn("Guest sound", self.vmlab("doctor").out)
+
+    def test_every_fusion_vm_of_vmlab_is_checked_for_sound_not_only_this_projects(self):
+        # A Base guest no Lab here uses, one whose provisioning did not finish (its Lab's own
+        # checks stop there), and a clone no known Lab needs.
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        self.set_sound(self.base_vmx_path(), True)
+        self.base_guest(name="ubuntu-24.04")
+        self.set_sound(self.base_vmx_path("ubuntu-24.04"), True)
+        records = json.loads((self.project.home / "bases.json").read_text())
+        records["ubuntu-26.04"]["provisioned"] = None
+        (self.project.home / "bases.json").write_text(json.dumps(records))
+        orphan = self.project.home / "fusion" / "vmlab-gone-0000-linux.vmwarevm" / "vmlab-gone-0000-linux.vmx"
+        orphan.parent.mkdir(parents=True)
+        orphan.write_text('displayName = "vmlab-gone-0000-linux"\n')
+        self.set_sound(orphan, True)
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"FAIL\s+linux: Base guest ubuntu-26.04: created, but its install or provisioning did not finish")
+        self.assertRegex(r.out, r"warn\s+Host: Guest sound: Base guest ubuntu-26.04 has a sound device")
+        self.assertRegex(r.out, r"warn\s+Host: Guest sound: Base guest ubuntu-24.04 has a sound device")
+        self.assertRegex(r.out, r"warn\s+Host: Guest sound: VM vmlab-gone-0000-linux has a sound device")
+        self.assertIn("fix: vmlab clean", r.out)
 
     def test_up_without_a_base_guest_names_the_create_command(self):
         self.project.config(FUSION_LAB)
@@ -478,18 +507,15 @@ class FusionCloneTest(FusionTestCase):
     def test_the_clone_starts_without_a_sound_device(self):
         # A Guest must not play through the Host's speakers or take its Bluetooth headset. Reverting
         # to a snapshot brings back the sound of the moment it was taken: turned off at every start.
-        base = next(Path(p) for p in self.vms() if "vmlab-base-" in p)
-        base.write_text(base.read_text() + 'sound.present = "TRUE"\nsound.virtualDev = "hdaudio"\n')
+        self.set_sound(self.base_vmx_path(), True)
 
         self.vmlab("up")
         self.vmlab("down")
         [clone] = self.clones()
-        Path(clone).write_text(Path(clone).read_text().replace('sound.present = "FALSE"', 'sound.present = "TRUE"'))
+        self.set_sound(Path(clone), True)
         self.vmlab("up")
 
-        text = Path(clone).read_text()
-        self.assertIn('sound.present = "FALSE"', text)
-        self.assertNotIn('sound.present = "TRUE"', text)
+        self.assertNoSound(clone)
 
     def test_down_stops_the_clone(self):
         self.vmlab("up")

@@ -45,7 +45,6 @@ TEMPLATE = """\
 # boot_timeout = 300       # seconds from power-on until the Guest must be reachable
 # step_timeout = 60        # default seconds per Guest call
 # scenario_timeout = 600   # default seconds per Scenario
-#                          # Guests have no sound device (on every Provider): nothing they play reaches the Host
 #
 # [labs.mac.app]           # the application under test; every key is optional
 # artifact = "dist/MyApp.app"          # Build artifact on the Host (glob: newest match), relative to the project root
