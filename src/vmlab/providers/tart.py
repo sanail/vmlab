@@ -475,6 +475,10 @@ class HostVMs:
     def delete_vm(self, name):
         tart_ok(["delete", name], CALL_TIMEOUT)
 
+    def old_snapshots(self, vms):
+        """None: a Base guest is provisioned again in place, and a Lab clone made before is cloned again."""
+        return []
+
     def stop_hint(self, name):
         return "tart stop %s" % name
 

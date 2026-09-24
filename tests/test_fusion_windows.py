@@ -43,11 +43,12 @@ class WindowsTestCase(FusionTestCase):
         (vmx.parent / "disk.vmdk").write_text("disk")
         return vmx
 
-    def windows_base(self, provisioned_id="first"):
-        """A provisioned Windows Base guest, as the wizard leaves it."""
+    def windows_base(self, provisioned_id="first", earlier=()):
+        """A provisioned Windows Base guest, as the wizard leaves it; earlier: the ids of provisionings before."""
         vm = "vmlab-base-windows-11"
         snapshot = "vmlab-provisioned-%s" % provisioned_id
-        vmx = self.windows_vm(self.project.home / "fusion", name=vm, snapshots=["clean", snapshot])
+        earlier = ["vmlab-provisioned-%s" % each for each in earlier]
+        vmx = self.windows_vm(self.project.home / "fusion", name=vm, snapshots=["clean"] + earlier + [snapshot])
         (self.project.home / "fusion" / (vm + ".credentials.json")).write_text(
             json.dumps({"user": "tester", "password": "win-secret", "vm_password": VM_PASSWORD})
         )
@@ -247,6 +248,49 @@ class WindowsCloneTest(WindowsTestCase):
         [delete] = [c for c in self.raw_calls() if "deleteVM" in c]
         self.assertEqual(delete[:2], ["-vp", VM_PASSWORD])
         self.assertNotIn(clone, self.vms())
+
+
+class WindowsOldSnapshotsTest(WindowsTestCase):
+    """A Windows Lab is a copy with no linked clones: its copy of the Base guest's earlier
+    provisioned snapshots is never needed."""
+
+    def setUp(self):
+        super().setUp()
+        self.project.config(WINDOWS_LAB)
+        self.base_vmx = self.windows_base("third", earlier=("first", "second"))
+
+    def test_a_new_copy_has_no_earlier_provisioned_snapshots(self):
+        self.vmlab("up")
+
+        [clone] = self.clones()
+        self.assertEqual(self.snapshots(clone), ["clean", "vmlab-provisioned-third", "vmlab-clean"])
+        [delete] = [c for c in self.raw_calls() if "deleteSnapshot" in c][:1]
+        self.assertEqual(delete[:2], ["-vp", VM_PASSWORD])
+
+    def test_base_create_deletes_the_base_guests_with_its_password(self):
+        r = self.vmlab("base", "create", "windows-11", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx), ["clean", "vmlab-provisioned-third"])
+        self.assertTrue(all(c[:2] == ["-vp", VM_PASSWORD] for c in self.raw_calls() if "deleteSnapshot" in c))
+
+    def test_doctor_warns_about_a_copy_made_by_an_older_vmlab_and_clean_deletes_them(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        [clone] = self.clones()
+        self.set_state(clone, snapshots=["clean", "vmlab-provisioned-first", "vmlab-provisioned-third", "vmlab-clean"])
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+Host: Old snapshots: Lab win of \S+ keeps 1 earlier snapshot no Lab needs: vmlab-provisioned-first")
+        self.assertRegex(r.out, r"warn\s+Host: Old snapshots: Base guest windows-11 keeps 2 earlier snapshots")
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(clone), ["clean", "vmlab-provisioned-third", "vmlab-clean"])
+        self.assertEqual(self.snapshots(self.base_vmx), ["clean", "vmlab-provisioned-third"])
+        self.assertNotIn("Old snapshots", self.vmlab("doctor").out)
 
 
 class WindowsBaseWizardTest(WindowsTestCase):

@@ -84,6 +84,11 @@ FAKE_VMRUN = textwrap.dedent(
     elif command == "snapshot":
         vm["snapshots"].append(args[2])
         save()
+    elif command == "deleteSnapshot":
+        if args[2] not in vm["snapshots"]:
+            fail("Invalid snapshot name '%s'" % args[2])
+        vm["snapshots"].remove(args[2])
+        save()
     elif command == "listSnapshots":
         print("Total snapshots: %d" % len(vm["snapshots"]))
         for s in vm["snapshots"]:
@@ -126,12 +131,13 @@ class FusionTestCase(VmlabTestCase):
         self.log_path = self.project.root / "vmrun-log.jsonl"
         self.state_path.write_text(json.dumps({"vms": {}}))
 
-    def vmlab(self, *args, vmrun=None, cwd=None):
-        env = {
+    def vmlab(self, *args, vmrun=None, cwd=None, env=None):
+        env = dict({
             "VMLAB_VMRUN": str(vmrun or self.vmrun),
             "FAKE_VMRUN_STATE": str(self.state_path),
             "FAKE_VMRUN_LOG": str(self.log_path),
-        }
+            "VMLAB_DELETE_OLD_SNAPSHOTS": "",  # not the Host's own setting
+        }, **(env or {}))  # fmt: skip
         return self.project.vmlab(*args, env=env, cwd=cwd)
 
     def raw_calls(self):
@@ -163,6 +169,14 @@ class FusionTestCase(VmlabTestCase):
         records = json.loads(path.read_text()) if path.exists() else {}
         records[name] = record
         path.write_text(json.dumps(records))
+
+    def set_state(self, vmx, **fields):
+        state = json.loads(self.state_path.read_text())
+        state["vms"][str(Path(vmx).resolve())].update(fields)
+        self.state_path.write_text(json.dumps(state))
+
+    def snapshots(self, vmx):
+        return self.vms()[str(Path(vmx).resolve())]["snapshots"]
 
     def clones(self):
         return {path: vm for path, vm in self.vms().items() if "vmlab-base-" not in path}
@@ -622,3 +636,177 @@ class FusionCleanTest(FusionTestCase):
         self.assertExit(r, 0)
         self.assertIn("warning: tart: skipped", r.out)
         self.assertIn("deleted files vmlab-gone-1-linux", r.out)
+
+
+class FusionOldSnapshotsTest(FusionTestCase):
+    """A re-provisioned Base guest keeps its earlier vmlab-provisioned-* snapshots only while a
+    linked Lab clone still needs one: `base create` deletes the rest after asking, `vmlab clean`
+    too, and doctor warns about them."""
+
+    def setUp(self):
+        super().setUp()
+        self.project.config(FUSION_LAB)
+        self.base_guest("first")
+
+    def reprovisioned(self, provisioned_id="second"):
+        """The Base guest provisioned again, as `base create` leaves it: a new snapshot, the old ones kept."""
+        old = self.snapshots(self.base_vmx_path())
+        self.base_guest(provisioned_id)
+        path = self.project.home / "bases.json"
+        records = json.loads(path.read_text())
+        records["ubuntu-26.04"]["provisioned"] = 4  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
+        path.write_text(json.dumps(records))
+        self.set_state(self.base_vmx_path(), snapshots=old + ["vmlab-provisioned-%s" % provisioned_id])
+
+    def test_base_create_deletes_earlier_snapshots_no_lab_needs_when_told_yes(self):
+        self.reprovisioned()
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second"])
+        self.assertIn("deleted snapshot vmlab-provisioned-first", r.out)
+        self.assertIn("GB free", r.out)
+
+    def test_without_a_terminal_nothing_is_deleted_and_it_says_how(self):
+        self.reprovisioned()
+
+        r = self.vmlab("base", "create", "ubuntu-26.04")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-first", "vmlab-provisioned-second"])
+        self.assertIn("vmlab-provisioned-first", r.out)
+        self.assertIn("--yes", r.out)
+        self.assertIn("VMLAB_DELETE_OLD_SNAPSHOTS", r.out)
+
+    def test_the_setting_turns_the_question_off(self):
+        self.reprovisioned()
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", env={"VMLAB_DELETE_OLD_SNAPSHOTS": "1"})
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second"])
+
+    def test_a_snapshot_a_lab_clone_was_made_from_stays_and_the_lab_is_named(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.reprovisioned()
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-first", "vmlab-provisioned-second"])
+        self.assertRegex(r.out, r"kept snapshot vmlab-provisioned-first: Lab linux of \S+ still needs it")
+        self.assertIn("vmlab up linux", r.out)
+
+        self.vmlab("up")  # re-clones the Lab from the new snapshot
+        self.vmlab("down")
+        self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second"])
+
+    def test_a_running_lab_clone_is_told_to_restart(self):
+        self.vmlab("up")
+        self.reprovisioned()
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertIn("vmlab down linux && vmlab up linux", r.out)
+
+    def test_a_linked_clone_fusion_lists_keeps_its_snapshot_even_without_a_record(self):
+        # Fusion's own list of a snapshot's linked clones, in the Base guest's .vmsd
+        orphan = self.project.home / "fusion" / "vmlab-gone-0000-linux.vmwarevm" / "vmlab-gone-0000-linux.vmx"
+        orphan.parent.mkdir(parents=True)
+        orphan.write_text('displayName = "vmlab-gone-0000-linux"\n')
+        gone = self.project.home / "fusion" / "vmlab-deleted-0000-linux.vmwarevm" / "vmlab-deleted-0000-linux.vmx"
+        self.reprovisioned("third")
+        self.base_vmx_path().with_suffix(".vmsd").write_text(
+            'snapshot0.uid = "1"\nsnapshot0.displayName = "vmlab-provisioned-first"\nsnapshot0.clone0 = "%s"\n'
+            'snapshot1.uid = "2"\nsnapshot1.displayName = "vmlab-provisioned-third"\nsnapshot1.clone0 = "%s"\n' % (orphan, gone)
+        )
+        self.set_state(self.base_vmx_path(), snapshots=["vmlab-provisioned-first", "vmlab-provisioned-second", "vmlab-provisioned-third"])
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-first", "vmlab-provisioned-third"])
+        self.assertIn("VM vmlab-gone-0000-linux still needs it", r.out)
+        self.assertIn("vmlab clean", r.out)
+
+    def test_fusions_stale_entry_for_a_lab_cloned_again_at_the_same_path_holds_nothing(self):
+        # Fusion's .vmsd never forgets a linked clone; the Lab's record says what its clone is made from now.
+        self.vmlab("up")
+        self.vmlab("down")
+        [clone] = self.clones()
+        self.reprovisioned()
+        self.vmlab("up")
+        self.vmlab("down")
+        self.base_vmx_path().with_suffix(".vmsd").write_text(
+            'snapshot0.uid = "1"\nsnapshot0.displayName = "vmlab-provisioned-first"\nsnapshot0.clone0 = "%s"\n' % clone
+        )
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second"])
+
+    def test_the_parent_disk_of_a_clone_without_a_record_says_which_snapshot_it_needs(self):
+        orphan = self.project.home / "fusion" / "vmlab-gone-0000-linux.vmwarevm" / "vmlab-gone-0000-linux.vmx"
+        orphan.parent.mkdir(parents=True)
+        orphan.write_text('displayName = "vmlab-gone-0000-linux"\n')
+        folder = self.base_vmx_path().parent
+        (orphan.parent / "disk-cl1.vmdk").write_bytes(b'KDMV\x01\x00\x00\x00# Disk DescriptorFile\nparentFileNameHint="%s"\n' % str(folder / "disk-000001.vmdk").encode())
+        self.reprovisioned("second")
+        self.reprovisioned("third")
+        self.base_vmx_path().with_suffix(".vmsd").write_text(
+            'snapshot0.uid = "1"\nsnapshot0.displayName = "vmlab-provisioned-first"\nsnapshot0.disk0.fileName = "disk.vmdk"\n'
+            'snapshot0.clone0 = "%s"\n'
+            'snapshot1.uid = "2"\nsnapshot1.displayName = "vmlab-provisioned-second"\nsnapshot1.disk0.fileName = "disk-000001.vmdk"\n' % orphan
+        )
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second", "vmlab-provisioned-third"])
+
+    def test_a_running_base_guest_is_left_alone(self):
+        self.reprovisioned()
+        self.set_state(self.base_vmx_path(), running=True)
+
+        r = self.vmlab("base", "create", "ubuntu-26.04", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertEqual(len(self.snapshots(self.base_vmx_path())), 2)
+        self.assertIn("running", r.out)
+        self.assertIn("-T fusion stop", r.out)
+
+    def test_doctor_warns_and_clean_deletes_them(self):
+        self.reprovisioned()
+
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+Host: Old snapshots: Base guest ubuntu-26.04 keeps 1 earlier snapshot no Lab needs: vmlab-provisioned-first")
+        self.assertIn("fix: vmlab clean", r.out)
+
+        r = self.vmlab("clean")  # no terminal: list only
+        self.assertIn("vmlab-provisioned-first", r.out)
+        self.assertEqual(len(self.snapshots(self.base_vmx_path())), 2)
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertIn("deleted snapshot vmlab-base-ubuntu-26.04 vmlab-provisioned-first", r.out)
+        self.assertEqual(self.snapshots(self.base_vmx_path()), ["vmlab-provisioned-second"])
+        self.assertNotIn("Old snapshots", self.vmlab("doctor").out)
+
+    def test_clean_keeps_a_snapshot_a_lab_needs_and_says_why(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.reprovisioned()
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"kept: Lab linux of \S+ still needs it")
+        self.assertEqual(len(self.snapshots(self.base_vmx_path())), 2)
+        self.assertNotIn("Old snapshots", self.vmlab("doctor").out)

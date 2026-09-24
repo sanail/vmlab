@@ -1,8 +1,9 @@
 """`vmlab clean`: what vmlab left on this Host that no known Lab needs any more.
 
 Every Provider that keeps VMs on the Host (Tart, Fusion) describes them with a
-HostVMs inventory: its VMs and whether they run, how to delete one, and its
-service files, all named <VM><suffix> in one folder. Each Lab clone has a
+HostVMs inventory: its VMs and whether they run, how to delete one, its
+service files, all named <VM><suffix> in one folder, and the snapshots of
+earlier provisionings its VMs keep. Each Lab clone has a
 record there, <clone>.json, naming the project, Lab and Base guest it serves;
 that is how an orphan is recognised. The rest is the same for every Provider
 and lives here.
@@ -20,11 +21,12 @@ RECORD = ".json"
 class Leftover:
     """Something of vmlab's on this Host that no known Lab needs any more."""
 
-    def __init__(self, kind, name, reason, remove, stop_hint=None, running=False, needs_bases=False):
+    def __init__(self, kind, name, reason, remove, stop_hint=None, running=False, needs_bases=False, kept=None):
         self.kind, self.name, self.reason, self.remove = kind, name, reason, remove
         self.stop_hint = stop_hint  # how to stop it by hand
         self.running = running  # never deleted while running
         self.needs_bases = needs_bases  # a Base guest: deleted only with --bases (re-creating one downloads its image)
+        self.kept = kept  # why it stays after all (a Lab clone still needs it), or None
 
 
 def inventories():
@@ -76,6 +78,11 @@ def _leftovers(inventory, vms, records, used):
                 Leftover("base", vm, "Base guest %s: no known Lab uses it" % name, lambda name=name, vm=vm: _delete_base(inventory, name, vm),
                          inventory.stop_hint(vm), vms[vm], needs_bases=True)
             )  # fmt: skip
+    whole = {item.name for item in found}  # orphaned clones and unused Base guests: they go whole
+    for old in inventory.old_snapshots(vms):
+        if old.vm.name not in whole:
+            found.append(Leftover("snapshot", "%s %s" % (old.vm.name, old.name), "%s: from an earlier provisioning" % old.owner, old.delete,
+                                  old.stop_hint, old.running, kept=old.why_kept() or None))  # fmt: skip
     for vm in sorted(_service_names(inventory) - set(vms)):
         found.append(Leftover("files", vm, "service files of a VM that is gone", lambda vm=vm: _remove_files(inventory, vm)))
     return found

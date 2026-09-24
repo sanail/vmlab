@@ -36,10 +36,10 @@ def main(argv=None):
     p = base_sub.add_parser("create", help="create and provision a Base guest (idempotent)")
     p.add_argument("name", metavar="NAME", help="e.g. %s" % ", ".join(sorted(bases.CATALOG)))
     p.add_argument("--image", help="image to create it from (default: the known image for NAME); windows-*: the Fusion VM to copy")
-    p.add_argument("--yes", action="store_true", help="allow downloading the image without asking")
+    p.add_argument("--yes", action="store_true", help="answer yes: download the image, delete earlier snapshots no Lab needs (Fusion)")
     p.add_argument("--reprovision", action="store_true", help="provision again even if it is ready")
 
-    p = sub.add_parser("clean", help="delete what no known Lab needs: orphaned clones, stray files, unused Base guests")
+    p = sub.add_parser("clean", help="delete what no known Lab needs: orphaned clones, stray files, earlier provisionings' snapshots, unused Base guests")
     p.add_argument("--yes", action="store_true", help="delete without asking")
     p.add_argument("--bases", action="store_true", help="also delete unused Base guests (re-creating one downloads its image)")
 
@@ -210,7 +210,9 @@ def _clean(args):
         return EXIT_OK
     deletable = []
     for item in found:
-        if item.running:
+        if item.kept:
+            note = "kept: %s" % item.kept
+        elif item.running:
             note = "running: left alone (%s)" % item.stop_hint
         elif item.needs_bases and not args.bases:
             note = "kept: pass --bases to delete it"

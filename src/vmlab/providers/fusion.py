@@ -6,7 +6,9 @@ project ever runs in the Base guest: a linked clone for Linux, an APFS copy
 for Windows, whose VM is encrypted for its TPM and which vmrun cannot clone
 (vmlab.providers.fusion_windows). Clean state is the clone's own snapshot,
 vmlab-clean, taken when the clone is made: restoring reverts to it. VMs live
-under $VMLAB_HOME/fusion, never in Fusion's own Virtual Machines folder.
+under $VMLAB_HOME/fusion, never in Fusion's own Virtual Machines folder. Each
+provisioning of a Base guest takes a new snapshot; an earlier one goes, after
+asking, once no linked clone needs it (delete_old_snapshots, `vmlab clean`).
 
 Channels (ADR 0003): SSH first, with vmlab's key and the host key pinned when
 the Base guest was made, and vmrun guest operations as the fallback. On Linux
@@ -86,6 +88,10 @@ STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
 RUNNING_TTL = 1.0  # s a VM found running counts as running without asking vmrun again
 DISK_OP_TIMEOUT = 600  # s for clone, snapshot, revert and delete while creating a Base guest
 CLEAN_SNAPSHOT = "vmlab-clean"
+MERGE_TIMEOUT = 3600  # s to delete a snapshot, whose changes Fusion merges into the next one's disk (GBs on Windows)
+PROVISIONED_PREFIX = "vmlab-provisioned-"  # + the provisioning's id: the Base guest's snapshot Labs are cloned from
+# Set to 1 to let `base create` delete earlier provisioned snapshots no Lab needs without asking.
+DELETE_OLD_SNAPSHOTS = "VMLAB_DELETE_OLD_SNAPSHOTS"
 # The graphical session is up (autologin done) and has published its environment: a Run
 # can drive the desktop. Prints the session type. logind knows the type; the user manager's
 # environment may still be the previous session's until the new one imports its own.
@@ -313,6 +319,10 @@ class FusionVM:
     def snapshot(self, name, timeout=DISK_OP_TIMEOUT):
         vmrun_ok(["snapshot", self.vmx, name], timeout, self.auth)
 
+    def delete_snapshot(self, name, timeout=MERGE_TIMEOUT):
+        """Fusion merges its changes into the next snapshot's disk: minutes for a large one."""
+        vmrun_ok(["deleteSnapshot", self.vmx, name], timeout, self.auth)
+
     def revert(self, name, timeout):
         self._seen_running = None
         vmrun_ok(["revertToSnapshot", self.vmx, name], timeout, self.auth)
@@ -425,6 +435,174 @@ def sound_findings():
             what, fix = "VM %s" % vm, "vmlab clean   (no known Lab needs it)"
         findings.append(("Guest sound", WARN, "%s has a sound device: %s" % (what, effect), fix))
     return findings
+
+
+def provisioned_snapshot(provisioned_id):
+    """A Base guest's snapshot for one provisioning (bases.provisioning)."""
+    return PROVISIONED_PREFIX + provisioned_id[:12]
+
+
+def earlier_snapshots(snapshots, keep):
+    """The provisioned snapshots among snapshots other than keep, the one in use."""
+    return [s for s in snapshots if s.startswith(PROVISIONED_PREFIX) and s != keep]
+
+
+def stop_hint(vm):
+    """How the person stops vm: an encrypted (Windows) VM opens in vmrun only with its password."""
+    return "shut Windows down from its Start menu" if _encrypted(vm.vmx) else "'%s' -T fusion stop '%s'" % (vmrun_binary(), vm.vmx)
+
+
+class OldSnapshot:
+    """A provisioned snapshot of a Base guest or Lab copy that is not the one in use."""
+
+    def __init__(self, vm, owner, name, running, held_by):
+        self.vm, self.owner, self.name, self.running = vm, owner, name, running
+        self.held_by = held_by  # [(who, how to let it go)]: the linked clones that still need it
+
+    @property
+    def stop_hint(self):
+        return stop_hint(self.vm)
+
+    def why_kept(self):
+        return "; ".join("%s still needs it (%s)" % pair for pair in self.held_by)
+
+    def delete(self):
+        self.vm.delete_snapshot(self.name)
+
+
+def old_snapshots(vms=None, only=None):
+    """The earlier provisioned snapshots of vmlab's Fusion VMs ({name: running}, default all; only:
+    that one's): a Base guest's other than its current one, and a Lab copy's (Windows) other than the
+    one it was made from, which it has because the Base guest's snapshots came along with the copy.
+    A VM whose snapshots cannot be listed is skipped: its Lab's own checks say what is wrong."""
+    vms = HostVMs().vms() if vms is None else vms
+    registry = {r.get("vm") or bases.vm_name(name): (name, r) for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
+    found = []
+    for vm_name, running in sorted(vms.items()):
+        if only and vm_name != only:
+            continue
+        if vm_name in registry:
+            name, record = registry[vm_name]
+            owner, keep, secrets = "Base guest %s" % name, record.get("snapshot"), vm_name
+        else:
+            clone = _clone_record(vm_name)
+            if not (clone.get("made_from") and clone.get("base")):
+                continue  # not a Lab's: `vmlab clean` deletes it whole
+            owner = "Lab %s of %s" % (clone.get("lab"), clone.get("project"))
+            keep, secrets = provisioned_snapshot(clone["made_from"]), bases.vm_name(clone["base"])
+        if not keep:
+            continue  # a Base guest never provisioned yet
+        vm = FusionVM(vmx_path(vm_name), secrets=secrets)
+        try:
+            names = earlier_snapshots(vm.snapshots(), keep)
+        except GuestError:
+            continue
+        holders = _linked_clones(registry[vm_name], vm, vms) if names and vm_name in registry else {}
+        found += [OldSnapshot(vm, owner, s, running, holders.get(s, [])) for s in names]
+    return found
+
+
+def _linked_clones(base, vm, vms):
+    """{snapshot: [(who, how to let it go)]}: the linked clones made from the Base guest's snapshots,
+    which need them until they are cloned again. A Lab's clone says which in its record (made_from).
+    Fusion lists each snapshot's linked clones in the Base guest's .vmsd, but never forgets one, and a
+    Lab is cloned again at the same path: that list only counts for VMs vmlab has no record of, and
+    for them the parent disk the clone's own disk names decides, when it can be read."""
+    name, record = base
+    holders = {}
+    if record.get("os") == "windows":
+        return holders  # Windows Labs are copies: they need none of the Base guest's snapshots
+    recorded = set()
+    for clone_name in sorted(vms):
+        clone = _clone_record(clone_name)
+        if clone.get("base") != name or not clone.get("made_from"):
+            continue
+        recorded.add(clone_name)
+        if (Path(clone["project"]) / ".vmlab" / "vmlab.toml").is_file():
+            again = "vmlab down %s && vmlab up %s" % (clone["lab"], clone["lab"]) if vms[clone_name] else "vmlab up %s" % clone["lab"]
+            how = "in %s, `%s` clones it again from the new snapshot" % (clone["project"], again)
+        else:
+            how = "its project is gone: `vmlab clean` deletes it"
+        holders.setdefault(provisioned_snapshot(clone["made_from"]), {})[clone_name] = ("Lab %s of %s" % (clone["lab"], clone["project"]), how)
+    vmsd = _vmsd(vm.vmx)
+    by_disk = {Path(value).name: vmsd.get(key.split(".")[0] + ".displayName") for key, value in vmsd.items() if re.match(r"snapshot\d+\.disk\d+\.fileName$", key)}
+    for key, value in vmsd.items():
+        clone_vmx = vm.vmx.parent / value  # Fusion writes absolute paths; a relative one would be the Base guest's
+        if not re.match(r"snapshot\d+\.clone\d+$", key) or clone_vmx.stem in recorded or not clone_vmx.is_file():
+            continue
+        parents = [Path(hint) for hint in _parent_disks(clone_vmx.parent)]
+        snapshots = {by_disk.get(p.name) for p in parents if p.parent == vm.vmx.parent} if parents else {vmsd.get(key.split(".")[0] + ".displayName")}
+        for snapshot in snapshots - {None}:
+            holders.setdefault(snapshot, {})[clone_vmx.stem] = ("VM %s" % clone_vmx.stem, "`vmlab clean` deletes it if no Lab needs it")
+    return {snapshot: list(clones.values()) for snapshot, clones in holders.items()}
+
+
+def _vmsd(vmx):
+    """The VM's .vmsd, Fusion's list of its snapshots, as {key: value}, e.g. snapshot0.displayName."""
+    try:
+        text = vmx.with_suffix(".vmsd").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    return dict(re.findall(r'^([\w.]+)\s*=\s*"([^"]*)"', text, re.M))
+
+
+def _parent_disks(folder):
+    """The parent disks the disks in a VM's folder name (parentFileNameHint): a linked clone's
+    point into its Base guest's folder. A sparse disk starts with its text descriptor."""
+    hints = set()
+    for disk in folder.glob("*.vmdk"):
+        try:
+            with disk.open("rb") as f:
+                head = f.read(4096).decode("utf-8", "replace")
+        except OSError:
+            continue
+        hints.update(re.findall(r'^parentFileNameHint="([^"]+)"', head, re.M))
+    return hints
+
+
+def delete_old_snapshots(name, vm, confirm, out):
+    """`base create`'s last step: delete the Base guest's earlier provisioned snapshots that no Lab
+    clone needs, once the person agrees (--yes, or DELETE_OLD_SNAPSHOTS set, agrees for them), and
+    say which Labs keep the others. A running Base guest is left alone."""
+    old = old_snapshots(only=vm.name)
+    for snapshot in old:
+        if snapshot.held_by:
+            out("  kept snapshot %s: %s" % (snapshot.name, snapshot.why_kept()))
+    unneeded = [snapshot for snapshot in old if not snapshot.held_by]
+    if not unneeded:
+        return
+    names = ", ".join(snapshot.name for snapshot in unneeded)
+    if unneeded[0].running:
+        out("  kept %s, which no Lab needs: %s is running; stop it (%s), then run `vmlab clean`" % (names, vm.name, stop_hint(vm)))
+        return
+    if not (os.environ.get(DELETE_OLD_SNAPSHOTS) == "1" or confirm("Delete %s's earlier snapshots that no Lab needs (%s)?" % (vm.name, names))):
+        out("  kept %s, which no Lab needs: `vmlab clean` or `vmlab base create %s --yes` deletes them; "
+            "with %s=1 in your environment `base create` deletes them without asking" % (names, name, DELETE_OLD_SNAPSHOTS))
+        return
+    free = shutil.disk_usage(str(vm.vmx.parent)).free
+    for snapshot in unneeded:
+        out("  deleting snapshot %s (Fusion merges it into the next one: minutes for a large one)" % snapshot.name)
+        snapshot.delete()
+        out("  deleted snapshot %s" % snapshot.name)
+    out("  %.1f GB free on the disk (%.1f GB before)" % (shutil.disk_usage(str(vm.vmx.parent)).free / 1e9, free / 1e9))
+
+
+def snapshot_findings():
+    """doctor's Host check: Base guests and Lab copies that keep provisioned snapshots nothing needs.
+    [(check, status, detail, fix)]"""
+    try:
+        old = old_snapshots()
+    except GuestError:
+        return []  # Fusion or the registry cannot be asked: the Labs' own checks say so
+    unneeded = {}
+    for snapshot in old:
+        if not snapshot.held_by:
+            unneeded.setdefault(snapshot.owner, []).append(snapshot.name)
+    return [
+        ("Old snapshots", WARN, "%s keeps %d earlier snapshot%s no Lab needs: %s; they take disk space"
+         % (owner, len(names), "" if len(names) == 1 else "s", ", ".join(names)), "vmlab clean   (asks first; a running VM is left alone)")
+        for owner, names in sorted(unneeded.items())
+    ]  # fmt: skip
 
 
 def _credentials_path(base_vm):
@@ -680,8 +858,7 @@ class FusionProvider(Provider):
         if record["snapshot"] not in snapshots:
             problems.append((check, FAIL, "its snapshot %s is missing: Labs are cloned from it" % record["snapshot"], "vmlab base create %s --reprovision" % name))
         if running:
-            stop = "shut Windows down from its Start menu" if self.windows else "'%s' -T fusion stop '%s'" % (vmrun_binary(), base.vmx)
-            problems.append((check, WARN, "running: Labs cannot clone it while it runs", stop))
+            problems.append((check, WARN, "running: Labs cannot clone it while it runs", stop_hint(base)))
         findings += problems or [(check, OK, "provisioned (v%s), VM %s" % (record["provisioned"], base.vmx), None)]
         if self.windows and not record.get("elevated"):
             findings.append(("Elevation", WARN, "the Guest asks before elevating (UAC), which nothing can answer unattended",
@@ -787,6 +964,8 @@ class FusionProvider(Provider):
             if self.windows:
                 base_vm.clone_copy(self.vm)
                 self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
+                for snapshot in earlier_snapshots(self.vm.snapshots(), record["snapshot"]):  # a copy has no linked clones to need them
+                    self.vm.delete_snapshot(snapshot)
             else:
                 base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
             made_from = bases.provisioning(record)
@@ -964,6 +1143,9 @@ class HostVMs:
     def stop_hint(self, name):
         return "vmrun stop '%s'" % vmx_path(name)
 
+    def old_snapshots(self, vms):
+        return old_snapshots(vms)
+
 
 def _encrypted(vmx):
     """Does this VM need a password to open (Fusion encrypts every VM with a TPM)?"""
@@ -1001,11 +1183,12 @@ def create_base(name, image, confirm, reprovision, out):
         and not reprovision
     ):  # fmt: skip
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
-        return
-    if not (record.get("installed") and vm.exists()):
-        iso = _installer_iso(name, image, confirm, out)
-        _install(name, vm, iso, out)
-    _provision(name, vm, out)
+    else:
+        if not (record.get("installed") and vm.exists()):
+            iso = _installer_iso(name, image, confirm, out)
+            _install(name, vm, iso, out)
+        _provision(name, vm, out)
+    delete_old_snapshots(name, vm, confirm, out)
 
 
 def _installer_iso(name, image, confirm, out):
@@ -1187,9 +1370,8 @@ def _provision(name, vm, out):
         ssh.close()
     vm.stop()
     provisioned_id = uuid.uuid4().hex
-    snapshot = "vmlab-provisioned-%s" % provisioned_id[:12]
-    # Earlier snapshots stay: Lab clones made from them still need them until they are re-cloned.
-    vm.snapshot(snapshot)
+    snapshot = provisioned_snapshot(provisioned_id)
+    vm.snapshot(snapshot)  # earlier ones go once no Lab clone needs them: delete_old_snapshots
     record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot)
     bases.Registry().put(name, record)
     out('Base guest %s is ready (Fusion VM %s). Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))

@@ -33,7 +33,8 @@ from vmlab import bases, hostproc, uihelpers
 from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
-    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, fusion_dir, running_vmx, save_credentials, sound_off, vm_password, vmrun, vmx_path,
+    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
+    save_credentials, sound_off, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
@@ -105,11 +106,12 @@ def create_base(name, image, prompt, reprovision, out):
     sound_off(vm, out)
     if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not (reprovision or other_image):
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
-        return
-    wizard = Wizard(name, prompt, out)
-    if other_image or not (record.get("installed") and vm.exists()):
-        _adopt(wizard, name, vm, image)
-    _provision(wizard, name, vm)
+    else:
+        wizard = Wizard(name, prompt, out)
+        if other_image or not (record.get("installed") and vm.exists()):
+            _adopt(wizard, name, vm, image)
+        _provision(wizard, name, vm)
+    delete_old_snapshots(name, vm, prompt.confirm, out)
 
 
 class Wizard:
@@ -421,9 +423,8 @@ def _provision(wizard, name, vm):
         ssh.close()
     vm.stop()
     provisioned_id = uuid.uuid4().hex
-    snapshot = "vmlab-provisioned-%s" % provisioned_id[:12]
-    # Earlier snapshots stay: Lab clones made from them still need them until they are re-cloned.
-    vm.snapshot(snapshot)
+    snapshot = provisioned_snapshot(provisioned_id)
+    vm.snapshot(snapshot)  # the earlier ones go after asking: delete_old_snapshots
     record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot, language=language)
     registry.put(name, record)
     wizard.out('Base guest %s is ready (Fusion VM %s). Windows Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))
