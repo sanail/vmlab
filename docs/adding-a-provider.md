@@ -44,7 +44,7 @@ Every call into the hypervisor must be bounded: `start`, `stop`, `restore` and `
 
 Guests have no sound device: nothing a Guest plays may reach the Host's speakers or headset, and a Guest must never take the Host's Bluetooth headset. Start every Guest without one, and make sure a snapshot revert cannot bring it back (Tart runs Guests with `--no-audio`; Fusion sets `sound.present = "FALSE"` at every start), and have `doctor` warn about any of the Provider's VMs that still has one (Fusion: `sound_findings()`, a Host check).
 
-A Provider that keeps VMs on the Host describes them for `vmlab clean` with a `HostVMs` inventory (`vmlab.clean`): its VMs and whether they run, how to delete and stop one, its service files, and `old_snapshots(vms)`, the snapshots of earlier Base guest provisionings its VMs keep (Tart: none, a Base guest is provisioned again in place; Fusion: `fusion.old_snapshots()`, whose items say whether a linked clone still needs them, and a `doctor` Host check).
+A Provider that keeps VMs on the Host describes them for `vmlab clean` with a `HostVMs` inventory (`vmlab.clean`): its VMs and whether they run, how to delete and stop one, its service files, and `old_snapshots(vms)`, the snapshots of earlier Base guest provisionings its VMs keep (Tart: none, a Base guest is provisioned again in place; Fusion: `fusion.old_snapshots()`, a Linux Base guest's, whose items say whether a linked clone still needs them, and a `doctor` Host check).
 
 Keep anything machine-specific or secret out of the project: keys, known_hosts, passwords and registries go under `vmlab.home.vmlab_home()` (mode 0700) or the Keychain.
 

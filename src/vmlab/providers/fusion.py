@@ -8,7 +8,8 @@ for Windows, whose VM is encrypted for its TPM and which vmrun cannot clone
 vmlab-clean, taken when the clone is made: restoring reverts to it. VMs live
 under $VMLAB_HOME/fusion, never in Fusion's own Virtual Machines folder. Each
 provisioning of a Base guest takes a new snapshot; an earlier one goes, after
-asking, once no linked clone needs it (delete_old_snapshots, `vmlab clean`).
+asking, once no linked clone needs it (delete_old_snapshots, `vmlab clean`);
+Windows Base guests keep theirs, since vmrun cannot delete an encrypted VM's.
 
 Channels (ADR 0003): SSH first, with vmlab's key and the host key pinned when
 the Base guest was made, and vmrun guest operations as the fallback. On Linux
@@ -442,18 +443,13 @@ def provisioned_snapshot(provisioned_id):
     return PROVISIONED_PREFIX + provisioned_id[:12]
 
 
-def earlier_snapshots(snapshots, keep):
-    """The provisioned snapshots among snapshots other than keep, the one in use."""
-    return [s for s in snapshots if s.startswith(PROVISIONED_PREFIX) and s != keep]
-
-
 def stop_hint(vm):
     """How the person stops vm: an encrypted (Windows) VM opens in vmrun only with its password."""
     return "shut Windows down from its Start menu" if _encrypted(vm.vmx) else "'%s' -T fusion stop '%s'" % (vmrun_binary(), vm.vmx)
 
 
 class OldSnapshot:
-    """A provisioned snapshot of a Base guest or Lab copy that is not the one in use."""
+    """A provisioned snapshot of a Base guest that is not the one Labs are cloned from now."""
 
     def __init__(self, vm, owner, name, running, held_by):
         self.vm, self.owner, self.name, self.running = vm, owner, name, running
@@ -471,48 +467,40 @@ class OldSnapshot:
 
 
 def old_snapshots(vms=None, only=None):
-    """The earlier provisioned snapshots of vmlab's Fusion VMs ({name: running}, default all; only:
-    that one's): a Base guest's other than its current one, and a Lab copy's (Windows) other than the
-    one it was made from, which it has because the Base guest's snapshots came along with the copy.
-    A VM whose snapshots cannot be listed is skipped: its Lab's own checks say what is wrong."""
+    """The earlier provisioned snapshots of vmlab's Base guests on Fusion (vms: {name: running}, default
+    all; only: that one's), other than the current one. A Lab's clone has none. Encrypted (Windows) VMs are skipped: vmrun
+    cannot delete their snapshots. A VM whose snapshots cannot be listed is skipped too: its Lab's own
+    checks say what is wrong."""
     vms = HostVMs().vms() if vms is None else vms
     registry = {r.get("vm") or bases.vm_name(name): (name, r) for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
     found = []
     for vm_name, running in sorted(vms.items()):
-        if only and vm_name != only:
+        if vm_name not in registry or (only and vm_name != only):
             continue
-        if vm_name in registry:
-            name, record = registry[vm_name]
-            owner, keep, secrets = "Base guest %s" % name, record.get("snapshot"), vm_name
-        else:
-            clone = _clone_record(vm_name)
-            if not (clone.get("made_from") and clone.get("base")):
-                continue  # not a Lab's: `vmlab clean` deletes it whole
-            owner = "Lab %s of %s" % (clone.get("lab"), clone.get("project"))
-            keep, secrets = provisioned_snapshot(clone["made_from"]), bases.vm_name(clone["base"])
-        if not keep:
-            continue  # a Base guest never provisioned yet
-        vm = FusionVM(vmx_path(vm_name), secrets=secrets)
+        name, record = registry[vm_name]
+        if not record.get("snapshot"):
+            continue  # never provisioned yet
+        vm = FusionVM(vmx_path(vm_name))
+        if _encrypted(vm.vmx):
+            # Fusion 26's vmrun deletes an encrypted VM's snapshot from its list, then fails ("Cannot read
+            # the virtual machine configuration file") before it merges the disks: nothing is freed.
+            continue
         try:
-            names = earlier_snapshots(vm.snapshots(), keep)
+            names = [s for s in vm.snapshots() if s.startswith(PROVISIONED_PREFIX) and s != record["snapshot"]]
         except GuestError:
             continue
-        holders = _linked_clones(registry[vm_name], vm, vms) if names and vm_name in registry else {}
-        found += [OldSnapshot(vm, owner, s, running, holders.get(s, [])) for s in names]
+        holders = _linked_clones(name, vm, vms) if names else {}
+        found += [OldSnapshot(vm, "Base guest %s" % name, s, running, holders.get(s, [])) for s in names]
     return found
 
 
-def _linked_clones(base, vm, vms):
+def _linked_clones(name, vm, vms):
     """{snapshot: [(who, how to let it go)]}: the linked clones made from the Base guest's snapshots,
     which need them until they are cloned again. A Lab's clone says which in its record (made_from).
     Fusion lists each snapshot's linked clones in the Base guest's .vmsd, but never forgets one, and a
     Lab is cloned again at the same path: that list only counts for VMs vmlab has no record of, and
     for them the parent disk the clone's own disk names decides, when it can be read."""
-    name, record = base
-    holders = {}
-    if record.get("os") == "windows":
-        return holders  # Windows Labs are copies: they need none of the Base guest's snapshots
-    recorded = set()
+    holders, recorded = {}, set()
     for clone_name in sorted(vms):
         clone = _clone_record(clone_name)
         if clone.get("base") != name or not clone.get("made_from"):
@@ -964,8 +952,6 @@ class FusionProvider(Provider):
             if self.windows:
                 base_vm.clone_copy(self.vm)
                 self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
-                for snapshot in earlier_snapshots(self.vm.snapshots(), record["snapshot"]):  # a copy has no linked clones to need them
-                    self.vm.delete_snapshot(snapshot)
             else:
                 base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
             made_from = bases.provisioning(record)

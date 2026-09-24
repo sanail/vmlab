@@ -251,46 +251,27 @@ class WindowsCloneTest(WindowsTestCase):
 
 
 class WindowsOldSnapshotsTest(WindowsTestCase):
-    """A Windows Lab is a copy with no linked clones: its copy of the Base guest's earlier
-    provisioned snapshots is never needed."""
+    """vmrun cannot delete an encrypted VM's snapshots (it drops one from the list, then fails before
+    merging its disk): a Windows Base guest and its Labs' copies keep their earlier provisioned ones."""
 
     def setUp(self):
         super().setUp()
         self.project.config(WINDOWS_LAB)
         self.base_vmx = self.windows_base("third", earlier=("first", "second"))
 
-    def test_a_new_copy_has_no_earlier_provisioned_snapshots(self):
-        self.vmlab("up")
-
-        [clone] = self.clones()
-        self.assertEqual(self.snapshots(clone), ["clean", "vmlab-provisioned-third", "vmlab-clean"])
-        [delete] = [c for c in self.raw_calls() if "deleteSnapshot" in c][:1]
-        self.assertEqual(delete[:2], ["-vp", VM_PASSWORD])
-
-    def test_base_create_deletes_the_base_guests_with_its_password(self):
-        r = self.vmlab("base", "create", "windows-11", "--yes")
-
-        self.assertExit(r, 0)
-        self.assertEqual(self.snapshots(self.base_vmx), ["clean", "vmlab-provisioned-third"])
-        self.assertTrue(all(c[:2] == ["-vp", VM_PASSWORD] for c in self.raw_calls() if "deleteSnapshot" in c))
-
-    def test_doctor_warns_about_a_copy_made_by_an_older_vmlab_and_clean_deletes_them(self):
-        self.vmlab("up")
+    def test_nothing_tries_to_delete_them(self):
+        self.assertExit(self.vmlab("up"), 1)  # never reachable here: no Guest really boots
         self.vmlab("down")
-        [clone] = self.clones()
-        self.set_state(clone, snapshots=["clean", "vmlab-provisioned-first", "vmlab-provisioned-third", "vmlab-clean"])
-
-        r = self.vmlab("doctor")
-
-        self.assertRegex(r.out, r"warn\s+Host: Old snapshots: Lab win of \S+ keeps 1 earlier snapshot no Lab needs: vmlab-provisioned-first")
-        self.assertRegex(r.out, r"warn\s+Host: Old snapshots: Base guest windows-11 keeps 2 earlier snapshots")
-
-        r = self.vmlab("clean", "--yes")
-
+        r = self.vmlab("base", "create", "windows-11", "--yes")
         self.assertExit(r, 0)
-        self.assertEqual(self.snapshots(clone), ["clean", "vmlab-provisioned-third", "vmlab-clean"])
-        self.assertEqual(self.snapshots(self.base_vmx), ["clean", "vmlab-provisioned-third"])
-        self.assertNotIn("Old snapshots", self.vmlab("doctor").out)
+        clean = self.vmlab("clean", "--yes")
+        doctor = self.vmlab("doctor")
+
+        self.assertEqual([c for c in self.raw_calls() if "deleteSnapshot" in c], [])
+        base = self.vms().get(str(self.base_vmx.resolve()), {}).get("snapshots") or self.base_vmx.with_suffix(".vmsd").read_text().split()
+        self.assertEqual(base, ["clean", "vmlab-provisioned-first", "vmlab-provisioned-second", "vmlab-provisioned-third"])
+        self.assertIn("nothing to clean", clean.out)
+        self.assertNotIn("Old snapshots", doctor.out)
 
 
 class WindowsBaseWizardTest(WindowsTestCase):
