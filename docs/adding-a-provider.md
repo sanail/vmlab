@@ -28,6 +28,7 @@ These are built on the methods above; override them only when the Guest needs so
 - `up()`, `down()` and `exec()` (Channel fallback).
 - `shell_argv(command)`: `sh -c`, or PowerShell on Windows.
 - `remove_paths(paths, timeout)`: app state reset.
+- `spawner()`: how `g.spawn` starts, checks and stops background processes (`vmlab.providers.spawning`): `PosixSpawner` (process groups, logs in `/tmp`), or `WindowsSpawner` (Job Objects, logs in `%TEMP%`) for Windows Labs. Both ride on `exec`; the Fake Provider overrides it to put logs where `read_file` looks.
 - `read_file(guest_path, timeout)`: `g.get` and `vmlab get`, the bytes of a Guest file (`GuestError` naming it when it is not there). The default reads it over `exec` as base64 with the Guest's shell (`sh` or PowerShell), with `put_file`'s path rules; the Fake Provider overrides it to map the path into its Host folder.
 - `probe_argv()`: the command `doctor` sends down each Channel (and `doctor --bench` times).
 - `diagnose()`: `doctor`'s checks of what the Guest is made from, answerable while it is stopped (its Base guest, its clone), as `[(check, status, detail, fix)]` with a status from `vmlab.providers.base` (`OK`, `INFO`, `WARN`, `FAIL`). A `FAIL` means the Guest cannot start, and doctor checks nothing further for the Lab. The default has none.

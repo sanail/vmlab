@@ -4,26 +4,35 @@ A spawned process writes its stdout and stderr, together, to a log file in the
 Guest. Stopping ends what it started too:
 
 - POSIX: it leads its own process group (setsid, or perl's where there is no
-  setsid(1), as on macOS); stop sends the group SIGTERM, then SIGKILL.
-- Windows: cmd.exe starts it, holding the redirect of both streams to the log;
-  stop ends that process tree (taskkill /T). Its pid is that cmd.exe's, and its
-  start time guards against a reused pid.
+  setsid(1), as on macOS); stop sends the group SIGTERM, then SIGKILL after
+  TERM_SECONDS. Its start time, as ps prints it, guards against a reused pid.
+- Windows: guest/windows/vmlab-spawn.ps1 starts it in a Job Object, which holds
+  everything it starts, children whose parent has exited too; stop closes the
+  windows of the job's processes, gives those that had one TERM_SECONDS, then
+  ends the job. Its start time guards running() against a reused pid.
 
-Every call rides on Provider.exec. A process is described by the dict start()
-returns: {"pid", "log"[, "started"]}.
+Every call rides on Provider.exec.
 """
 
-import base64
+import collections
 import subprocess
 import uuid
 
 from vmlab.config import UsageError, is_argv
-from vmlab.providers.base import GuestError, ps_quote, sh_expand_tilde
+from vmlab.providers.base import GuestError, sh_expand_tilde
+from vmlab.providers.windows import helper_call
 
 NO_COMMAND = 127  # the start script's exit code when the Guest has no such command
 GONE = 4  # the stop script's exit code when nothing of the process was left to stop
 STOPPED, EXITED = "stopped", "exited"  # what stop() found
-TERM_SECONDS = 5  # how long a process gets to end on SIGTERM before SIGKILL (POSIX)
+TERM_SECONDS = 5  # how long a process gets to end when asked, before it is killed
+
+# A started process. started is its start time as the Guest tells it, to recognise it by (a
+# pid may be reused); job is its Windows Job Object's name (None on POSIX).
+Process = collections.namedtuple("Process", "pid log started job")
+
+# POSIX: PID's start time, the same whatever the locale and time zone of the call's env.
+_START_TIME = 'st() { set -- $(LC_ALL=C TZ=UTC0 ps -o lstart= -p "$1" 2>/dev/null); s="$*"; echo "${s:--}"; }; '
 
 
 def validate_argv(argv):
@@ -39,34 +48,40 @@ class PosixSpawner:
         self.log_dir = log_dir  # ~ is the Guest user's home
 
     def start(self, argv, env, timeout):
-        """Start argv detached; returns {"pid", "log"}: its log is in log_dir."""
+        """Start argv detached, its log in log_dir."""
         log = "%s/vmlab-spawn-%s.log" % (self.log_dir, uuid.uuid4().hex[:12])
-        script = "log=$1; shift; " + sh_expand_tilde("log") + (
+        script = "log=$1; shift; " + sh_expand_tilde("log") + _START_TIME + (
             'command -v "$1" >/dev/null 2>&1 || { echo "no such command: $1" >&2; exit %d; }; '
             "if command -v setsid >/dev/null 2>&1; then "
             'setsid "$@" </dev/null >"$log" 2>&1 & '
             "else "
             "perl -e 'use POSIX (); POSIX::setsid(); exec { $ARGV[0] } @ARGV or die \"cannot run $ARGV[0]: $!\\n\"' \"$@\" </dev/null >\"$log\" 2>&1 & "
             "fi; "
-            'echo "$!"' % NO_COMMAND
+            'pid=$!; echo "$pid"; st "$pid"' % NO_COMMAND
         )
         result = self.provider.exec(["sh", "-c", script, "sh", log] + argv, timeout, env=env)
-        [pid] = _parse(argv, result, 1)
-        return {"pid": int(pid), "log": log}
+        pid, started = _parse(argv, result, 2)
+        return Process(int(pid), log, started, None)
 
     def running(self, process, timeout):
-        return self.provider.exec(["kill", "-0", str(process["pid"])], timeout).ok
+        script = _START_TIME + 'kill -0 "$1" 2>/dev/null && [ "$(st "$1")" = "$2" ]'
+        return self.provider.exec(["sh", "-c", script, "sh", str(process.pid), process.started], timeout).ok
 
     def stop(self, process, timeout):
-        """End the process and its group: STOPPED, or EXITED if nothing of it was left. GuestError if it lives on."""
+        """End the process and its group: STOPPED, or EXITED if nothing of it was left. GuestError if it lives on.
+
+        The group is its, unless its leader's pid now belongs to a process that started later: a
+        group id is not reused while the group lives, and the leader may have exited before it."""
         polls = TERM_SECONDS * 10
-        script = (
-            'g=-$1; kill -0 "$g" 2>/dev/null || exit %d; kill -TERM "$g" 2>/dev/null; i=0; '
+        script = _START_TIME + (
+            'g=-$1; kill -0 "$g" 2>/dev/null || exit %d; '
+            'if kill -0 "$1" 2>/dev/null && [ "$(st "$1")" != "$2" ]; then exit %d; fi; '
+            'kill -TERM "$g" 2>/dev/null; i=0; '
             'while kill -0 "$g" 2>/dev/null; do '
             '[ $i -eq %d ] && kill -KILL "$g" 2>/dev/null; [ $i -ge %d ] && exit 1; i=$((i+1)); sleep 0.1; '
-            "done; exit 0" % (GONE, polls, polls + 20)
+            "done; exit 0" % (GONE, GONE, polls, polls + 20)
         )
-        return _stopped(process, self.provider.exec(["sh", "-c", script, "sh", str(process["pid"])], timeout))
+        return _stopped(process, self.provider.exec(["sh", "-c", script, "sh", str(process.pid), process.started], timeout))
 
 
 class WindowsSpawner:
@@ -74,44 +89,33 @@ class WindowsSpawner:
         self.provider = provider
 
     def start(self, argv, env, timeout):
-        """Start argv detached; returns {"pid", "started", "log"}: cmd.exe's pid and start time."""
-        if any(c in a for a in argv for c in "\r\n"):
-            raise UsageError("spawn on Windows cannot pass a line break in an argument (cmd.exe ends the command there); put the text in a file with g.put")
+        """Start argv detached, in a Job Object of its own; its log is in %TEMP%."""
         if '"' in argv[0]:
             raise UsageError("spawn: %r is not a program name" % argv[0])
-        line = base64.b64encode(cmd_line(argv).encode("utf-8")).decode("ascii")
-        script = (
-            "$log = [Environment]::ExpandEnvironmentVariables('%%TEMP%%\\vmlab-spawn-%s.log'); "
-            "if (-not (Get-Command -CommandType Application -Name %s -ErrorAction SilentlyContinue)) "
-            "{ [Console]::Error.WriteLine('no such command: ' + %s); exit %d }; "
-            "$info = New-Object Diagnostics.ProcessStartInfo; "
-            "$info.FileName = Join-Path $env:SystemRoot 'System32\\cmd.exe'; "
-            "$q = [char]34; $line = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('%s')); "
-            "$info.Arguments = '/d /s /c ' + $q + $line + ' <nul >' + $q + $log + $q + ' 2>&1' + $q; "
-            "$info.UseShellExecute = $false; $info.CreateNoWindow = $true; $info.WorkingDirectory = $env:USERPROFILE; "
-            "$p = [Diagnostics.Process]::Start($info); $p.Id; $p.StartTime.ToFileTimeUtc(); $log"
-            % (uuid.uuid4().hex[:12], ps_quote(argv[0]), ps_quote(argv[0]), NO_COMMAND, line)
-        )
-        result = self.provider.exec(self.provider.shell_argv(script), timeout, env=env)
-        pid, started, path = _parse(argv, result, 3)
-        return {"pid": int(pid), "started": int(started), "log": path}
-
-    def _find(self, process):
-        """PowerShell setting $p to the process, or $null once it has ended (or its pid is another's)."""
-        return (
-            "$p = Get-Process -Id %d -ErrorAction SilentlyContinue; "
-            "if ($p -and $p.StartTime.ToFileTimeUtc() -ne %d) { $p = $null }; " % (process["pid"], process["started"])
-        )
+        name = "vmlab-spawn-%s" % uuid.uuid4().hex[:12]
+        params = {
+            "argv": argv,
+            "line": subprocess.list2cmdline(argv),  # for CreateProcess
+            "cmd_line": cmd_line(argv),  # for a batch file, which cmd.exe runs
+            "log": "%%TEMP%%\\%s.log" % name,
+            "job": name,
+        }
+        pid, started, log = _parse(argv, self._call("start", params, timeout, env), 3)
+        return Process(int(pid), log, int(started), name)
 
     def running(self, process, timeout):
-        return self.provider.exec(self.provider.shell_argv(self._find(process) + "if ($p) { exit 0 } else { exit 1 }"), timeout).ok
+        script = (
+            "$p = Get-Process -Id %d -ErrorAction SilentlyContinue; "
+            "if ($p -and $p.StartTime.ToFileTimeUtc() -eq %d) { exit 0 } else { exit 1 }" % (process.pid, process.started)
+        )
+        return self.provider.exec(self.provider.shell_argv(script), timeout).ok
 
     def stop(self, process, timeout):
-        script = self._find(process) + (
-            "if (-not $p) { exit %d }; & taskkill.exe /T /F /PID %d 2>&1 | Out-Null; "
-            "if (-not $p.WaitForExit(%d)) { exit 1 }; exit 0" % (GONE, process["pid"], (TERM_SECONDS + 2) * 1000)
-        )
-        return _stopped(process, self.provider.exec(self.provider.shell_argv(script), timeout))
+        return _stopped(process, self._call("stop", {"job": process.job, "grace_ms": TERM_SECONDS * 1000}, timeout))
+
+    def _call(self, command, params, timeout, env=None):
+        argv, stdin = helper_call("vmlab-spawn.ps1", command, params)
+        return self.provider.exec(argv, timeout, env=env, stdin=stdin)
 
 
 def cmd_line(argv):
@@ -140,7 +144,7 @@ def _stopped(process, result):
     if not result.ok:
         raise GuestError(
             "spawned process %d (log %s) is still running after vmlab tried to stop it%s"
-            % (process["pid"], process["log"], ": " + result.stderr.strip() if result.stderr.strip() else ""),
+            % (process.pid, process.log, ": " + result.stderr.strip() if result.stderr.strip() else ""),
             "look at it in the Guest; it may ignore signals or belong to another user",
         )
     return STOPPED

@@ -22,13 +22,13 @@ acts through SendInput, in the logged-in user's session every Windows Channel
 runs in.
 """
 
-import io
 import json
 import os
 import pkgutil
 import tempfile
 
 from vmlab.providers.base import ChannelError, GuestError
+from vmlab.providers.windows import helper_call
 
 MACOS_HELPER = "/usr/local/vmlab/bin/vmlab-ui"
 MISSING = 127
@@ -62,12 +62,6 @@ def _result(result, command, helper):
         raise GuestError("UI %s: the %s helper printed no JSON: %r" % (command, helper, result.stdout[:200]))
 
 
-# Reads the parameters line from stdin, then runs the rest as a script block. No double
-# quotes: the Channel's command line goes through Windows' quoting rules.
-WINDOWS_BOOTSTRAP = (
-    "$s = [IO.StreamReader]::new([Console]::OpenStandardInput()).ReadToEnd(); $i = $s.IndexOf([char]10); "
-    "& ([ScriptBlock]::Create($s.Substring($i + 1))) '%s' $s.Substring(0, $i).TrimEnd([char]13)"
-)
 # s for a call that may first compile the helper: ~10 s in a Guest that has no copy yet for this
 # vmlab (a Base guest provisioned by an older one; provisioning compiles it into the snapshot)
 WINDOWS_COMPILE_TIMEOUT = 60
@@ -75,8 +69,7 @@ WINDOWS_COMPILE_TIMEOUT = 60
 
 def windows_call(command, params):
     """(argv, stdin) that run one command of the Windows helper over any Channel."""
-    stdin = io.BytesIO(json.dumps(params).encode("utf-8") + b"\n" + pkgutil.get_data("vmlab", "guest/windows/vmlab-ui.ps1"))
-    return ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_BOOTSTRAP % command], stdin
+    return helper_call("vmlab-ui.ps1", command, params)
 
 
 def windows_helper_info(channel, timeout):

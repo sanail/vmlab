@@ -25,7 +25,7 @@ from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
-from vmlab.scenario import ChannelUse, Guest, run_scenario
+from vmlab.scenario import STILL_RUNNING, ChannelUse, Guest, run_scenario
 
 
 def discover(project, names):
@@ -222,7 +222,7 @@ class _LabRun:
                 if not provider.is_running():
                     started_guests.add(key)
                 provider.up()
-                results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls)
+                results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out)
             except GuestError as exc:
                 self.error = str(exc)
             finally:
@@ -254,7 +254,7 @@ class _LabRun:
         _print_summary(data, out)
         return data, ours and keep and provider.is_running()
 
-    def _scenarios(self, provider, scenarios, ad_hoc, fresh, lab_calls):
+    def _scenarios(self, provider, scenarios, ad_hoc, fresh, lab_calls, out):
         lab = self.lab
         provider.on_exec = lab_calls.record
         artifact = self.built["artifact"] if self.built else None
@@ -283,7 +283,8 @@ class _LabRun:
         for path in scenarios:
             guest = Guest(lab, provider, self.run_dir, launch_app)
             provider.on_exec = guest.channel_use.record
-            results.append(run_scenario(path, guest, prepare))
+            still_running = lambda entry: out(report.still_running(lab.name, path.stem, entry))  # noqa: E731
+            results.append(run_scenario(path, guest, prepare, still_running))
         return results
 
 
@@ -305,9 +306,8 @@ def _print_summary(data, out):
         out("ERROR %s: %s" % (data["lab"], data["error"]))
     for s in data["scenarios"]:
         for p in s["spawned"]:
-            if p["ended"] == "failed":
-                out("warning: %s/%s: spawned `%s` (pid %s) is still running in the Guest: %s"
-                    % (data["lab"], s["name"], report.command_line(p["argv"]), p["pid"], p["stop_error"].splitlines()[0]))
+            if p["ended"] == STILL_RUNNING:
+                out(report.still_running(data["lab"], s["name"], p))
         if s["status"] == "error":
             out("ERROR %s/%s: %s" % (data["lab"], s["name"], s["error"]))
         for c in s["checks"]:

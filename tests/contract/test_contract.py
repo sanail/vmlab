@@ -136,6 +136,9 @@ def walk(node):
 # to perl (macOS Guests have no Python without the developer tools), on Windows a copy of
 # PowerShell. The Scenario sets TAG.
 SPAWN = r'''
+import base64
+import time
+
 PERL_SERVER = """
 use IO::Socket::INET;
 $| = 1;
@@ -170,6 +173,16 @@ def server(g, name, port):
         return spawned, ["curl.exe", "-s", "http://127.0.0.1:%d/" % port]
     # A child of the process spawned, so stopping it must end its process group.
     spawned = g.spawn(["sh", "-c", '"$@" & wait', "sh", program(g, name), "-e", PERL_SERVER, str(port), TAG])
+    return spawned, ["perl", "-MIO::Socket::INET", "-e", PERL_CLIENT, str(port)]
+
+def orphaned_server(g, name, port):
+    # (a spawned process that starts an HTTP server as server() does, then exits, the argv that asks it)
+    if g.os == "windows":
+        script = WINDOWS_SERVER % (port, port, TAG)
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        start = "Start-Process -NoNewWindow -FilePath '%s' -ArgumentList '-NoProfile','-EncodedCommand','%s'" % (program(g, name), encoded)
+        return g.spawn(["powershell", "-NoProfile", "-Command", start]), ["curl.exe", "-s", "http://127.0.0.1:%d/" % port]
+    spawned = g.spawn(["sh", "-c", '"$@" &', "sh", program(g, name), "-e", PERL_SERVER, str(port), TAG])
     return spawned, ["perl", "-MIO::Socket::INET", "-e", PERL_CLIENT, str(port)]
 
 def remove_programs(g, *names):
@@ -406,14 +419,25 @@ def scenario(g):
     gone = g.wait_for(process="vs" + TAG, gone=True, timeout=30)
     g.check("stop ends it", gone["met"], detail=gone)
     g.check("it is not running", not web.running())
+    orphaned, ask = orphaned_server(g, "vs" + TAG + "c", PORT + 2)
+    answered = g.wait_for(exec=ask, pattern="ok " + TAG, timeout=60)
+    g.check("a server whose starter exited answers", answered["met"], detail=[answered, orphaned.output()])
+    for _ in range(40):
+        if not orphaned.running():
+            break
+        time.sleep(0.5)
+    g.check("its starter exited", not orphaned.running())
+    orphaned.stop()
+    gone = g.wait_for(process="vs" + TAG + "c", gone=True, timeout=30)
+    g.check("stop ends what an exited process left running", gone["met"], detail=gone)
     left, ask = server(g, "vs" + TAG + "b", PORT + 1)
     answered = g.wait_for(exec=ask, pattern="ok " + TAG, timeout=60)
     g.check("the second server answers", answered["met"], detail=[answered, left.output()])
-    remove_programs(g, "vs" + TAG)
+    remove_programs(g, "vs" + TAG, "vs" + TAG + "c")
 """ % (tag, port))
         self.assertPassed(proc, report)
-        [web, left] = report["scenarios"][0]["spawned"]
-        self.assertEqual((web["ended"], left["ended"]), ("scenario", "run"), report["scenarios"][0]["spawned"])
+        [web, orphaned, left] = report["scenarios"][0]["spawned"]
+        self.assertEqual((web["ended"], orphaned["ended"], left["ended"]), ("scenario", "scenario", "run"), report["scenarios"][0]["spawned"])
         self.assertPassed(*self.target.scenario("spawn_after.py", COMMANDS + SPAWN + """
 TAG = %r
 

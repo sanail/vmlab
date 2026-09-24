@@ -4,16 +4,15 @@ import json
 import shlex
 import xml.etree.ElementTree as ET
 
-from vmlab.scenario import OUTPUT_TAIL as OUTPUT_TAIL_SHOWN
-from vmlab.scenario import VISUAL
+from vmlab.scenario import BY_ITSELF, BY_SCENARIO, OUTPUT_TAIL, STILL_RUNNING, VISUAL, WITH_RUN
 
 STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
 # How a spawned process ended: its report entry's "ended".
 ENDED = {
-    "scenario": "stopped by the Scenario",
-    "run": "stopped at the end of the Run",
-    "exited": "had exited by itself",
-    "failed": "still running: vmlab could not stop it",
+    BY_SCENARIO: "stopped by the Scenario",
+    WITH_RUN: "stopped at the end of the Run",
+    BY_ITSELF: "had exited by itself",
+    STILL_RUNNING: "still running: vmlab could not stop it",
 }
 
 
@@ -78,6 +77,12 @@ def command_line(argv):
     return " ".join(shlex.quote(a) for a in argv)
 
 
+def still_running(lab, scenario, entry):
+    """The warning about a spawned process vmlab could not stop (its report entry)."""
+    return "warning: %s/%s: spawned `%s` (pid %s) is still running in the Guest: %s" % (
+        lab, scenario, command_line(entry["argv"]), entry["pid"], entry["stop_error"].splitlines()[0])
+
+
 def _evidence(scenario):
     return "\n".join(["evidence:"] + scenario["screenshots"]) if scenario["screenshots"] else ""
 
@@ -130,7 +135,7 @@ def _markdown(report):
                 if p["output_tail"] is None:
                     lines.append("  output unreadable: %s" % p["output_error"].splitlines()[0])
                 else:
-                    lines += ["", "  Its output%s:" % (" (the end)" if len(p["output_tail"]) >= OUTPUT_TAIL_SHOWN else ""), "", "  ```"]
+                    lines += ["", "  Its output%s:" % (" (the end)" if len(p["output_tail"]) >= OUTPUT_TAIL else ""), "", "  ```"]
                     lines += ["  " + line for line in p["output_tail"].splitlines()] + ["  ```"]
         for shot in s["screenshots"]:
             lines.append("- screenshot: [%s](%s)" % (shot, shot))

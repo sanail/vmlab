@@ -245,6 +245,8 @@ The UI helper (`src/vmlab/guest/windows/vmlab-ui.ps1`) is sent with every call, 
 - **Typing pace**: Notepad (WinUI) dropped characters sent 5 ms apart now and then (one call in three); the helper waits 20 ms between characters.
 - Text areas are `Document` elements in WinUI and rich edits, and so are web pages: an editable one gets the role `textarea`, and its text comes through its text pattern.
 
+`g.spawn` in a Windows Guest goes through `src/vmlab/guest/windows/vmlab-spawn.ps1`, sent with every call like the UI helper. It starts the program itself (so `handle.pid` is the program's) in a Job Object that holds everything it starts, and `stop()` ends that job: children whose parent has exited are ended too, which a walk of parent pids (`taskkill /T`) misses. Its C# is compiled into `C:\ProgramData\vmlab\spawn` on the first spawn after a start or restore (about 1 s; no provisioning needed); a spawn then takes about 0.5 s.
+
 A Scenario is a Python file defining `scenario(g)`:
 
 ```python

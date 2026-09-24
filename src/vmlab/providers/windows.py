@@ -16,6 +16,7 @@ Output is decoded as UTF-8, the code page provisioning gives Windows Guests.
 
 import base64
 import hashlib
+import io
 import json
 import pkgutil
 import shutil
@@ -80,6 +81,22 @@ def parse_result(argv, text, channel):
             "the Guest's call runner returned no result over Channel %s: %r" % (channel, text[:200]),
             "re-provision the Base guest: vmlab base create NAME --reprovision",
         )
+
+
+# Reads the parameters line from stdin, then runs the rest as a script block. No double
+# quotes: the Channel's command line goes through Windows' quoting rules.
+HELPER_BOOTSTRAP = (
+    "$s = [IO.StreamReader]::new([Console]::OpenStandardInput()).ReadToEnd(); $i = $s.IndexOf([char]10); "
+    "& ([ScriptBlock]::Create($s.Substring($i + 1))) '%s' $s.Substring(0, $i).TrimEnd([char]13)"
+)
+
+
+def helper_call(script, command, params):
+    """(argv, stdin) that run one command of the Guest script guest/windows/SCRIPT over any Channel:
+    a PowerShell script taking (COMMAND, PARAMS JSON), sent on stdin behind a line of parameters,
+    since a Windows command line is too short and too hard to quote for either."""
+    stdin = io.BytesIO(json.dumps(params).encode("utf-8") + b"\n" + pkgutil.get_data("vmlab", "guest/windows/" + script))
+    return ["powershell", "-NoProfile", "-NonInteractive", "-Command", HELPER_BOOTSTRAP % command], stdin
 
 
 def _hashed(data):

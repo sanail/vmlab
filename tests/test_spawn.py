@@ -5,6 +5,7 @@ Host process here: the tests look it up by pid, and kill whatever is left.
 """
 
 import os
+import re
 import signal
 import time
 
@@ -12,6 +13,8 @@ from harness import FAKE_LAB, VmlabTestCase
 
 # A process with a child: it writes the child's pid to ~/child.pid, then prints and waits.
 PARENT_AND_CHILD = '["sh", "-c", "sleep 300 & echo $! > \\"$HOME/child.pid\\"; echo started; echo oops >&2; sleep 300"]'
+# A process that starts a child and exits, leaving the child in its process group.
+ORPHAN = '["sh", "-c", "sleep 300 & echo $! > \\"$HOME/child.pid\\""]'
 
 
 def gone(pid, within=5):
@@ -37,7 +40,7 @@ class SpawnCase(VmlabTestCase):
         self.addCleanup(self.kill_leftovers)
 
     def kill_leftovers(self):
-        pids = [p["pid"] for d in self.project.run_dirs() for s in self.project.report(d)["scenarios"] for p in s.get("spawned", [])]
+        pids = [p["pid"] for d in self.project.run_dirs() if (d / "report.json").exists() for s in self.project.report(d)["scenarios"] for p in s.get("spawned", [])]
         pids += [int(p.read_text()) for p in self.project.home.glob("fake/*/fs/home/child.pid") if p.read_text().strip()]
         for pid in pids:
             for kill in (os.killpg, os.kill):
@@ -98,6 +101,37 @@ def scenario(g):
     ended = g.wait_for(exec=["kill", "-0", child], gone=True, timeout=5)
     g.check("child ended with it", ended["met"], detail=ended)
 """ % PARENT_AND_CHILD)
+
+    def test_stop_ends_the_children_of_a_process_that_exited(self):
+        scenario = self.assertPasses("""
+def scenario(g):
+    p = g.spawn(%s)
+    g.check("child started", g.wait_for(file="~/child.pid", timeout=10)["met"])
+    child = g.get("~/child.pid").strip()
+    exited = g.wait_for(exec=["kill", "-0", str(p.pid)], gone=True, timeout=10)
+    g.check("the process exited", exited["met"] and not p.running(), detail=exited)
+    g.check("its child runs", g.exec(["kill", "-0", child]).ok)
+    p.stop()
+    ended = g.wait_for(exec=["kill", "-0", child], gone=True, timeout=5)
+    g.check("its child ended", ended["met"], detail=ended)
+""" % ORPHAN)
+        [spawned] = scenario["spawned"]
+        self.assertEqual(spawned["ended"], "scenario", "something was left to stop, so it was not 'exited'")
+
+    def test_a_pid_now_another_process_s_is_not_signalled(self):
+        # A pid is reused only once its process and group are gone; the handle stands in for one
+        # whose pid a later process took by claiming a different start time.
+        scenario = self.assertPasses("""
+def scenario(g):
+    p = g.spawn(["sleep", "300"])
+    p._process = p._process._replace(started="Mon Jan  1 00:00:00 2001")
+    g.check("not running: the pid is another process's", not p.running())
+    p.stop()
+    g.check("stop leaves that process alone", g.exec(["kill", "-0", str(p.pid)]).ok)
+""")
+        [spawned] = scenario["spawned"]
+        self.assertEqual(spawned["ended"], "exited", spawned)
+        self.assertFalse(gone(spawned["pid"], within=0.5), "vmlab signalled a process that was not its")
 
     def test_a_missing_command_raises_naming_it(self):
         r, scenario = self.run_scenario("""
@@ -192,6 +226,55 @@ def scenario(g):
         [spawned] = scenario["spawned"]
         self.assertEqual(spawned["ended"], "exited", spawned)
         self.assertEqual(spawned["output_tail"], "bye\n")
+
+    def test_ctrl_c(self):
+        # The Run ends as Ctrl-C always ended it, with no report; what it spawned ends first.
+        self.project.scenario("spawn.py", """
+import time
+def scenario(g):
+    g.spawn(%s)
+    g.wait_for(file="~/child.pid", timeout=10)
+    g.put("~/ready", "")
+    time.sleep(30)
+    g.check("unreachable", True)
+""" % PARENT_AND_CHILD)
+        proc = self.project.vmlab_background("run")
+        self.addCleanup(proc.kill)
+        deadline = time.time() + 30
+        while not list(self.project.home.glob("fake/*/fs/home/ready")):
+            self.assertLess(time.time(), deadline, "the Scenario never got going")
+            time.sleep(0.05)
+        os.kill(proc.pid, signal.SIGINT)
+        out, err = proc.communicate(timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("KeyboardInterrupt", err)
+        self.assertTrue(gone(self.child_pid()), "what the Scenario spawned still runs")
+
+    def test_sys_exit(self):
+        self.project.scenario("spawn.py", """
+def scenario(g):
+    g.spawn(%s)
+    g.wait_for(file="~/child.pid", timeout=10)
+    raise SystemExit(3)
+""" % PARENT_AND_CHILD)
+        self.assertExit(self.project.vmlab("run"), 3)
+        self.assertTrue(gone(self.child_pid()), "what the Scenario spawned still runs")
+
+    def test_a_process_vmlab_cannot_stop_is_warned_about_when_the_run_ends_with_no_report(self):
+        # A path outside the Guest is a ConfigError under the Fake Provider: the Run ends with no report.
+        self.project.scenario("spawn.py", """
+def scenario(g):
+    g.spawn(["sleep", "300"])
+    g.exec(["sh", "-c", 'rm "$VMLAB_HOME"/fake/*/running'])
+    g.put("/../../outside", "x")
+""")
+        r = self.project.vmlab("run")
+        pids = [int(pid) for pid in re.findall(r"\(pid (\d+)\)", r.out)]
+        self.addCleanup(lambda: [os.kill(pid, signal.SIGKILL) for pid in pids if not gone(pid, within=0)])
+        self.assertExit(r, 2)
+        self.assertIn("leaves the Guest", r.err)
+        self.assertIn("spawned `sleep 300`", r.out)
+        self.assertIn("still running", r.out)
 
     def test_a_process_vmlab_cannot_stop_is_noted_and_the_result_stands(self):
         # The Scenario takes the Fake Guest down under vmlab (as a Guest that stopped answering), so

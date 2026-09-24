@@ -34,6 +34,8 @@ from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
 
 DETERMINISTIC, VISUAL = "deterministic", "visual, unverified"
 OUTPUT_TAIL = 2000  # characters of a spawned process's output in the report of a Run that did not pass
+# How a spawned process ended: its report entry's "ended".
+BY_SCENARIO, WITH_RUN, BY_ITSELF, STILL_RUNNING = "scenario", "run", "exited", "failed"
 
 
 class ScenarioError(Exception):
@@ -70,7 +72,8 @@ class Guest:
         self._deadline = None
         self.checks = []
         self.screenshots = []
-        self.spawned = []  # every Spawned process, stopped at the end of the Run
+        self.spawned = []  # every process the Scenario spawned (Spawned), stopped at the end of the Run
+        self._spawner = provider.spawner()
         self.channel_use = ChannelUse()  # this Run's calls, including its app reset and launch
 
     def _start_clock(self, limit):
@@ -128,16 +131,21 @@ class Guest:
         running at the end of the Run is stopped then, however the Run ends. Raises if the Guest
         has no such command."""
         argv = spawning.validate_argv(argv)
-        self._remaining("spawn")
-        started = self._on_clock("spawn %s" % argv, lambda call_timeout: self._provider.spawner().start(argv, dict(env or {}), call_timeout("spawn")))
-        process = Spawned(self, argv, started)
-        self.spawned.append(process)
-        return process
+        process = self._spawner_call("spawn", "spawn %s" % argv, lambda spawner, timeout: spawner.start(argv, dict(env or {}), timeout))
+        handle = Spawned(self, argv, process)
+        self.spawned.append(handle)
+        return handle
+
+    def _spawner_call(self, what, doing, fn):
+        """fn(spawner, timeout) on the Scenario's clock: a call of what the spawned processes ride on."""
+        self._remaining(what)
+        return self._on_clock(doing, lambda call_timeout: fn(self._spawner, call_timeout(what)))
 
     def _end_spawned(self, with_output):
         """Stop what the Scenario spawned and left running, best-effort and off its clock. Returns the
-        report's entries; with_output adds the tail of each process's output."""
-        entries, unreachable = [], []  # once a call finds no Guest, the rest would only wait for it too
+        report's entries; with_output adds the tail of each process's output. Once a call finds no
+        Guest, the rest are not tried."""
+        entries, unreachable = [], []
 
         def attempt(fn):
             if unreachable:
@@ -148,17 +156,16 @@ class Guest:
                 unreachable.append(str(exc).splitlines()[0])
                 raise
 
-        for process in self.spawned:
-            entry = {"argv": process.argv, "pid": process.pid, "log": process.log, "ended": process._ended}
+        for handle in self.spawned:
+            entry = {"argv": handle.argv, "pid": handle.pid, "log": handle.log, "ended": handle._ended}
             if entry["ended"] is None:
                 try:
-                    found = attempt(lambda: self._provider.spawner().stop(process._started, self._step_timeout))
-                    entry["ended"] = "run" if found == spawning.STOPPED else "exited"
+                    entry["ended"] = _ended(attempt(lambda: self._spawner.stop(handle._process, self._step_timeout)), WITH_RUN)
                 except Exception as exc:  # noted in the report; it never changes the Run's result
-                    entry["ended"], entry["stop_error"] = "failed", str(exc) or type(exc).__name__
+                    entry["ended"], entry["stop_error"] = STILL_RUNNING, str(exc) or type(exc).__name__
             if with_output:
                 try:
-                    entry["output_tail"] = _text(attempt(lambda: self._provider.read_file(process.log, self._step_timeout)))[-OUTPUT_TAIL:]
+                    entry["output_tail"] = _text(attempt(lambda: self._provider.read_file(handle.log, self._step_timeout)))[-OUTPUT_TAIL:]
                 except Exception as exc:
                     entry["output_tail"], entry["output_error"] = None, str(exc) or type(exc).__name__
             entries.append(entry)
@@ -246,38 +253,46 @@ class Guest:
 
 
 class Spawned:
-    """A process g.spawn started in the Guest."""
+    """The handle g.spawn returns for a process it started in the Guest."""
 
-    def __init__(self, guest, argv, started):
+    def __init__(self, guest, argv, process):
         self.argv = argv
-        self.pid = started["pid"]  # on Windows, the cmd.exe that holds its output's redirect
-        self.log = started["log"]  # the Guest path of its stdout and stderr, together
         self._guest = guest
-        self._started = started
-        self._ended = None  # how it ended, once the Scenario stopped it: "scenario" or "exited"
+        self._process = process  # spawning.Process
+        self._ended = None  # how it ended, once the Scenario stopped it: BY_SCENARIO or BY_ITSELF
+
+    @property
+    def pid(self):
+        """The program's pid (on Windows, cmd.exe's for a batch file, which cmd.exe runs)."""
+        return self._process.pid
+
+    @property
+    def log(self):
+        """The Guest path of its stdout and stderr, together."""
+        return self._process.log
 
     def __repr__(self):
         return "<Spawned pid %s: %s>" % (self.pid, self.argv)
 
     def running(self):
-        """Is the process still running?"""
-        return self._call("running", lambda spawner, timeout: spawner.running(self._started, timeout))
+        """Is the process itself still running? (What it started may run on after it.)"""
+        return self._guest._spawner_call("running", "running of %s" % self, lambda spawner, timeout: spawner.running(self._process, timeout))
 
     def stop(self):
-        """End the process and the processes it started. Harmless if it has ended already; raises
-        if it will not stop."""
-        found = self._call("stop", lambda spawner, timeout: spawner.stop(self._started, timeout))
+        """End the process and the processes it started, those too if it has exited itself. Harmless
+        once all have ended; raises if they will not stop."""
+        found = self._guest._spawner_call("stop", "stop of %s" % self, lambda spawner, timeout: spawner.stop(self._process, timeout))
         if self._ended is None:
-            self._ended = "scenario" if found == spawning.STOPPED else "exited"
+            self._ended = _ended(found, BY_SCENARIO)
 
     def output(self):
         """Its stdout and stderr so far, as text (bytes that are not UTF-8 show as \ufffd)."""
         return _text(self._guest.get(self.log, binary=True))
 
-    def _call(self, what, fn):
-        g = self._guest
-        g._remaining(what)
-        return g._on_clock("%s of %s" % (what, self), lambda call_timeout: fn(g._provider.spawner(), call_timeout(what)))
+
+def _ended(found, stopped_by):
+    """A spawned process's report "ended" once stop found what spawning.STOPPED or EXITED says."""
+    return stopped_by if found == spawning.STOPPED else BY_ITSELF
 
 
 def _text(data):
@@ -300,35 +315,25 @@ def decode_content(guest_path, data):
         raise UsageError("%s is not UTF-8 text (%s); read it with binary=True" % (guest_path, exc.reason))
 
 
-def run_scenario(path, guest, prepare):
+def run_scenario(path, guest, prepare, still_running):
     """Execute one Scenario file against guest and return its result dict.
 
     prepare(fresh, launch) readies the Guest (restore, app reset and launch)
     before the Scenario's clock starts, per its FRESH and LAUNCH declarations.
+
+    What the Scenario spawned ends with the Run, however it ends. When it ends
+    with no result (a ConfigError, Ctrl-C, sys.exit()), the exception goes on
+    after that, and still_running(entry) is called for each process vmlab
+    could not stop, since no report will name it.
     """
     started = time.time()
-    error = None
     try:
-        with _folder_on_path(path.parent):
-            module = _load(path)
-            fresh = _declared(module, "FRESH", False, _is_bool, "True or False")
-            launch = _declared(module, "LAUNCH", True, _is_bool, "True or False")
-            limit = _declared(module, "TIMEOUT", guest._limit, _is_seconds, "a number of seconds > 0")
-            prepare(fresh, launch)
-            guest._start_clock(limit)
-            module.scenario(guest)
-            guest._remaining("the end of the Scenario")
-        if not guest.checks:
-            raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
-    except ConfigError:
-        guest._end_spawned(with_output=False)
+        error = _execute(path, guest, prepare)
+    except BaseException:
+        for entry in guest._end_spawned(with_output=False):
+            if entry["ended"] == STILL_RUNNING:
+                still_running(entry)
         raise
-    except ScenarioError as exc:
-        error = str(exc)
-    except (GuestError, UsageError) as exc:
-        error = "%s: %s" % (_scenario_line(path, sys.exc_info()[2]), exc)
-    except Exception:
-        error = traceback.format_exc(limit=-3).strip()
 
     if error:
         status = "error"
@@ -349,6 +354,31 @@ def run_scenario(path, guest, prepare):
         "channels": guest.channel_use.channels,
         "fallbacks": guest.channel_use.fallbacks,
     }
+
+
+def _execute(path, guest, prepare):
+    """Run the Scenario: its error as the report gives it, or None. Raises what ends the Run with no result."""
+    try:
+        with _folder_on_path(path.parent):
+            module = _load(path)
+            fresh = _declared(module, "FRESH", False, _is_bool, "True or False")
+            launch = _declared(module, "LAUNCH", True, _is_bool, "True or False")
+            limit = _declared(module, "TIMEOUT", guest._limit, _is_seconds, "a number of seconds > 0")
+            prepare(fresh, launch)
+            guest._start_clock(limit)
+            module.scenario(guest)
+            guest._remaining("the end of the Scenario")
+        if not guest.checks:
+            raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
+    except ConfigError:
+        raise
+    except ScenarioError as exc:
+        return str(exc)
+    except (GuestError, UsageError) as exc:
+        return "%s: %s" % (_scenario_line(path, sys.exc_info()[2]), exc)
+    except Exception:
+        return traceback.format_exc(limit=-3).strip()
+    return None
 
 
 def _scenario_line(path, tb):

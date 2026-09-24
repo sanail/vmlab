@@ -26,7 +26,7 @@ Code shared by several Scenarios lives in `_name.py` next to them (`.vmlab/scena
 
 ## Background processes
 
-`g.spawn(argv, env=None)` starts a command detached in the Guest (a mock server, a log recorder) and returns a handle; `env` adds to its environment. Whatever a Scenario spawns and leaves running is stopped at the end of its Run, however the Run ends (passed, failed, an exception, a timeout), so the next Scenario starts without it; a Run that did not pass reports each spawned process's command and the end of its output. There is no CLI counterpart.
+`g.spawn(argv, env=None)` starts a command detached in the Guest (a mock server, a log recorder) and returns a handle; `env` adds to its environment. Whatever a Scenario spawns and leaves running is stopped at the end of its Run, however the Run ends (passed, failed, an exception, a timeout, Ctrl-C), so the next Scenario starts without it; a Run that did not pass reports each spawned process's command and the end of its output. There is no CLI counterpart.
 
 ```python
 def scenario(g):
@@ -40,8 +40,8 @@ def scenario(g):
     mock.stop()                               # optional: the Run stops it anyway
 ```
 
-- `handle.stop()` ends the process and what it started: on macOS and Linux its process group (SIGTERM, then SIGKILL after 5 s), on Windows its process tree. Stopping one that has already ended is harmless; one that will not stop raises.
-- `handle.running()` is true while it runs; `handle.output()` is its output so far, as text; `handle.log` is that output's Guest path (for `wait_for(log=...)`, `g.get`); `handle.pid` is its process id (on Windows, the `cmd.exe` that writes its output).
+- `handle.stop()` ends the process and everything it started, also once the process itself has exited and left them running. On macOS and Linux that is its process group, sent SIGTERM, then SIGKILL after 5 s. On Windows it is its Job Object: each of its windows is asked to close (a GUI app gets 5 s, as if its window's close button were clicked), then the whole job is ended; a console program has no signal to be asked by, so it is ended at once, with no chance to clean up. Stopping one that has already ended is harmless; one that will not stop raises.
+- `handle.running()` is true while the process itself runs; `handle.output()` is its output so far, as text; `handle.log` is that output's Guest path (for `wait_for(log=...)`, `g.get`); `handle.pid` is its process id. On Windows a batch file (`.bat`, `.cmd`) runs in `cmd.exe`, whose id that is.
 - Output goes to a file, so many programs buffer it and a `wait_for(log=...)` sees it late: run Python with `-u` (or `env={"PYTHONUNBUFFERED": "1"}`), and wait for what the process does (it answers, a file appears) rather than for what it prints, where you can.
 - `g.spawn` raises when the Guest has no such command; a command that starts and then fails shows why in its output. Log files stay in the Guest's temp folder after the Run.
 - A process vmlab cannot stop at the end of the Run does not change the Run's result: the report notes it (`"ended": "failed"`) and vmlab prints a warning.
