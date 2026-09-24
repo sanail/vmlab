@@ -35,6 +35,7 @@ import Foundation
 
 let VERSION = 1
 let MAX_NODES = 5000
+let STAGE = "vmlab-stage-"  // + 8 hex digits: the name of every file stage-text opens
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write("vmlab-ui: \(message)\n".data(using: .utf8)!)
@@ -392,12 +393,38 @@ func focus(_ params: [String: Any]) {
     emit(["app": app.localizedName ?? appName, "window": raised, "frontmost": frontmostName()])
 }
 
+/// Close the windows of documents earlier stages left open in the app, so a stage leaves just its
+/// own; the app's other documents stay. Their close buttons ask the app to close them: TextEdit saves
+/// a document itself, even one a Scenario typed into, so nothing asks about saving.
+func closeStaged(_ appName: String, _ deadline: Date) {
+    guard let app = appsFor(appName).first else { return }
+    let ax = AXUIElementCreateApplication(app.processIdentifier)
+    AXUIElementSetMessagingTimeout(ax, 3)
+    func staged() -> [AXUIElement] {
+        let windows = attribute(ax, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
+        return windows.filter { (text($0, kAXTitleAttribute as String) ?? "").range(of: STAGE + "[0-9a-fA-F]{8}", options: .regularExpression) != nil }
+    }
+    let closed = waitFor(deadline) { () -> Bool? in
+        let left = staged()
+        if left.isEmpty { return true }
+        if let button = attribute(left[0], kAXCloseButtonAttribute as String), CFGetTypeID(button) == AXUIElementGetTypeID() {
+            AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+        }
+        return nil
+    }
+    if closed == nil {
+        let titles = staged().map { text($0, kAXTitleAttribute as String) ?? "" }
+        fail("\(appName) did not close the documents earlier stage-text calls opened in time; its windows: \(titles)")
+    }
+}
+
 /// Open text in app, select it all and, in the same call, press the trigger chord,
 /// so nothing can take focus in between.
 func stageText(_ params: [String: Any]) {
     guard let s = params["text"] as? String, let appName = params["app"] as? String else { fail("stage-text needs text and app") }
     let deadline = Date().addingTimeInterval(params["timeout"] as? Double ?? 30)
-    let file = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("vmlab-stage-\(UUID().uuidString.prefix(8)).txt")
+    closeStaged(appName, deadline)
+    let file = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("\(STAGE)\(UUID().uuidString.prefix(8)).txt")
     do { try s.write(to: file, atomically: true, encoding: .utf8) } catch { fail("cannot write \(file.path): \(error)") }
     let open = Process()
     open.executableURL = URL(fileURLWithPath: "/usr/bin/open")

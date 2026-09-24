@@ -37,6 +37,7 @@ Traps (README: "Linux Guests with VMware Fusion"):
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -51,6 +52,10 @@ POLL = 0.1
 SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP")
 REPROVISION = "re-provision the Base guest: vmlab base create NAME --reprovision"
 SELECT_ALL = ("a", ["ctrl"])
+SAVE, CLOSE = ("s", ["ctrl"]), ("w", ["ctrl"])
+STAGE = "vmlab-stage-"  # + 8 hex digits: the name of every file stage-text opens
+STAGED = re.compile(STAGE + "[0-9a-fA-F]{8}")
+CLOSE_WAIT = 5  # s for one staged document to close
 
 # linux/input-event-codes.h, for the Wayland session
 EVDEV = dict(
@@ -124,6 +129,12 @@ def session():
         fail("the %s session has not published its environment yet; wait for the desktop" % kind)
     os.environ.update(env)
     return kind
+
+
+def stem(text):
+    """The staged document named in text (a title, a tab's name), or None."""
+    found = STAGED.search(text)
+    return found.group(0) if found else None
 
 
 def process_name(pid):
@@ -669,13 +680,84 @@ class UI:
                     continue
         return None
 
+    def page_tabs(self, top):
+        """The page tabs under a window's accessible (an editor's documents)."""
+        stack, seen, tabs = [top], 0, []
+        while stack and seen < MAX_NODES:
+            node = stack.pop()
+            seen += 1
+            try:
+                if node.get_role() == self.Atspi.Role.PAGE_TAB:
+                    tabs.append(node)
+                    continue
+            except Exception:
+                continue
+            stack.extend(self.children(node))
+        return tabs
+
+    def staged_documents(self, wanted):
+        """[(Window, its accessible, page tab or None, stem)] of the documents earlier stages left open in the app."""
+        tops = {pid: self.toplevels(app) for app, name, pid in self.apps() if self.matches(name, pid, wanted)}
+        found = []
+        for window in reversed(self.windows):
+            if window.pid not in tops or window.background:
+                continue
+            mine = tops[window.pid]
+            top = next((t for t in mine if (t.get_name() or "") == window.title), mine[0] if len(mine) == 1 else None)
+            if top is None:
+                continue
+            tabs = self.page_tabs(top)
+            for tab in tabs:
+                name = stem(tab.get_name() or "")
+                if name:
+                    found.append((window, top, tab, name))
+            if not tabs and stem(window.title):
+                found.append((window, top, None, stem(window.title)))
+        return found
+
+    def close_staged(self, wanted, deadline):
+        """Close the documents earlier stages left open in the app, so a stage leaves just its own; the
+        app's other documents stay. Each is saved first (it is the helper's file, and a Scenario may
+        have typed into it), so the editor does not ask about saving. Keys go to the tab in front, the
+        one the window's title names: a tab is clicked to bring it there (GTK's tabs take no action)."""
+        while True:
+            self.refresh()
+            staged = self.staged_documents(wanted)
+            if not staged:
+                return
+            window, top, tab, name = staged[0]
+            if time.time() >= deadline:
+                fail("%s did not close the document an earlier stage-text opened, %s.txt, in time; its windows: %s" % (wanted, name, [w.title for w, _, _, _ in staged]))
+            soon = min(deadline, time.time() + CLOSE_WAIT)
+            self.bring_to_front(window, wanted, deadline)
+            if tab is not None:
+                b = self.bounds(tab, self.placement(top, window.pid))
+                if b:
+                    self.ws.click(b["x"] + b["w"] // 3, b["y"] + b["h"] // 2)  # its title, clear of its close button
+
+                def in_front():
+                    self.refresh()
+                    return True if any(w.id == window.id and name in w.title for w in self.windows) else None
+
+                if self.wait_for(soon, in_front) is None:
+                    continue
+            self.press(*SAVE)
+            self.press(*CLOSE)
+
+            def closed():
+                self.refresh()
+                return None if any(n == name for _, _, _, n in self.staged_documents(wanted)) else True
+
+            self.wait_for(soon, closed)
+
     def stage_text(self, params):
         text, app = params.get("text"), params.get("app")
         if text is None or not app:
             fail("stage-text needs text and app")
         deadline = time.time() + float(params.get("timeout") or 30)
-        stem = "vmlab-stage-%s" % uuid.uuid4().hex[:8]
-        path = "/tmp/%s.txt" % stem
+        self.close_staged(app, deadline)
+        doc = STAGE + uuid.uuid4().hex[:8]
+        path = "/tmp/%s.txt" % doc
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
         try:
@@ -686,7 +768,7 @@ class UI:
 
         def shown():
             self.refresh()
-            return next((w for w in reversed(self.windows) if stem in w.title), None)
+            return next((w for w in reversed(self.windows) if doc in w.title), None)
 
         window = self.wait_for(deadline, shown)
         if window is None:

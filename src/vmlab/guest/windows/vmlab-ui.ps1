@@ -35,6 +35,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Automation;
@@ -50,6 +51,13 @@ public class Win {
     public IntPtr Handle;
     public int Pid;
     public string Title;
+}
+
+/// A document stage-text opened: a tab of an editor's window, or the window itself.
+public class Staged {
+    public Win Window;
+    public AutomationElement Tab;  // null: an editor without tabs
+    public string Stem;  // vmlab-stage-XXXXXXXX
 }
 
 static class Native {
@@ -77,6 +85,7 @@ static class Native {
     [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] public static extern bool BringWindowToTop(IntPtr hwnd);
     [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hwnd, int command);
     [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr hwnd);
@@ -102,6 +111,9 @@ public static class Helper {
     // Between typed characters. Faster, Notepad (WinUI) lost characters now and then: 5 ms
     // dropped some in one call of three, 15 and 30 ms none in eleven.
     const int TYPE_PAUSE_MS = 20;
+    const string STAGE = "vmlab-stage-";  // + 8 hex digits: the name of every file stage-text opens
+    static Regex STAGED = new Regex(STAGE + "[0-9a-fA-F]{8}");
+    const double CLOSE_WAIT = 5;  // s for one staged document to close
 
     static int nodes;
     static bool truncated;
@@ -684,11 +696,73 @@ public static class Helper {
         }
     }
 
+    /// The staged document named in text (a title, a tab's name), or null.
+    static string Stem(string text) {
+        Match found = STAGED.Match(text);
+        return found.Success ? found.Value : null;
+    }
+
+    /// The documents earlier stages left open in app, frontmost window first.
+    static List<Staged> StagedDocuments(string app) {
+        List<Staged> found = new List<Staged>();
+        foreach (Win w in Windows()) {
+            if (!IsApp(w.Pid, app)) continue;
+            AutomationElementCollection tabs;
+            try {
+                tabs = AutomationElement.FromHandle(w.Handle).FindAll(TreeScope.Descendants,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.TabItem));
+            } catch (ElementNotAvailableException) {
+                continue;  // the window closed meanwhile
+            }
+            foreach (AutomationElement tab in tabs) {
+                string stem;
+                try { stem = Stem(tab.Current.Name); } catch (ElementNotAvailableException) { continue; }
+                if (stem != null) { Staged d = new Staged(); d.Window = w; d.Tab = tab; d.Stem = stem; found.Add(d); }
+            }
+            if (tabs.Count == 0 && Stem(w.Title) != null) { Staged d = new Staged(); d.Window = w; d.Stem = Stem(w.Title); found.Add(d); }
+        }
+        return found;
+    }
+
+    /// Close the documents earlier stages left open in app, so a stage leaves just its own; the app's
+    /// other documents stay. Each is saved first (it is the helper's file, and a Scenario may have typed
+    /// into it), so the editor does not ask about saving. Keys go to the tab in front, the one the
+    /// window's title names.
+    static void CloseStaged(string app, DateTime deadline) {
+        List<string> ctrl = new List<string> { "ctrl" };
+        while (true) {
+            List<Staged> staged = StagedDocuments(app);
+            if (staged.Count == 0) return;
+            Staged d = staged[0];
+            if (DateTime.UtcNow >= deadline)
+                throw new Fail(app + " did not close the document an earlier stage-text opened, " + d.Stem + ".txt, in time; its windows: "
+                    + json.Serialize(staged.ConvertAll(delegate(Staged s) { return s.Window.Title; })));
+            DateTime wait = DateTime.UtcNow.AddSeconds(CLOSE_WAIT), soon = wait < deadline ? wait : deadline;
+            BringToFront(d.Window.Handle, app, deadline);
+            if (d.Tab != null) {
+                object pattern;
+                try {
+                    if (d.Tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) ((SelectionItemPattern)pattern).Select();
+                } catch (ElementNotAvailableException) {
+                    continue;
+                }
+                if (WaitFor<string>(soon, delegate() { return Title(d.Window.Handle).Contains(d.Stem) ? d.Stem : null; }) == null) continue;
+                Press("s", ctrl);
+                Press("w", ctrl);
+            } else {
+                Press("s", ctrl);
+                Native.PostMessage(d.Window.Handle, 0x0010, IntPtr.Zero, IntPtr.Zero);  // WM_CLOSE
+            }
+            WaitFor<string>(soon, delegate() { return StagedDocuments(app).Exists(delegate(Staged s) { return s.Stem == d.Stem; }) ? null : ""; });
+        }
+    }
+
     static Dictionary<string, object> StageText(Dictionary<string, object> p) {
         string text = Str(p, "text"), app = Str(p, "app");
         if (text == null || string.IsNullOrEmpty(app)) throw new Fail("stage-text needs text and app");
         DateTime deadline = Deadline(p);
-        string stem = "vmlab-stage-" + Guid.NewGuid().ToString("N").Substring(0, 8);
+        CloseStaged(app, deadline);
+        string stem = STAGE + Guid.NewGuid().ToString("N").Substring(0, 8);
         string path = Path.Combine(Path.GetTempPath(), stem + ".txt");
         File.WriteAllText(path, text, new UTF8Encoding(false));
         try {

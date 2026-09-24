@@ -125,6 +125,15 @@ class UiCliTest(UiTestCase):
         [area] = self.ui("find", "--role", "textarea", "--app", staged["app"])["matches"]
         self.assertEqual(area["value"], "Ohm law")
 
+    def test_a_stage_closes_the_document_the_stage_before_opened(self):
+        first = self.ui("stage-text", "first")
+        second = self.ui("stage-text", "second")
+        self.assertNotEqual(first["file"], second["file"])
+        windows = [n["name"] for n in walk(self.ui("tree", "--app", second["app"])) if n["role"] == "window"]
+        self.assertEqual(windows, [Path(second["file"]).name])
+        [area] = self.ui("find", "--role", "textarea", "--app", second["app"])["matches"]
+        self.assertEqual((area["value"], second["selected"]), ("second", "second"))
+
     def test_typing_replaces_the_selection(self):
         staged = self.ui("stage-text", "old text")
         self.assertEqual(self.ui("type", "new ü")["typed"], 5)

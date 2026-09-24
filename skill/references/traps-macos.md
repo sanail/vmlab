@@ -1,6 +1,6 @@
 # macOS Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: lazy WebKit and Chromium accessibility trees (the Swift helper wakes them; the JXA fallback does not, and `vmlab doctor` warns when a Guest uses it), chords on any keyboard layout, focus between staging text and a hotkey (`stage-text --then`), a click on a covered element, and the Guest's clipboard and audio staying away from the Host's.
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: lazy WebKit and Chromium accessibility trees (the Swift helper wakes them; the JXA fallback does not, and `vmlab doctor` warns when a Guest uses it), chords on any keyboard layout, focus between staging text and a hotkey (`stage-text --then`), earlier staged documents left open in TextEdit (each `stage-text` closes them, so an old selection in another window cannot answer an app that reads "the selection"), a click on a covered element, and the Guest's clipboard and audio staying away from the Host's.
 
 ## The app lacks a permission
 

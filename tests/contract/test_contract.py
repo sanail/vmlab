@@ -64,8 +64,9 @@ class Target:
         config.write_text(lab_toml, encoding="utf-8")
         status = self.status()
         self.os = status["os"]
+        self.provider = status["provider"]
         # The Fake Provider emulates the UI contract on every OS; real Guests have helpers per OS.
-        self.has_ui = status["provider"] == "fake" or self.os in UI_OSES
+        self.has_ui = self.provider == "fake" or self.os in UI_OSES
         (self.root / "contract-artifact.txt").write_text("contract-bytes", encoding="utf-8")
         install = (
             'Copy-Item -LiteralPath $env:VMLAB_ARTIFACT -Destination (Join-Path $HOME "contract-installed.txt")'
@@ -469,6 +470,39 @@ def scenario(g):
     g.check("the text area is found by role and text", len(found) == 1 and found[0]["value"] == text, detail=found)
     g.check("a match has no children", found and "children" not in found[0])
 """))
+
+    @ui
+    def test_07b_ui_a_stage_closes_the_staged_document_before_it(self):
+        self.assertPassed(*self.target.scenario("ui_restage.py", UI + """
+import re
+
+FAKE = %r  # the Fake editor opens staged documents only
+EDITOR = {"macos": ["open", "-a", "TextEdit"], "windows": ["notepad.exe"], "linux": ["gnome-text-editor"]}
+
+def stems(g, app):
+    # The staged documents the editor shows, by name: in window titles, tabs and proxy icons alike.
+    return sorted({m for n in walk(g.tree(app=app)) for m in re.findall(r"vmlab-stage-[0-9A-Fa-f]{8}", n["name"] or "")})
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:8]
+    first = g.stage_text("first " + tag)
+    app = first["app"]
+    g.type("changed " + tag)  # a document changed since it was staged closes too
+    if not FAKE:
+        kept = g.put("~/vmlab-kept-%%s.txt" %% tag, "kept " + tag)
+        g.spawn(EDITOR[g.os] + [kept])
+        opened = g.wait_for(text="vmlab-kept-" + tag, app=app, timeout=30)
+        g.check("the editor opened a document of its own", opened["met"], detail=opened)
+    second = g.stage_text("second " + tag)
+    stem = re.search(r"vmlab-stage-[0-9A-Fa-f]{8}", second["file"]).group(0)
+    g.check("the second stage leaves just its own staged document", stems(g, app) == [stem], detail=[stems(g, app), second])
+    g.check("the second's text is selected and frontmost", (second["selected"], second["frontmost"]) == ("second " + tag, app), detail=second)
+    if not FAKE:
+        kept = g.find(text="vmlab-kept-" + tag, app=app)["matches"]
+        g.check("the editor's own document stays open", kept, detail=kept)
+    third = g.stage_text("third " + tag)
+    g.check("so does a third", len(stems(g, app)) == 1 and third["selected"] == "third " + tag, detail=[stems(g, app), third])
+""" % (self.target.provider == "fake")))
 
     @ui
     def test_08_ui_input_clipboard_click_and_wait(self):

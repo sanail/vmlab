@@ -22,6 +22,7 @@ const KEY_CODES = {
   home: 115, pageup: 116, delete: 117, f4: 118, end: 119, f2: 120, pagedown: 121, f1: 122, left: 123, right: 124,
   down: 125, up: 126,
 };
+const STAGE = "vmlab-stage-"; // + 8 hex digits: the name of every file stage-text opens
 const USING = { cmd: "command down", ctrl: "control down", alt: "option down", shift: "shift down" };
 
 const events = Application("System Events");
@@ -182,9 +183,41 @@ function focus(params) {
   return { app: ObjC.unwrap(app.localizedName) || params.app, window: raised, frontmost: front.isNil() ? "" : ObjC.unwrap(front.localizedName) };
 }
 
+// Close the windows of documents earlier stages left open in the app, so a stage leaves just its
+// own; the app's other documents stay. Their close buttons ask the app to close them: TextEdit saves
+// a document itself, even one a Scenario typed into, so nothing asks about saving.
+function closeStaged(appName, deadline) {
+  // Through System Events, not nsApps: NSWorkspace's list of apps, once read, never refreshes
+  // here (delay does not run the run loop), so stageText would not see the app it opens next.
+  const procs = events.processes.whose({ _or: [{ name: appName }, { bundleIdentifier: appName }] })();
+  if (!procs.length) return;
+  const staged = () => {
+    try {
+      return procs[0].windows().filter((w) => new RegExp(STAGE + "[0-9a-fA-F]{8}").test(str(w.name()) || ""));
+    } catch (e) {
+      return []; // the app quit meanwhile
+    }
+  };
+  // One at a time: System Events names a window by its index, which the closing of another shifts.
+  const closed = waitFor(deadline, () => {
+    const left = staged();
+    if (!left.length) return true;
+    try {
+      left[0].buttons.whose({ subrole: "AXCloseButton" })()[0].click();
+    } catch (e) {
+      // closed meanwhile; one that stays is named below
+    }
+    return false;
+  });
+  if (!closed) {
+    fail(appName + " did not close the documents earlier stage-text calls opened in time; its windows: " + JSON.stringify(staged().map((w) => str(w.name()))));
+  }
+}
+
 function stageText(params) {
   const deadline = Date.now() + (params.timeout || 30) * 1000;
-  const stem = "vmlab-stage-" + Math.random().toString(16).slice(2, 10);
+  closeStaged(params.app, deadline);
+  const stem = STAGE + Math.random().toString(16).slice(2, 10);
   const file = ObjC.unwrap($.NSTemporaryDirectory()) + stem + ".txt";
   $(params.text).writeToFileAtomicallyEncodingError(file, true, $.NSUTF8StringEncoding, null);
   const shell = Application.currentApplication();

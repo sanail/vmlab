@@ -22,6 +22,7 @@ import shutil
 import struct
 import subprocess
 import time
+import uuid
 import zlib
 
 from vmlab import hostproc
@@ -230,8 +231,9 @@ class FakeProvider(Provider):
             self._save_ui_state(state)
             return {"app": app["name"], "window": window, "frontmost": app["name"]}
         if command == "stage-text":
-            path = "/tmp/vmlab-stage.txt"
-            window = {"role": "window", "name": "vmlab-stage.txt", "bounds": {"x": 100, "y": 100, "w": 600, "h": 400}, "children": [
+            # A document of its own, in place of the one the stage before opened, as the helpers do.
+            path = "/tmp/vmlab-stage-%s.txt" % uuid.uuid4().hex[:8]
+            window = {"role": "window", "name": os.path.basename(path), "bounds": {"x": 100, "y": 100, "w": 600, "h": 400}, "children": [
                 {"role": "textarea", "value": params["text"], "focused": True, "bounds": {"x": 100, "y": 130, "w": 600, "h": 370}},
             ]}  # fmt: skip
             state["editor"] = {"role": "application", "name": params["app"], "pid": 0, "focused": True, "children": [window]}

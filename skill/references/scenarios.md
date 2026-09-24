@@ -64,6 +64,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.screenshot(name)` | `ui screenshot` | `{"path"}` |
 
 - A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`, `enabled`, `native_role` and `children`. Applications carry `pid`.
+- `stage_text` first closes the documents earlier stages left open in that editor (`vmlab-stage-*` files; changes typed into them are saved to those files), so each stage leaves one staged document; the editor's other documents stay.
 - `text` matches name, value and description: exact matches win, otherwise substrings. `role` takes the cross-OS or the native role.
 - `click` refuses when something else lies over the element's middle, and says what.
 - Chords: `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`win`/`super`) and one key (`a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, arrows, `minus`, `comma`, `slash`, ...). They are sent by physical key, so they work on any keyboard layout; `type` sends Unicode.
