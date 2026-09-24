@@ -20,6 +20,7 @@ and chosen from with the tray command, in a shape of its own (UI.tray).
 
 import re
 import time
+from datetime import datetime, timedelta, timezone
 
 from vmlab.config import UsageError, is_argv
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path, ps_quote, sh_expand_tilde
@@ -314,6 +315,48 @@ def tray_level(items, path):
     return items
 
 
+class HostTime:
+    """A moment on the Host's clock (time.time()), for a since that is not a Guest time: each
+    notifications call turns it into the Guest's time by the Guest's "now" in its answer."""
+
+    def __init__(self, at):
+        self.at = at
+
+
+def guest_time(value, named):
+    """An ISO 8601 time (a Guest time, UTC unless it says otherwise) as an aware datetime; UsageError naming named."""
+    try:
+        # Python before 3.11 reads neither Z nor fractions other than of 3 or 6 digits (.NET prints 7).
+        text = re.sub(r"[Zz]$", "+00:00", value) if isinstance(value, str) else None
+        text = text and re.sub(r"\.(\d+)", lambda m: "." + (m.group(1) + "00000")[:6], text, count=1)
+        parsed = datetime.fromisoformat(text) if text else None
+    except ValueError:
+        parsed = None
+    if parsed is None:
+        raise UsageError("%s %r is not an ISO 8601 time, e.g. 2026-09-25T10:00:00Z" % (named, value))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def iso(moment):
+    """An aware datetime as the contract prints times: UTC, to the millisecond."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _helper_time(value):
+    try:
+        return guest_time(value, "time")
+    except UsageError as exc:
+        raise GuestError("UI notifications: the Guest's helper gave a %s" % exc)
+
+
+def text_pattern(text, named):
+    """text compiled as a Python regular expression, or None; UsageError naming named."""
+    try:
+        return None if text is None else re.compile(text, re.M)
+    except re.error as exc:
+        raise UsageError("%s %r is not a valid regular expression: %s" % (named, text, exc))
+
+
 class ElementCondition:
     unanswered = {}
 
@@ -391,6 +434,27 @@ class ExecCondition:
         return held, {"code": result.code, "stdout": result.stdout[-STDOUT_TAIL:]}
 
 
+class NotificationCondition:
+    """A Notification matching pattern was posted by app (None: any app) at or after since."""
+
+    unanswered = {}
+
+    def __init__(self, pattern, app, since):
+        self.pattern, self.app, self.since = pattern, app, since
+
+    def describe(self):
+        found = {"notification": self.pattern}
+        if self.app is not None:
+            found["app"] = self.app
+        if isinstance(self.since, str):  # a Guest time the caller gave, not the wait's own start
+            found["since"] = self.since
+        return found
+
+    def poll(self, ui, timeout):
+        posted = ui.notifications(self.app, self.pattern, self.since, timeout=timeout)["notifications"]
+        return bool(posted), {"notifications": posted}
+
+
 class Gone:
     """Another condition, inverted: it holds while the other does not."""
 
@@ -420,19 +484,36 @@ def flag(key):
     return "--" + key
 
 
-def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, named=flag):
+def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, notification=None, since=None, named=flag):
     """The one wait_for condition these arguments describe; ConditionError unless there is exactly one.
 
-    gone=True inverts it. exec is an argv. named(key) spells an argument in errors (default: its flag)."""
+    gone=True inverts it. exec is an argv. notification is a pattern; since (a Guest time in ISO
+    8601, or a HostTime) goes with it, and None counts every Notification. named(key) spells an
+    argument in errors (default: its flag)."""
     element = text is not None or role is not None
-    if sum([element, process is not None, file is not None, log is not None, exec is not None]) != 1:
+    if sum([element, process is not None, file is not None, log is not None, exec is not None, notification is not None]) != 1:
         raise ConditionError(
             None,
-            "wait-for needs exactly one condition: an element (%s/%s), %s, %s, %s with %s, or %s" % tuple(map(named, ("text", "role", "process", "file", "log", "pattern", "exec"))),
+            "wait-for needs exactly one condition: an element (%s/%s), %s, %s, %s with %s, %s, or %s"
+            % tuple(map(named, ("text", "role", "process", "file", "log", "pattern", "exec", "notification"))),
             named,
         )
-    if app is not None and not element:
-        raise ConditionError("app", "goes with %s or %s: it narrows an element to one app's" % (named("text"), named("role")), named)
+    if app is not None and not element and notification is None:
+        raise ConditionError("app", "goes with %s or %s (an element in one app) or %s (one app's)" % (named("text"), named("role"), named("notification")), named)
+    if notification is not None:
+        if gone:
+            raise ConditionError("gone", "does not go with %s: a Notification, once posted, stays posted" % named("notification"), named)
+        try:
+            re.compile(notification, re.M)
+        except re.error as exc:
+            raise ConditionError("notification", "%r is not a valid regular expression: %s" % (notification, exc), named)
+        if isinstance(since, str):
+            try:
+                guest_time(since, "since")
+            except UsageError:
+                raise ConditionError("since", "%r is not an ISO 8601 time, e.g. 2026-09-25T10:00:00Z" % since, named)
+    elif since is not None:
+        raise ConditionError("since", "goes with %s" % named("notification"), named)
     if pattern is not None and log is None and exec is None:
         raise ConditionError("pattern", "goes with %s or %s" % (named("log"), named("exec")), named)
     if log is not None and pattern is None:
@@ -452,6 +533,8 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
         found = FileCondition(file)
     elif log is not None:
         found = LogCondition(log, pattern)
+    elif notification is not None:
+        found = NotificationCondition(notification, app, since)
     else:
         found = ExecCondition(list(exec), pattern)
     return Gone(found) if gone else found
@@ -684,6 +767,29 @@ class UI:
             raise UsageError("%s is not a Staged document: close-staged takes the \"file\" a stage-text returned" % file)
         params = {"file": file, "app": app or STAGE_APPS.get(self.os, "TextEdit")}
         return {"file": file, "closed": bool(self._call_with_deadline("close-staged", params)["closed"])}
+
+    def notifications(self, app=None, text=None, since=None, timeout=None):
+        """The Notifications the Guest's OS recorded, oldest first: {"notifications": [{"app",
+        "title", "body", "time"}]}, time in ISO 8601 UTC on the Guest's clock.
+
+        app is the OS's id for the sender (None: every app's); text a pattern searched for in
+        title and body; since a Guest time (ISO 8601) or a HostTime, before which none count."""
+        regex = text_pattern(text, "text")
+        cutoff = guest_time(since, "since") if isinstance(since, str) else None
+        timeout = self.call_timeout("ui notifications") if timeout is None else timeout
+        result = self.provider.ui_call("notifications", {}, timeout)
+        if isinstance(since, HostTime):  # that moment on the Guest's clock: its "now", less the time since then
+            cutoff = _helper_time(result["now"]) - timedelta(seconds=time.time() - since.at)
+        found = []
+        for posted in result["notifications"]:
+            n = {"app": posted.get("app") or "", "title": posted.get("title") or "", "body": posted.get("body") or ""}
+            moment = _helper_time(posted["time"])
+            if app is not None and n["app"].lower() != app.lower():
+                continue
+            if (cutoff and moment < cutoff) or (regex and not (regex.search(n["title"]) or regex.search(n["body"]))):
+                continue
+            found.append((moment, dict(n, time=iso(moment))))
+        return {"notifications": [n for _, n in sorted(found, key=lambda pair: pair[0])]}
 
     def ask(self, condition, argv, timeout, answers=None):
         """The result of condition's command argv, as the Guest answered it. NoAnswer when it came

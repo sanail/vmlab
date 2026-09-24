@@ -20,6 +20,9 @@ user manager, into which the session imports it: a Channel's own login has none.
   pointer to a point, so vmlab's GNOME Shell extension (shell-extension/) does
   that, and input and the clipboard go through it too.
 - Tray menus, in both sessions, over D-Bus (Tray): panels keep them out of AT-SPI.
+- Notifications, in both sessions, from the file vmlab's recorder (a systemd
+  user unit provisioning installs: notification-recorder.py) writes: Linux keeps
+  no history of them.
 
 Traps (README: "Linux Guests with VMware Fusion"):
 - Toolkits disagree about coordinates. GTK 4 reports every element at (0, 0) in
@@ -43,6 +46,7 @@ import subprocess
 import sys
 import time
 import uuid
+from datetime import datetime, timezone
 
 VERSION = 1
 EXTENSION_VERSION = 1  # of shell-extension/, installed at provisioning
@@ -58,6 +62,7 @@ STAGE = "vmlab-stage-"  # + 8 hex digits: the name of every file stage-text open
 STAGED = re.compile(STAGE + "[0-9a-fA-F]{8}\\.txt")
 STAGING = "/tmp"  # where stage-text writes them
 CLOSE_WAIT = 5  # s for one staged document to close
+NOTIFICATIONS = "~/.cache/vmlab/notifications.jsonl"  # what the recorder writes, a JSON line per Notification
 
 # linux/input-event-codes.h, for the Wayland session
 EVDEV = dict(
@@ -965,6 +970,23 @@ class UI:
         emit({"app": name, "file": path, "frontmost": frontmost, "selected": selected, "pressed": pressed})
 
 
+def notifications():
+    """Every Notification the recorder wrote down, and the Guest's "now"."""
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    try:
+        with open(os.path.expanduser(NOTIFICATIONS), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        fail("no Notification recorder has run in this Guest (%s is missing); %s" % (NOTIFICATIONS, REPROVISION))
+    found = []
+    for line in lines:
+        try:
+            found.append(json.loads(line))
+        except ValueError:
+            continue  # the line the recorder is writing
+    emit({"now": now, "notifications": found})
+
+
 def main(argv):
     if len(argv) < 2:
         fail("usage: vmlab-ui COMMAND [JSON]")
@@ -973,6 +995,8 @@ def main(argv):
         params = json.loads(argv[2]) if len(argv) > 2 else {}
     except ValueError:
         fail("parameters are not JSON: %s" % argv[2])
+    if command == "notifications":
+        return notifications()
     kind = session()
     if command == "tray":
         return Tray().run(params)

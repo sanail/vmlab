@@ -18,6 +18,7 @@
 //   stage-text  {"text": s, "app": name, "then": {"key", "modifiers"}?, "timeout": seconds}
 //   close-staged {"file": path stage-text returned, "app": name, "timeout": seconds}
 //   tray        {"app": name, "choose": [label per menu level], "timeout": seconds}
+//   notifications  {}: every Notification in the Notification Center's store, and the Guest's "now"
 //
 // Traps (README: "macOS Guests with Tart"):
 // - WebKit builds a page's accessibility tree lazily and hands it to the NEXT
@@ -34,6 +35,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import SQLite3
 
 let VERSION = 1
 let MAX_NODES = 5000
@@ -547,6 +549,52 @@ func tray(_ params: [String: Any]) {
     emit(["icon": true, "items": items, "chosen": path.isEmpty ? NSNull() : path as Any, "failed": NSNull()])
 }
 
+// MARK: - Notifications
+
+// usernoted's store: a record per Notification, as a binary plist, shown on screen or not.
+let NOTIFICATION_DB = NSHomeDirectory() + "/Library/Group Containers/group.com.apple.usernoted/db2/db"
+
+let ISO_TIME: ISO8601DateFormatter = {
+    let format = ISO8601DateFormatter()
+    format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return format
+}()
+
+func isoTime(_ date: Date) -> String { ISO_TIME.string(from: date) }
+
+func notifications() {
+    var found: [[String: Any]] = []
+    let now = isoTime(Date())
+    guard FileManager.default.fileExists(atPath: NOTIFICATION_DB) else { return emit(["now": now, "notifications": found]) }
+    var db: OpaquePointer?
+    guard sqlite3_open_v2(NOTIFICATION_DB, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+        fail("cannot open \(NOTIFICATION_DB): \(String(cString: sqlite3_errmsg(db)))")
+    }
+    defer { sqlite3_close(db) }
+    sqlite3_busy_timeout(db, 2000)
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(db, "SELECT data, delivered_date FROM record", -1, &statement, nil) == SQLITE_OK else {
+        fail("cannot read \(NOTIFICATION_DB): \(String(cString: sqlite3_errmsg(db)))")
+    }
+    defer { sqlite3_finalize(statement) }
+    while sqlite3_step(statement) == SQLITE_ROW {
+        guard let bytes = sqlite3_column_blob(statement, 0) else { continue }
+        let data = Data(bytes: bytes, count: Int(sqlite3_column_bytes(statement, 0)))
+        guard let record = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any] else { continue }
+        let request = record["req"] as? [String: Any] ?? [:]
+        // Seconds since 2001 (Core Data's epoch); a record not delivered yet has only its own date.
+        let delivered = sqlite3_column_type(statement, 1) == SQLITE_NULL ? record["date"] as? Double : sqlite3_column_double(statement, 1)
+        guard let seconds = delivered else { continue }
+        found.append([
+            "app": record["app"] as? String ?? "",
+            "title": request["titl"] as? String ?? "",
+            "body": request["body"] as? String ?? "",
+            "time": isoTime(Date(timeIntervalSinceReferenceDate: seconds)),
+        ])
+    }
+    emit(["now": now, "notifications": found])
+}
+
 // MARK: - Main
 
 let args = CommandLine.arguments
@@ -557,7 +605,7 @@ if args.count >= 3 {
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { fail("parameters are not a JSON object: \(args[2])") }
     params = object
 }
-if args[1] != "version" && args[1] != "clipboard" && !AXIsProcessTrusted() {
+if !["version", "clipboard", "notifications"].contains(args[1]) && !AXIsProcessTrusted() {
     fail("no Accessibility permission for this Channel; re-provision the Base guest (vmlab base create NAME --reprovision)")
 }
 switch args[1] {
@@ -571,5 +619,6 @@ case "stage-text": stageText(params)
 case "close-staged": closeStaged(params)
 case "focus": focus(params)
 case "tray": tray(params)
+case "notifications": notifications()
 default: fail("unknown command \(args[1])")
 }

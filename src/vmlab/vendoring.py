@@ -57,6 +57,7 @@ TEMPLATE = """\
 # ready_timeout = 30                   # seconds to wait for ready (default: step_timeout; needs ready)
 # env = { RUST_LOG = "debug" }         # extra environment for install, quit and launch
 # state = ["~/Library/Application Support/MyApp"]  # Guest paths removed before every Run
+# notification_id = "com.example.myapp"  # the app as its Notifications' sender (macOS bundle id, Windows AppUserModelID, Linux app name)
 #
 # [labs.mac.tart]          # options of the Lab's Provider
 # base = "macos-tahoe"     # Base guest to clone; create it once with `vmlab base create macos-tahoe`

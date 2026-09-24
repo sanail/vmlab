@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -266,6 +267,8 @@ def _ui_parser(sub):
     p.add_argument("--file", help="this Guest path exists (~ is the Guest user's home)")
     p.add_argument("--log", help="this Guest file has a line matching --pattern")
     p.add_argument("--pattern", help="a Python regular expression, for --log or --exec")
+    p.add_argument("--notification", metavar="PATTERN", help="a Notification whose title or body matches this Python regular expression is posted (--app: by that app)")
+    p.add_argument("--since", metavar="TIME", help="for --notification: count those posted at or after this Guest time, ISO 8601 (default: the call's start)")
     p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
     # Last, as it takes everything after it: the command's own options stay its own.
     p.add_argument(
@@ -276,6 +279,10 @@ def _ui_parser(sub):
     p.add_argument("--app", required=True, help="the app whose Tray icon to use")
     p.add_argument("--choose", action="append", metavar="LABEL", help="the item to choose; repeat it for each submenu level: --choose Settings --choose Advanced")
     p.add_argument("--timeout", type=float, help="seconds to wait for the Tray icon to appear (default: fail at once)")
+    p = ui_sub.add_parser("notifications", parents=[common], help="the Notifications the Guest's OS recorded, oldest first")
+    p.add_argument("--app", help="only this app's: the OS's id for it (macOS bundle id, Windows AppUserModelID, Linux app name); default: the Lab's app.notification_id, else every app's")
+    p.add_argument("--text", metavar="PATTERN", help="only those whose title or body matches this Python regular expression")
+    p.add_argument("--since", metavar="TIME", help="only those posted at or after this Guest time, ISO 8601 (default: all)")
     p = ui_sub.add_parser("focus", parents=[common], help="bring a running app (and one of its windows) to the front")
     p.add_argument("--app", required=True)
     p.add_argument("--window", help="raise the first window whose title contains this")
@@ -362,11 +369,17 @@ def _ui(project, args):
     elif c == "type":
         result = contract.type(args.text)
     elif c == "wait-for":
+        app, since = args.app, args.since
+        if args.notification is not None:
+            app = app or lab.app.notification_id
+            since = since or ui.HostTime(time.time())
         condition = ui.condition(
-            text=args.text, role=args.role, app=args.app, gone=args.gone, process=args.process,
-            file=args.file, log=args.log, pattern=args.pattern, exec=args.exec,
+            text=args.text, role=args.role, app=app, gone=args.gone, process=args.process, file=args.file,
+            log=args.log, pattern=args.pattern, exec=args.exec, notification=args.notification, since=since,
         )  # fmt: skip
         result = contract.wait_for(condition, timeout=args.timeout)
+    elif c == "notifications":
+        result = contract.notifications(args.app or lab.app.notification_id, args.text, args.since)
     elif c == "tray":
         try:
             result = contract.tray(args.app, choose=args.choose, timeout=args.timeout)

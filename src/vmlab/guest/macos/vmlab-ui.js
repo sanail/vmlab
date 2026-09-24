@@ -341,6 +341,43 @@ function tray(params) {
   return { icon: true, items: items, chosen: path.length ? path : null, failed: null };
 }
 
+// usernoted's store: a record per Notification, as a binary plist, shown on screen or not.
+const NOTIFICATION_DB = ObjC.unwrap($.NSHomeDirectory()) + "/Library/Group Containers/group.com.apple.usernoted/db2/db";
+const BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function hexToBase64(hex) {
+  let out = "";
+  for (let i = 0; i < hex.length; i += 6) {
+    const chunk = hex.slice(i, i + 6);
+    const n = parseInt((chunk + "000000").slice(0, 6), 16);
+    const chars = [18, 12, 6, 0].map((shift) => BASE64[(n >> shift) & 63]);
+    out += chars.slice(0, chunk.length / 2 + 1).join("") + "==".slice(0, 3 - chunk.length / 2);
+  }
+  return out;
+}
+
+function notifications() {
+  const now = new Date().toISOString();
+  if (!$.NSFileManager.defaultManager.fileExistsAtPath(NOTIFICATION_DB)) return { now: now, notifications: [] };
+  // sqlite3's hex(), not base64(), which macOS's sqlite3 has only since 3.41 (-json: 3.33, macOS 11).
+  const sql = "SELECT hex(data) AS data, delivered_date AS delivered FROM record";
+  const shell = Application.currentApplication();
+  shell.includeStandardAdditions = true;
+  const out = shell.doShellScript("/usr/bin/sqlite3 -readonly -json " + quoted(NOTIFICATION_DB) + " " + quoted(sql));
+  const found = [];
+  for (const row of out.trim() ? JSON.parse(out) : []) {
+    const data = $.NSData.alloc.initWithBase64EncodedStringOptions(hexToBase64(row.data), 0);
+    const record = ObjC.deepUnwrap($.NSPropertyListSerialization.propertyListWithDataOptionsFormatError(data, 0, null, null));
+    if (!record) continue;
+    const request = record.req || {};
+    // Seconds since 2001 (Core Data's epoch); a record not delivered yet has only its own date.
+    const seconds = row.delivered === null ? record.date : row.delivered;
+    if (typeof seconds !== "number") continue;
+    found.push({ app: record.app || "", title: request.titl || "", body: request.body || "", time: new Date((seconds + 978307200) * 1000).toISOString() });
+  }
+  return { now: now, notifications: found };
+}
+
 function quoted(s) {
   return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }
@@ -360,6 +397,7 @@ function run(argv) {
     case "close-staged": result = closeStaged(params); break;
     case "focus": result = focus(params); break;
     case "tray": result = tray(params); break;
+    case "notifications": result = notifications(); break;
     default: fail("unknown command " + command);
   }
   return JSON.stringify(result);

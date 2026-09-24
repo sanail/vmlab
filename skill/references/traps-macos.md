@@ -46,7 +46,7 @@ Tell the user what this means for real users: an ad-hoc signed app's grant is ti
 
 **Cause**: the Guest may not show banners for an app that was never allowed to; the notification still reaches the Notification Center's database.
 
-**Do**: check the record, not the banner. Poll `~/Library/Group Containers/group.com.apple.usernoted/db2/db` (SQLite) with `g.exec` until the record appears or a timeout passes; the record lands later than the app's own log line. Put a nonce in the notification's text, and check the title from the same record the nonce is in, so a record from an earlier Run never passes.
+**Do**: check the record, not the banner: `g.wait_for(notification=NONCE)` and `g.notifications()` read the Notification Center's store ([Scenario API](scenarios.md)), by the app's bundle id. The record lands seconds after the app's own log line, so wait for it rather than read once. Put a nonce in the notification's text, and check the title from the same Notification the nonce is in.
 
 ## Tray menus
 

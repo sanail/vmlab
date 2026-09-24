@@ -108,6 +108,17 @@ static class Native {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string title);
     [DllImport("oleacc.dll")] public static extern int AccessibleObjectFromWindow(IntPtr hwnd, uint id, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out object accessible);
     [DllImport("oleacc.dll")] public static extern int AccessibleChildren(IAccessible parent, int start, int count, [Out] object[] children, out int got);
+    // winsqlite3.dll: the SQLite that ships with Windows, for the notification database
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_open_v2(byte[] file, out IntPtr db, int flags, IntPtr vfs);
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_busy_timeout(IntPtr db, int ms);
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_prepare_v2(IntPtr db, byte[] sql, int length, out IntPtr statement, IntPtr tail);
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_step(IntPtr statement);
+    [DllImport("winsqlite3.dll")] public static extern IntPtr sqlite3_column_blob(IntPtr statement, int column);
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_column_bytes(IntPtr statement, int column);
+    [DllImport("winsqlite3.dll")] public static extern long sqlite3_column_int64(IntPtr statement, int column);
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_finalize(IntPtr statement);
+    [DllImport("winsqlite3.dll")] public static extern int sqlite3_close(IntPtr db);
+    [DllImport("winsqlite3.dll")] public static extern IntPtr sqlite3_errmsg(IntPtr db);
 }
 
 public static class Helper {
@@ -187,6 +198,7 @@ public static class Helper {
             case "stage-text": return StageText(p);
             case "close-staged": return CloseStaged(p);
             case "tray": return Tray(p);
+            case "notifications": return Notifications();
         }
         throw new Fail("unknown command " + command);
     }
@@ -999,6 +1011,66 @@ public static class Helper {
         return Obj("file", path, "closed", true);
     }
 
+    // MARK: - Notifications
+
+    const string ISO = "yyyy-MM-dd'T'HH:mm:ss.fff'Z'";
+    const int SQLITE_ROW = 100, SQLITE_OPEN_READONLY = 1;
+    const string TOASTS = "SELECT h.PrimaryId, n.ArrivalTime, n.Payload FROM Notification n "
+        + "JOIN NotificationHandler h ON n.HandlerId = h.RecordId WHERE n.Type = 'toast'";
+
+    /// Every Notification in the user's notification database (the Action Center's store), each app's
+    /// under its AppUserModelID; ToastNotificationManager's history reads one app's only, without times.
+    static Dictionary<string, object> Notifications() {
+        string file = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\Windows\Notifications\wpndatabase.db");
+        List<object> found = new List<object>();
+        string now = DateTime.UtcNow.ToString(ISO, System.Globalization.CultureInfo.InvariantCulture);
+        if (!File.Exists(file)) return Obj("now", now, "notifications", found);
+        IntPtr db, statement;
+        if (Native.sqlite3_open_v2(Encoding.UTF8.GetBytes(file + "\0"), out db, SQLITE_OPEN_READONLY, IntPtr.Zero) != 0)
+            throw new Fail("cannot open " + file + ": " + SqliteError(db));
+        try {
+            Native.sqlite3_busy_timeout(db, 2000);
+            if (Native.sqlite3_prepare_v2(db, Encoding.UTF8.GetBytes(TOASTS + "\0"), -1, out statement, IntPtr.Zero) != 0)
+                throw new Fail("cannot read " + file + ": " + SqliteError(db));
+            try {
+                while (Native.sqlite3_step(statement) == SQLITE_ROW) {
+                    List<string> texts = ToastTexts(Encoding.UTF8.GetString(Column(statement, 2)));
+                    found.Add(Obj(
+                        "app", Encoding.UTF8.GetString(Column(statement, 0)),
+                        "title", texts.Count > 0 ? texts[0] : "",
+                        "body", string.Join("\n", texts.GetRange(Math.Min(1, texts.Count), Math.Max(0, texts.Count - 1)).ToArray()),
+                        "time", DateTime.FromFileTimeUtc(Native.sqlite3_column_int64(statement, 1)).ToString(ISO, System.Globalization.CultureInfo.InvariantCulture)));
+                }
+            } finally {
+                Native.sqlite3_finalize(statement);
+            }
+        } finally {
+            Native.sqlite3_close(db);
+        }
+        return Obj("now", now, "notifications", found);
+    }
+
+    static byte[] Column(IntPtr statement, int column) {
+        byte[] bytes = new byte[Native.sqlite3_column_bytes(statement, column)];
+        if (bytes.Length > 0) Marshal.Copy(Native.sqlite3_column_blob(statement, column), bytes, 0, bytes.Length);
+        return bytes;
+    }
+
+    static string SqliteError(IntPtr db) {
+        return db == IntPtr.Zero ? "out of memory" : Marshal.PtrToStringAnsi(Native.sqlite3_errmsg(db));
+    }
+
+    /// The texts of a Notification's first binding: its title, then its body's lines.
+    static List<string> ToastTexts(string payload) {
+        List<string> texts = new List<string>();
+        System.Xml.XmlDocument xml = new System.Xml.XmlDocument();
+        try { xml.LoadXml(payload); } catch (System.Xml.XmlException) { return texts; }
+        System.Xml.XmlNode binding = xml.SelectSingleNode("/toast/visual/binding");
+        if (binding != null)
+            foreach (System.Xml.XmlNode text in binding.SelectNodes("text")) texts.Add(text.InnerText.Trim());
+        return texts;
+    }
+
     static Dictionary<string, object> StageText(Dictionary<string, object> p) {
         string text = Str(p, "text"), app = Str(p, "app");
         if (text == null || string.IsNullOrEmpty(app)) throw new Fail("stage-text needs text and app");
@@ -1049,7 +1121,7 @@ if (-not (Test-Path -LiteralPath $dll)) {
     # Compiled aside and renamed: a concurrent call never loads half a file.
     $part = "$dll.$PID.part"
     Add-Type -TypeDefinition $source -OutputAssembly $part -OutputType Library -ReferencedAssemblies @(
-        'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions', 'System.Core', 'Accessibility')
+        'UIAutomationClient', 'UIAutomationTypes', 'WindowsBase', 'System.Windows.Forms', 'System.Drawing', 'System.Web.Extensions', 'System.Core', 'System.Xml', 'Accessibility')
     try { Move-Item -LiteralPath $part -Destination $dll -ErrorAction Stop } catch { Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $part }
     # Other vmlab versions' copies; one a running call has loaded stays until next time.
     Get-ChildItem -LiteralPath $dir -Filter 'vmlab-ui-*.dll' | Where-Object { $_.FullName -ne $dll } |

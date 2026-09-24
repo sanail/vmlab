@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from harness import FAKE_LAB, VmlabTestCase
@@ -508,6 +509,144 @@ class TrayTest(UiTestCase):
         """)
         self.assertExit(self.project.vmlab("run"), 1)
         self.assertIn("choose takes a label or a list of labels", self.project.report()["scenarios"][0]["error"])
+
+
+def iso(seconds_ago=0):
+    """A time seconds_ago before now, as a helper gives a Notification's time (the Fake's Guest clock is the Host's)."""
+    return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+class NotificationsTest(VmlabTestCase):
+    """Notifications the Fake scripts in notifications.json, read on every call."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure()
+        self.notifications = self.project.dir / "notifications.json"
+        self.earlier = {"app": "com.example.myapp", "title": "Build done", "body": "earlier run", "time": iso(3600)}
+        self.other = {"app": "com.apple.ScriptEditor2", "title": "Script", "body": "hello from Script Editor", "time": iso(1800)}
+        self.write([self.other, self.earlier])
+        self.assertExit(self.project.vmlab("up"), 0)
+
+    def configure(self, app=""):
+        self.project.config(FAKE_LAB + app + '[labs.mac.fake]\nnotifications = "notifications.json"\n')
+
+    def write(self, notifications):
+        self.notifications.write_text(json.dumps(notifications))
+
+    def post(self, title, body, app="com.example.myapp"):
+        """Add a Notification posted now to the scripted ones."""
+        self.write(json.loads(self.notifications.read_text()) + [{"app": app, "title": title, "body": body, "time": iso()}])
+
+    def listed(self, *args):
+        r = self.project.vmlab("ui", "notifications", *args)
+        self.assertExit(r, 0)
+        return json.loads(r.out)["notifications"]
+
+    def later(self, seconds, fn):
+        timer = threading.Timer(seconds, fn)
+        timer.start()
+        self.addCleanup(timer.cancel)
+
+    def test_lists_every_apps_notifications_oldest_first(self):
+        listed = self.listed()
+        self.assertEqual([n["body"] for n in listed], ["earlier run", "hello from Script Editor"])
+        self.assertEqual(set(listed[0]), {"app", "title", "body", "time"})
+        self.assertEqual(listed[0]["app"], "com.example.myapp")
+        self.assertRegex(listed[0]["time"], r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$")
+
+    def test_app_narrows_them_to_one_apps(self):
+        self.assertEqual([n["title"] for n in self.listed("--app", "com.apple.scripteditor2")], ["Script"])
+        self.assertEqual(self.listed("--app", "com.example.none"), [])
+
+    def test_app_defaults_to_the_labs_notification_id(self):
+        self.configure('[labs.mac.app]\nnotification_id = "com.example.myapp"\n')
+        self.assertEqual([n["title"] for n in self.listed()], ["Build done"])
+        self.assertEqual([n["title"] for n in self.listed("--app", "com.apple.ScriptEditor2")], ["Script"])
+
+    def test_text_is_a_pattern_matched_against_title_and_body(self):
+        self.assertEqual([n["body"] for n in self.listed("--text", "^Build")], ["earlier run"])
+        self.assertEqual([n["body"] for n in self.listed("--text", r"from \w+ Editor")], ["hello from Script Editor"])
+        self.assertEqual(self.listed("--text", "nowhere"), [])
+
+    def test_since_leaves_out_earlier_ones(self):
+        self.assertEqual([n["title"] for n in self.listed("--since", iso(2400))], ["Script"])
+        self.assertEqual(self.listed("--since", iso(-60)), [])
+
+    def test_since_must_be_an_iso_time(self):
+        r = self.project.vmlab("ui", "notifications", "--since", "yesterday")
+        self.assertExit(r, 2)
+        self.assertIn("yesterday", r.err)
+
+    def test_wait_for_is_met_by_one_posted_during_the_wait(self):
+        self.later(1, lambda: self.post("Build done", "nonce 42"))
+        r = self.project.vmlab("ui", "wait-for", "--notification", "nonce 42", "--app", "com.example.myapp", "--timeout", "10")
+        self.assertExit(r, 0)
+        waited = json.loads(r.out)
+        self.assertEqual(waited["condition"], {"notification": "nonce 42", "app": "com.example.myapp"})
+        self.assertEqual([n["body"] for n in waited["notifications"]], ["nonce 42"])
+
+    def test_wait_for_counts_only_those_posted_after_its_start(self):
+        started = time.time()
+        r = self.project.vmlab("ui", "wait-for", "--notification", "earlier run", "--timeout", "1")
+        self.assertExit(r, 1)
+        self.assertFalse(json.loads(r.out)["met"])
+        self.assertLess(time.time() - started, 8)
+        r = self.project.vmlab("ui", "wait-for", "--notification", "earlier run", "--since", iso(7200), "--timeout", "1")
+        self.assertExit(r, 0)
+
+    def test_wait_for_a_notification_cannot_be_gone(self):
+        r = self.project.vmlab("ui", "wait-for", "--notification", "x", "--gone")
+        self.assertExit(r, 2)
+        self.assertIn("--gone", r.err)
+
+    def test_since_goes_with_a_notification_only(self):
+        r = self.project.vmlab("ui", "wait-for", "--file", "~/x", "--since", iso())
+        self.assertExit(r, 2)
+        self.assertIn("--since", r.err)
+
+    def test_scenario_api_defaults_to_the_runs_start(self):
+        self.project.scenario("notified.py", """
+            import json, pathlib, threading, time
+            from datetime import datetime, timezone
+            def post():
+                path = pathlib.Path(%r)
+                now = datetime.now(timezone.utc).isoformat()
+                path.write_text(json.dumps(json.loads(path.read_text()) + [{"app": "com.example.myapp", "title": "Done", "body": "nonce 7", "time": now}]))
+            def scenario(g):
+                g.check("none from earlier Runs", g.notifications() == {"notifications": []})
+                threading.Timer(1, post).start()
+                waited = g.wait_for(notification="nonce 7", timeout=10)
+                g.check("met once posted", waited["met"], detail=waited)
+                g.check("listed", [n["body"] for n in g.notifications()["notifications"]] == ["nonce 7"])
+                g.check("all", len(g.notifications(since="all")["notifications"]) == 3)
+                g.check("one app", [n["title"] for n in g.notifications(app="com.example.myapp", since="all")["notifications"]] == ["Build done", "Done"])
+                g.check("text", [n["title"] for n in g.notifications(text="Script", since="all")["notifications"]] == ["Script"])
+                g.check("unmet", g.wait_for(notification="never sent", timeout=0.5) ["met"] is False)
+        """ % str(self.notifications))
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
+
+    def test_scenario_api_app_defaults_to_the_labs_notification_id(self):
+        self.configure('[labs.mac.app]\nnotification_id = "com.apple.ScriptEditor2"\n')
+        self.project.scenario("notified.py", """
+            def scenario(g):
+                g.check("only the app's", [n["title"] for n in g.notifications(since="all")["notifications"]] == ["Script"])
+                g.check("wait too", g.wait_for(notification="Build", since="all", timeout=0.5)["met"] is False)
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_scenario_api_refuses_gone_with_a_notification(self):
+        self.project.scenario("gone.py", """
+            def scenario(g):
+                g.wait_for(notification="x", gone=True, timeout=1)
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        self.assertIn("gone", self.project.report()["scenarios"][0]["error"])
+
+    def test_without_the_option_there_are_none(self):
+        self.project.config(FAKE_LAB)
+        self.assertEqual(self.listed(), [])
 
 
 class StagedCleanupTest(UiTestCase):

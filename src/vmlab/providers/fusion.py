@@ -85,7 +85,7 @@ PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest b
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 1800
-PROVISION_VERSION = 4  # bump when provision.sh or the Shell extension changes; `base create` then re-provisions
+PROVISION_VERSION = 5  # bump when provision.sh, the Shell extension or the recorder changes; `base create` then re-provisions
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
@@ -137,7 +137,9 @@ with open(path, "w") as f:
     config.write(f, space_around_delimiters=False)
 ' "/var/lib/AccountsService/users/$(id -un)" "$1" "$2" && sync
 """
-EXTENSION_DIR = "/tmp/vmlab-shell-extension"  # where provisioning finds the Shell extension's files
+EXTENSION_DIR = "/tmp/vmlab-shell-extension"  # where provisioning finds the Shell extension's files and RECORDER
+RECORDER = "notification-recorder.py"  # vmlab's Notification recorder, run by the systemd user unit RECORDER_UNIT
+RECORDER_UNIT = "vmlab-notifications.service"
 # $VMLAB_HOME/fusion/<clone>.json: which project, Lab and Base guest a clone serves, and which
 # provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans (vmlab.clean).
 CLONE_RECORD = ".json"
@@ -918,7 +920,23 @@ class FusionProvider(Provider):
             return [("Desktop session", FAIL, "the Lab asks for %s, but the Guest logged into %s" % (SESSION_NAMES[self.session], seen),
                      "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again" % ((self.lab.name,) * 3))]  # fmt: skip
         extensions = self._diagnose_extensions() if self.session == "wayland" else []
-        return [("Desktop session", OK, SESSION_NAMES[self.session], None)] + extensions + [self._diagnose_tray()]
+        return [("Desktop session", OK, SESSION_NAMES[self.session], None)] + extensions + [self._diagnose_tray(), self._diagnose_recorder()]
+
+    def _diagnose_recorder(self):
+        """`ui notifications` reads what vmlab's Notification recorder, a user unit, writes down."""
+        try:
+            result = self.exec(["systemctl", "--user", "show", "-p", "LoadState", "-p", "ActiveState", "--value", RECORDER_UNIT], CALL_TIMEOUT)
+        except GuestError as exc:
+            return ("Notifications", WARN, "cannot ask systemd about the recorder: %s" % exc.message, exc.fix)
+        load, active = (result.stdout.split() + ["", ""])[:2]
+        if active == "active":
+            return ("Notifications", OK, "recorded (%s is running)" % RECORDER_UNIT, None)
+        if load != "loaded":
+            return ("Notifications", WARN, "no Notification recorder: Base guest %s was provisioned by an older vmlab, so `ui notifications` fails" % self.base_name,
+                    "vmlab base create %s --reprovision   (the Lab is cloned again at its next start)" % self.base_name)  # fmt: skip
+        return ("Notifications", WARN, "the Notification recorder is %s, so Notifications go unrecorded" % (active or "not running"),
+                "look at `vmlab exec --lab %s -- journalctl --user -u %s`; restarting the Guest (vmlab down %s && vmlab up %s) starts it again"
+                % (self.lab.name, RECORDER_UNIT, self.lab.name, self.lab.name))  # fmt: skip
 
     def _diagnose_tray(self):
         """Tray icons (and so `ui tray`) need a StatusNotifierWatcher on the session bus: the panel's."""
@@ -1345,15 +1363,15 @@ def _provision(name, vm, out):
         out("provisioning %s" % vm.name)
         with tempfile.TemporaryFile() as archive:
             with tarfile.open(fileobj=archive, mode="w") as tar:
-                for filename in ("metadata.json", "extension.js"):
-                    data = pkgutil.get_data("vmlab", "guest/linux/shell-extension/" + filename)
-                    info = tarfile.TarInfo(filename)
+                for source in ("shell-extension/metadata.json", "shell-extension/extension.js", RECORDER):
+                    data = pkgutil.get_data("vmlab", "guest/linux/" + source)
+                    info = tarfile.TarInfo(source.split("/")[-1])
                     info.size, info.mode = len(data), 0o644
                     tar.addfile(info, io.BytesIO(data))
             archive.seek(0)
             result = ssh.exec(["/bin/sh", "-c", 'rm -rf "$1" && mkdir -p "$1" && tar -xf - -C "$1"', "sh", EXTENSION_DIR], CALL_TIMEOUT, {}, stdin=archive)
         if not result.ok:
-            raise GuestError("copying the Shell extension into %s failed: %s" % (vm.name, result.stderr.strip()), "re-run `vmlab base create %s`" % name)
+            raise GuestError("copying the Shell extension and the Notification recorder into %s failed: %s" % (vm.name, result.stderr.strip()), "re-run `vmlab base create %s`" % name)
         with tempfile.TemporaryFile() as stdin:
             stdin.write(pkgutil.get_data("vmlab", "guest/linux/provision.sh"))
             stdin.seek(0)

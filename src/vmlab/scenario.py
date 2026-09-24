@@ -69,6 +69,8 @@ class Guest:
         self._provider = provider
         self._run_dir = run_dir
         self._launch_app = launch_app
+        self._notification_id = lab.app.notification_id
+        self._started = time.time()  # the Run's start: Notifications from before it are left out
         self._step_timeout = lab.step_timeout
         self._limit = lab.scenario_timeout
         self._deadline = None
@@ -255,12 +257,38 @@ class Guest:
             doc["ended"] = BY_SCENARIO
         return result
 
-    def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, timeout=None):
+    def notifications(self, app=None, text=None, since=None):
+        """{"notifications": [{"app", "title", "body", "time"}]}: the Notifications the Guest's OS
+        recorded, oldest first, time in ISO 8601 UTC on the Guest's clock. app is the OS's id for
+        the sender (default: the Lab's app.notification_id, else every app's); text a pattern
+        searched for in title and body; since a Guest time (ISO 8601), by default the Run's start,
+        or "all"."""
+        app, since = self._notification_args(app, since)
+        return self._ui_call(lambda contract: contract.notifications(app, text, since))
+
+    def _notification_args(self, app, since):
+        """app and since as vmlab.ui takes them: the Lab's notification_id, the Run's start, "all"."""
+        if since is not None and not isinstance(since, str):
+            raise UsageError('since takes a Guest time in ISO 8601 or "all", not %r' % (since,))
+        if since is None:
+            since = ui.HostTime(self._started)
+        elif since == "all":
+            since = None
+        return (self._notification_id if app is None else app), since
+
+    def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None,
+                 notification=None, since=None, timeout=None):  # fmt: skip
         """Wait until one condition holds: an element appears, a process runs, a file exists, a log
-        file has a line matching pattern, or the command exec (an argv) exits 0 (with pattern: its
-        stdout matches). gone=True waits for the condition to stop holding instead. Returns
-        {"met": bool, ...}; never raises for an unmet condition. timeout defaults to the Lab's step_timeout."""
-        condition = ui.condition(text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern, exec=exec, named=str)
+        file has a line matching pattern, the command exec (an argv) exits 0 (with pattern: its
+        stdout matches), or a Notification matching the pattern notification is posted (app and
+        since as for notifications). gone=True waits for the condition to stop holding instead.
+        Returns {"met": bool, ...}; never raises for an unmet condition. timeout defaults to the Lab's step_timeout."""
+        if notification is not None:
+            app, since = self._notification_args(app, since)
+        condition = ui.condition(
+            text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern, exec=exec,
+            notification=notification, since=since, named=str,
+        )  # fmt: skip
         return self._ui_call(lambda contract: contract.wait_for(condition, timeout=timeout))
 
     def _ui_call(self, fn):

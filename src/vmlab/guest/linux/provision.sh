@@ -8,10 +8,13 @@
 # input and clipboard tools, vmlab's GNOME Shell extension, and nothing that
 # pops up or takes the package lock in the middle of a Run.
 #
-# $1: a folder holding the Shell extension's files (vmlab copies them there first).
+# $1: a folder holding the Shell extension's files and the Notification recorder
+# (vmlab copies them there first).
 set -euo pipefail
 EXTENSION_SRC=${1:?usage: provision.sh EXTENSION_DIR}
 EXTENSION_UUID=vmlab-ui@vmlab
+RECORDER=/usr/local/lib/vmlab/notification-recorder.py
+RECORDER_UNIT=vmlab-notifications.service
 
 say() { printf '  %s\n' "$*"; }
 fail() { printf 'provision: %s\n' "$*" >&2; exit 1; }
@@ -137,6 +140,25 @@ say "UI: vmlab's GNOME Shell extension (window geometry, focus, input and clipbo
 sudo -n rm -rf "/usr/share/gnome-shell/extensions/$EXTENSION_UUID"
 sudo -n mkdir -p "/usr/share/gnome-shell/extensions/$EXTENSION_UUID"
 sudo -n cp "$EXTENSION_SRC"/metadata.json "$EXTENSION_SRC"/extension.js "/usr/share/gnome-shell/extensions/$EXTENSION_UUID/"
+
+say "UI: vmlab's Notification recorder (Linux keeps no history of Notifications), for both Desktop sessions"
+# A user unit, started with the user's systemd manager at login: whichever session starts,
+# the session bus it records is already there (dbus-user-session).
+sudo -n install -D -m 644 "$EXTENSION_SRC/notification-recorder.py" "$RECORDER"
+sudo -n tee "/etc/systemd/user/$RECORDER_UNIT" >/dev/null <<EOF
+# Written by vmlab: records the Notifications apps post, for vmlab ui notifications.
+[Unit]
+Description=vmlab Notification recorder
+
+[Service]
+ExecStart=/usr/bin/python3 $RECORDER
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=default.target
+EOF
+sudo -n systemctl --global enable "$RECORDER_UNIT" >/dev/null
 rm -rf "$EXTENSION_SRC"
 
 say "session environment: Qt apps join the accessibility bus; WebKitGTK draws without DMA-BUF"

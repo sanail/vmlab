@@ -10,6 +10,10 @@ editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fa
                                     # application node's "trayicon" node is its Tray icon,
                                     # whose "menuitem" children (with "enabled", "checked" and
                                     # their own children) are its Tray menu
+    notifications = "notifications.json"  # Notifications the Guest's OS recorded, relative to the
+                                    # config file: a list of {"app", "title", "body", "time"}, time
+                                    # in ISO 8601 (the Fake's Guest clock is the Host's); read on
+                                    # every call, so a test can add one while a Scenario waits
     channels = ["ssh", "exec"]      # Channel names, preferred first
     broken_channels = ["ssh"]       # these Channels fail every call (fault injection)
     hung_channels = ["ssh"]         # these Channels hang until the call times out
@@ -27,6 +31,7 @@ import subprocess
 import time
 import uuid
 import zlib
+from datetime import datetime, timezone
 
 from vmlab import hostproc
 from vmlab.config import ConfigError
@@ -37,7 +42,7 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
 FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are (only by name: nothing is written there)
-OPTIONS = ("ui_tree", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds")
+OPTIONS = ("ui_tree", "notifications", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds")
 
 
 class FakeProvider(Provider):
@@ -151,6 +156,8 @@ class FakeProvider(Provider):
             raise ConfigError(config_path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(OPTIONS))
         if "ui_tree" in options:
             _read_tree(config_path.parent / options["ui_tree"], config_path, key + ".ui_tree")
+        if "notifications" in options:
+            _read_notifications(config_path.parent / options["notifications"], config_path, key + ".notifications")
         channels = options.get("channels", DEFAULT_CHANNELS)
         if not (isinstance(channels, list) and channels and all(isinstance(c, str) for c in channels)):
             raise ConfigError(config_path, key + ".channels", "must be a non-empty list of names", 'e.g. channels = ["ssh", "exec"]')
@@ -244,6 +251,11 @@ class FakeProvider(Provider):
             if chosen:
                 self._record("tray", app=params["app"], chosen=chosen)
             return {"icon": True, "items": items, "chosen": chosen or None, "failed": None}
+        if command == "notifications":
+            name = self.lab.options.get("notifications")
+            key = "labs.%s.fake.notifications" % self.lab.name
+            posted = _read_notifications(self.project.vmlab_dir / name, self.project.config_path, key) if name else []
+            return {"now": datetime.now(timezone.utc).isoformat(), "notifications": posted}
         if command == "focus":
             apps = self._scripted_tree().get("children", []) + ([editor] if editor else [])
             [app] = [a for a in apps if a.get("role") == "application" and a.get("name", "").lower() == params["app"].lower()] or [None]
@@ -404,6 +416,17 @@ def _read_tree(path, config_path, key):
             "cannot read scripted UI tree %s: %s" % (path, exc),
             "point it at a JSON file relative to %s" % config_path.parent,
         )
+
+
+def _read_notifications(path, config_path, key):
+    try:
+        posted = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ConfigError(config_path, key, "cannot read scripted Notifications %s: %s" % (path, exc), "point it at a JSON file relative to %s" % config_path.parent)
+    if not (isinstance(posted, list) and all(isinstance(n, dict) and isinstance(n.get("time"), str) for n in posted)):
+        raise ConfigError(config_path, key, "%s must hold a list of Notifications, each with a time" % path.name,
+                          'e.g. [{"app": "com.example.myapp", "title": "Done", "body": "Built", "time": "2026-09-25T10:00:00Z"}]')  # fmt: skip
+    return posted
 
 
 def _placeholder_png():

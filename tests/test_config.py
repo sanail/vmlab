@@ -76,3 +76,22 @@ class ConfigErrorTest(VmlabTestCase):
         self.project.config(FAKE_LAB + '[labs.mac.fake]\nui_tree = "missing.json"\n')
         self.project.scenario("tree.py", 'def scenario(g):\n    g.check("tree", g.tree() is not None)\n')
         self.assertConfigError("labs.mac.fake.ui_tree", "missing.json")
+
+    def test_notification_id_is_a_non_empty_string(self):
+        self.project.config(FAKE_LAB + "[labs.mac.app]\nnotification_id = 3\n")
+        self.assertConfigError("labs.mac.app.notification_id", "non-empty string")
+
+    def test_an_unknown_app_key_lists_notification_id_among_the_allowed(self):
+        self.project.config(FAKE_LAB + '[labs.mac.app]\nnotification = "com.example.myapp"\n')
+        self.assertConfigError("labs.mac.app.notification", "unknown key", "notification_id")
+
+    def test_unreadable_scripted_notifications_are_a_config_error(self):
+        self.project.config(FAKE_LAB + '[labs.mac.fake]\nnotifications = "missing.json"\n')
+        self.project.scenario("smoke.py", SMOKE)
+        self.assertConfigError("labs.mac.fake.notifications", "missing.json")
+
+    def test_scripted_notifications_are_a_list_of_them(self):
+        self.project.config(FAKE_LAB + '[labs.mac.fake]\nnotifications = "notifications.json"\n')
+        (self.project.dir / "notifications.json").write_text('{"app": "x"}')
+        self.project.scenario("smoke.py", SMOKE)
+        self.assertConfigError("labs.mac.fake.notifications", "list")

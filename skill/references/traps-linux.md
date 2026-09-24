@@ -28,7 +28,7 @@ Panels keep Tray icons and their menus out of `ui tree`: read and choose from a 
 
 ## Notifications
 
-**Do**: record them on the session bus rather than on screen: start `dbus-monitor --session "interface='org.freedesktop.Notifications',member='Notify'"` with `g.spawn` (vmlab's calls have the session bus's address) before the step, and read its output (`wait_for(log=handle.log, pattern=...)`, `handle.output()`): each `Notify` call lists the app name, icon, summary and body as its first four strings. Put a nonce in what the app sends. A `Notify` that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
+**Do**: read them with `g.wait_for(notification=NONCE)` and `g.notifications()` ([Scenario API](scenarios.md)), not from the screen. Linux keeps no history of Notifications, so vmlab's recorder, a user unit Base guests start at login in both Desktop sessions, writes down every `Notify` call on the session bus, by the app name the app gives it. `vmlab doctor` warns when a Guest has no recorder (a Base guest provisioned by an older vmlab: `vmlab base create <base> --reprovision`). Put a nonce in what the app sends. A Notification that never comes while the app logged that it notified points at the app, not the Guest: Base guests run a notification server in both Desktop sessions.
 
 ## Processes and packages
 

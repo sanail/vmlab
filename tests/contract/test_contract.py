@@ -255,6 +255,53 @@ def scenario(g):
 '''
 
 
+# Notifications, each sent by a fixture of the Guest's own that installs nothing: macOS osascript
+# (sent as Script Editor), Windows a toast under PowerShell's own AppUserModelID, Linux gdbus.
+NOTIFY = r'''
+POWERSHELL_AUMID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
+APPS = {"macos": "com.apple.ScriptEditor2", "windows": POWERSHELL_AUMID, "linux": "vmlab-contract"}
+TOAST = """param($Delay, $Title, $Body)
+Start-Sleep -Seconds $Delay
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+[Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
+$xml = New-Object Windows.Data.Xml.Dom.XmlDocument
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>' + $Title + '</text><text>' + $Body + '</text></binding></visual></toast>')
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('%s').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+""" % POWERSHELL_AUMID
+OSASCRIPT = ["osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"]
+GDBUS = ["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications",
+         "--method", "org.freedesktop.Notifications.Notify", "vmlab-contract", "0", ""]
+
+def sender(g, title, body, delay=0):
+    # The argv that sends a Notification after delay seconds.
+    if g.os == "windows":
+        script = g.put("%TEMP%\\vmlab-toast.ps1", TOAST)
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, str(delay), title, body]
+    send = OSASCRIPT + [title, body] if g.os == "macos" else GDBUS + [title, body, "[]", "{}", "5000"]
+    return ["sh", "-c", 'sleep "$1"; shift; exec "$@"', "sh", str(delay)] + send
+
+def guest_now(g):
+    return float(g.exec(cmd(g, "date -u +%s", "[DateTimeOffset]::UtcNow.ToUnixTimeSeconds()")).stdout.strip())
+
+def scenario(g):
+    app, nonce = APPS[g.os], uuid.uuid4().hex[:8]
+    sent = g.exec(sender(g, "vmlab contract", "sent " + nonce))
+    g.check("the fixture sends a Notification", sent.ok, detail=sent.stderr[-2000:])
+    posted = g.wait_for(notification="sent " + nonce, app=app, timeout=60)
+    g.check("wait_for finds a Notification sent before it", posted["met"], detail=posted)
+    [found] = g.notifications(text=nonce)["notifications"] or [None]
+    g.check("it has its title, body and app", found and (found["title"], found["body"], found["app"].lower()) == ("vmlab contract", "sent " + nonce, app.lower()), detail=found)
+    at = datetime.fromisoformat(found["time"].replace("Z", "+00:00")).timestamp() if found else 0
+    g.check("its time is on the Guest's clock", abs(at - guest_now(g)) < 60, detail=[found, guest_now(g)])
+    g.check("app narrows the list", g.notifications(app="com.example.none", text=nonce) == {"notifications": []})
+    g.spawn(sender(g, "vmlab contract", "later " + nonce, delay=4))
+    later = g.wait_for(notification="later " + nonce, app=app, timeout=60)
+    g.check("wait_for is met by one sent during the wait", later["met"] and later["waited_s"] >= 3, detail=later)
+    never = g.wait_for(notification="never " + nonce, timeout=3)
+    g.check("one never sent is unmet at the timeout", not never["met"] and never["waited_s"] < 30, detail=never)
+'''
+
+
 def ui(test):
     """A UI contract test: skipped on Guest OSes that have no UI helper yet."""
 
@@ -732,6 +779,12 @@ def scenario(g):
             self.skipTest("the Fake's Tray menus are scripted: tests/test_ui.py covers them")
         source = (Path(__file__).resolve().parent / TRAY_FIXTURES[self.target.os]).read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_tray.py", UI + "SOURCE = %r\n" % source + TRAY))
+
+    @ui
+    def test_09d_ui_notifications_are_read_and_waited_for(self):
+        if self.target.provider == "fake":
+            self.skipTest("the Fake's Notifications are scripted: tests/test_ui.py covers them")
+        self.assertPassed(*self.target.scenario("ui_notifications.py", UI + "from datetime import datetime\n" + NOTIFY))
 
     @ui
     def test_10_ui_cli_prints_the_same_json(self):

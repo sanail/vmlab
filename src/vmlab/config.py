@@ -19,7 +19,7 @@ OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
 LAB_KEYS = ("provider", "os", "arch", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
-APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "ready", "ready_timeout", "env", "state")
+APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
 # [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
 READY_CONDITIONS = ("text", "role", "process", "file", "log", "exec")  # text and role make one: an element
 READY_KEYS = READY_CONDITIONS + ("app", "pattern", "gone")
@@ -77,6 +77,7 @@ class App:
         self.ready_timeout = table.get("ready_timeout")  # s; None: the Lab's step_timeout
         self.env = table.get("env", {})
         self.state = table.get("state", [])  # Guest paths removed before each Run
+        self.notification_id = table.get("notification_id")  # the OS's id for the app as a Notification's sender, or None
 
 
 class Project:
@@ -231,7 +232,7 @@ def _app(path, key, table):
         raise ConfigError(path, key, "must be a table", "write it as [%s]" % key)
     for k in sorted(set(table) - set(APP_KEYS)):
         raise ConfigError(path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(APP_KEYS))
-    for field in ("artifact", "build", "install", "quit", "launch"):
+    for field in ("artifact", "build", "install", "quit", "launch", "notification_id"):
         if field in table and not (isinstance(table[field], str) and table[field].strip()):
             raise ConfigError(path, "%s.%s" % (key, field), "must be a non-empty string", "e.g. %s = \"...\"" % field)
     for field, example in (("inputs", '["src", "package.json"]'), ("state", '["~/Library/Application Support/MyApp"]')):

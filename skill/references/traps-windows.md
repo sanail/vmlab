@@ -40,7 +40,7 @@ Read and choose from an app's Tray menu with `g.tray(APP, choose=...)` (APP: its
 
 ## Notifications
 
-Read the app's toasts from the Action Center's history rather than the screen: in PowerShell, `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null`, then `[Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('APP_ID')`, and each toast's `Content.GetElementsByTagName('text')` holds its title and body. `APP_ID` is the AppUserModelID the app's installer gives its Start menu shortcut (a Tauri app's: its identifier), so the app must be installed by its installer, not run as a bare `.exe`. Put a nonce in what the app sends.
+Read the app's Notifications with `g.wait_for(notification=NONCE)` and `g.notifications()` ([Scenario API](scenarios.md)), not from the screen: they come from the Action Center's store, by the app's AppUserModelID. That is the id the app's installer gives its Start menu shortcut (a Tauri app's: its identifier), so the app must be installed by its installer: a bare `.exe` has no AppUserModelID, Windows keeps none of its Notifications, and the list stays empty. Put a nonce in what the app sends.
 
 ## No sound device
 
