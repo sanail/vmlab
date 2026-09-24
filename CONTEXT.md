@@ -56,6 +56,10 @@ _Avoid_: session, job
 One execution of a **Regression suite** (or the part of it asked for) on one **Lab**, whose **Runs** share one report folder.
 _Avoid_: Run (for the whole suite), run folder (for one **Scenario**)
 
+**Staged document**:
+A document `stage_text` opened in a third-party editor, with the given text selected in it. It is a file vmlab wrote to the **Guest**'s temp folder, and it is known by that exact path, never by its name alone.
+_Avoid_: stage (as a noun), staging file
+
 **Ad-hoc run**:
 A **Run** of a **Scenario** that is not saved in the project — a one-off request from the user.
 
@@ -73,6 +77,7 @@ _Avoid_: test suite, smoke tests
 - An **Ad-hoc run** and a **Regression suite** use the same **Scenario** format; they differ only in whether the **Scenario** is saved
 - A **Regression suite** restores **Clean state** once at its start; a **Scenario** may demand its own restore
 - A **Suite run** holds one **Run** per **Scenario** it executes; what a **Scenario** starts in the **Guest** ends with its **Run**, not with the **Suite run**
+- A **Scenario** closes each **Staged document** it opened; one it leaves open is closed at the end of its **Run**
 - A **Guest**'s architecture follows the **Host**'s; the other architecture is covered only where the guest OS emulates it
 
 ## Flagged ambiguities
