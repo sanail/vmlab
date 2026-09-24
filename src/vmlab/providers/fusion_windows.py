@@ -33,7 +33,7 @@ from vmlab import bases, hostproc, uihelpers
 from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
-    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, fusion_dir, provisioned_snapshot, running_vmx,
+    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
     save_credentials, sound_off, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
@@ -106,11 +106,12 @@ def create_base(name, image, prompt, reprovision, out):
     sound_off(vm, out)
     if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not (reprovision or other_image):
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
-        return
-    wizard = Wizard(name, prompt, out)
-    if other_image or not (record.get("installed") and vm.exists()):
-        _adopt(wizard, name, vm, image)
-    _provision(wizard, name, vm)
+    else:
+        wizard = Wizard(name, prompt, out)
+        if other_image or not (record.get("installed") and vm.exists()):
+            _adopt(wizard, name, vm, image)
+        _provision(wizard, name, vm)
+    delete_old_snapshots(name, vm, prompt.confirm, out)  # says how to delete them in Fusion: vmlab cannot
 
 
 class Wizard:
@@ -423,8 +424,7 @@ def _provision(wizard, name, vm):
     vm.stop()
     provisioned_id = uuid.uuid4().hex
     snapshot = provisioned_snapshot(provisioned_id)
-    # Earlier snapshots stay: vmrun cannot delete an encrypted VM's (fusion.old_snapshots).
-    vm.snapshot(snapshot)
+    vm.snapshot(snapshot)  # earlier ones stay: vmlab says how to delete them in Fusion (delete_old_snapshots)
     record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot, language=language)
     registry.put(name, record)
     wizard.out('Base guest %s is ready (Fusion VM %s). Windows Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))

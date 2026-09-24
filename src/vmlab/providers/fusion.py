@@ -9,7 +9,8 @@ vmlab-clean, taken when the clone is made: restoring reverts to it. VMs live
 under $VMLAB_HOME/fusion, never in Fusion's own Virtual Machines folder. Each
 provisioning of a Base guest takes a new snapshot; an earlier one goes, after
 asking, once no linked clone needs it (delete_old_snapshots, `vmlab clean`);
-Windows Base guests keep theirs, since vmrun cannot delete an encrypted VM's.
+a Windows Base guest's only in Fusion's window, which vmlab explains: vmrun
+cannot merge an encrypted VM's disks.
 
 Channels (ADR 0003): SSH first, with vmlab's key and the host key pinned when
 the Base guest was made, and vmrun guest operations as the fallback. On Linux
@@ -454,23 +455,36 @@ class OldSnapshot:
     def __init__(self, vm, owner, name, running, held_by):
         self.vm, self.owner, self.name, self.running = vm, owner, name, running
         self.held_by = held_by  # [(who, how to let it go)]: the linked clones that still need it
+        # Fusion 26's vmrun and vmcli only drop an encrypted VM's snapshot from its list: neither can
+        # merge its disks (offline they never do; a running VM refuses them the key), Fusion's window can.
+        self.by_hand = _encrypted(vm.vmx)
 
     @property
     def stop_hint(self):
         return stop_hint(self.vm)
 
     def why_kept(self):
-        return "; ".join("%s still needs it (%s)" % pair for pair in self.held_by)
+        """Why vmlab does not delete it, or "" when it does."""
+        if self.held_by:
+            return "; ".join("%s still needs it (%s)" % pair for pair in self.held_by)
+        return "vmlab cannot delete an encrypted VM's snapshots; %s" % in_fusion(self.vm, self.name) if self.by_hand else ""
 
     def delete(self):
         self.vm.delete_snapshot(self.name)
 
 
+def in_fusion(vm, names):
+    """How the person deletes an encrypted VM's snapshots (names) in Fusion's window, which merges their disks."""
+    return ("in VMware Fusion, while %s is shut down: File > Open (Cmd+Shift+G: %s), Virtual Machine > Snapshots, delete %s; close its window, "
+            "then right-click it in the Virtual Machine Library > Delete > Remove from Library (Keep File). Lab copies made before keep "
+            "their own copy of these disks until they are copied again" % (vm.name, vm.vmx.parent, names))
+
+
 def old_snapshots(vms=None, only=None):
     """The earlier provisioned snapshots of vmlab's Base guests on Fusion (vms: {name: running}, default
-    all; only: that one's), other than the current one. A Lab's clone has none. Encrypted (Windows) VMs are skipped: vmrun
-    cannot delete their snapshots. A VM whose snapshots cannot be listed is skipped too: its Lab's own
-    checks say what is wrong."""
+    all; only: that one's), other than the current one. A Lab's clone has none: a linked clone's snapshots
+    are its own, and a Windows Lab's copy is made again after the next provisioning. A VM whose snapshots
+    cannot be listed is skipped: its Lab's own checks say what is wrong."""
     vms = HostVMs().vms() if vms is None else vms
     registry = {r.get("vm") or bases.vm_name(name): (name, r) for name, r in bases.Registry().all().items() if r.get("provider") == "fusion"}
     found = []
@@ -480,11 +494,7 @@ def old_snapshots(vms=None, only=None):
         name, record = registry[vm_name]
         if not record.get("snapshot"):
             continue  # never provisioned yet
-        vm = FusionVM(vmx_path(vm_name))
-        if _encrypted(vm.vmx):
-            # Fusion 26's vmrun deletes an encrypted VM's snapshot from its list, then fails ("Cannot read
-            # the virtual machine configuration file") before it merges the disks: nothing is freed.
-            continue
+        vm = FusionVM(vmx_path(vm_name), secrets=vm_name)
         try:
             names = [s for s in vm.snapshots() if s.startswith(PROVISIONED_PREFIX) and s != record["snapshot"]]
         except GuestError:
@@ -560,6 +570,9 @@ def delete_old_snapshots(name, vm, confirm, out):
     if not unneeded:
         return
     names = ", ".join(snapshot.name for snapshot in unneeded)
+    if unneeded[0].by_hand:
+        out("  kept %s, which no Lab needs: vmlab cannot delete an encrypted VM's snapshots; to free their disk space, %s" % (names, in_fusion(vm, names)))
+        return
     if unneeded[0].running:
         out("  kept %s, which no Lab needs: %s is running; stop it (%s), then run `vmlab clean`" % (names, vm.name, stop_hint(vm)))
         return
@@ -585,12 +598,14 @@ def snapshot_findings():
     unneeded = {}
     for snapshot in old:
         if not snapshot.held_by:
-            unneeded.setdefault(snapshot.owner, []).append(snapshot.name)
-    return [
-        ("Old snapshots", WARN, "%s keeps %d earlier snapshot%s no Lab needs: %s; they take disk space"
-         % (owner, len(names), "" if len(names) == 1 else "s", ", ".join(names)), "vmlab clean   (asks first; a running VM is left alone)")
-        for owner, names in sorted(unneeded.items())
-    ]  # fmt: skip
+            unneeded.setdefault(snapshot.owner, []).append(snapshot)
+    findings = []
+    for owner, snapshots in sorted(unneeded.items()):
+        names = ", ".join(snapshot.name for snapshot in snapshots)
+        fix = in_fusion(snapshots[0].vm, names) if snapshots[0].by_hand else "vmlab clean   (asks first; a running VM is left alone)"
+        findings.append(("Old snapshots", WARN, "%s keeps %d earlier snapshot%s no Lab needs: %s; they take disk space"
+                         % (owner, len(snapshots), "" if len(snapshots) == 1 else "s", names), fix))  # fmt: skip
+    return findings
 
 
 def _credentials_path(base_vm):
