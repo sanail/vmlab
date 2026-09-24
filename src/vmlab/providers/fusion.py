@@ -17,7 +17,8 @@ Guest user's password, and an encrypted VM's own password, from vmlab's home
 on its command line, so they show in the Host's process list for the length of
 a call; they guard a throwaway Guest on Fusion's private NAT network.
 Screenshots are Host-side (vmcli MKS captureScreenshot): no Guest credentials,
-no Wayland consent dialog.
+no Wayland consent dialog. Guests have no sound device: nothing they play
+reaches the Host, and they cannot take its Bluetooth headset.
 
 The Linux desktop session is GNOME on Wayland, or Xfce on X11 for Labs that
 ask for it: a new clone of such a Lab boots once to switch its autologin
@@ -358,6 +359,14 @@ class FusionVM:
         if self.vmx.parent.exists():  # vmrun leaves logs behind, and knows nothing of a VM that never started
             shutil.rmtree(str(self.vmx.parent), ignore_errors=True)
 
+    def config(self, key):
+        """A .vmx key's value, or None."""
+        match = re.search(r'^%s\s*=\s*"([^"]*)"' % re.escape(key), self.vmx.read_text(encoding="utf-8", errors="replace"), re.M)
+        return match.group(1) if match else None
+
+    def has_sound(self):
+        return (self.config("sound.present") or "").lower() == "true"
+
     def set_config(self, settings):
         """Set .vmx keys, e.g. {"memsize": 4096} (the VM must be off); None removes a key."""
         lines = self.vmx.read_text(encoding="utf-8").splitlines()
@@ -379,6 +388,15 @@ class FusionVM:
             raise GuestTimeout("screenshot of %s did not finish within %ss" % (self.name, timeout))
         if code or not dest.exists() or not dest.read_bytes()[:4] == b"\x89PNG":
             raise GuestError("screenshot of %s failed: %s" % (self.name, _without_noise(out + err).strip() or "no PNG written"), "check that the Guest is running: vmlab status")
+
+
+def sound_off(vm, out):
+    """Take a stopped Base guest's sound device away (Fusion's Get Windows VM has one), so it
+    plays nothing through the Host's speakers and takes no Bluetooth headset while it runs.
+    A running VM is left alone: Fusion rewrites its .vmx."""
+    if vm.exists() and not vm.is_running() and vm.has_sound():
+        vm.set_config({"sound.present": "FALSE"})
+        out("  turned %s's sound device off: Guests play nothing on the Mac" % vm.name)
 
 
 def _credentials_path(base_vm):
@@ -653,7 +671,23 @@ class FusionProvider(Provider):
             else:
                 findings.append(("Display language", INFO, "not recorded for Base guest %s (provisioned by an older vmlab); checked while the Guest runs" % name,
                                  "vmlab base create %s --reprovision   (records it)" % name))  # fmt: skip
-        return findings + self._diagnose_clone(record)
+        return findings + self._diagnose_sound(base, running) + self._diagnose_clone(record)
+
+    def _diagnose_sound(self, base, base_running):
+        """Guests play nothing on the Host: Base guests and Lab clones without a sound device."""
+        findings = []
+        what = "plays through the Mac's speakers or headset while it runs, and can take a Bluetooth headset"
+        if base.has_sound():
+            fix = "vmlab base create %s   (turns it off while the VM is stopped)" % self.base_name
+            if base_running:
+                stop = "shut Windows down from its Start menu" if self.windows else "'%s' -T fusion stop '%s'" % (vmrun_binary(), base.vmx)
+                fix = "stop it first (%s), then run `vmlab base create %s`, which turns it off" % (stop, self.base_name)
+            findings.append(("Sound", WARN, "Base guest %s has a sound device: it %s" % (self.base_name, what), fix))
+        if self.vm.exists() and self.vm.has_sound():
+            fix = ("vmlab down %s && vmlab up %s" % (self.lab.name, self.lab.name) if self.vm.is_running() else "vmlab up %s" % self.lab.name) + \
+                "   (vmlab turns it off at every start)"
+            findings.append(("Sound", WARN, "the Guest has a sound device: it %s" % what, fix))
+        return findings
 
     def _language_finding(self, language, where, status):
         """Does where (the Base guest as recorded, or the running Guest) show Windows in the Lab's language?
@@ -765,7 +799,8 @@ class FusionProvider(Provider):
 
     def _configure(self):
         # At every start: reverting to vmlab-clean brings back the settings of the moment it was taken.
-        self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024)})
+        # No sound device: a Guest must not play through the Host's speakers nor take its Bluetooth headset.
+        self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024), "sound.present": "FALSE"})
 
     def _switch_session(self):
         """Boot a new clone once to make the Lab's session its autologin session, then stop it."""
@@ -952,6 +987,7 @@ def create_base(name, image, confirm, reprovision, out):
     registry = bases.Registry()
     vm = FusionVM(vmx_path(bases.vm_name(name)))
     record = registry.get(name) or {}
+    sound_off(vm, out)
     if (
         record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots()
         and not reprovision

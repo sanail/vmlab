@@ -33,7 +33,7 @@ from vmlab import bases, hostproc, uihelpers
 from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
-    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, fusion_dir, running_vmx, save_credentials, vm_password, vmrun, vmx_path,
+    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, fusion_dir, running_vmx, save_credentials, sound_off, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
@@ -102,6 +102,7 @@ def create_base(name, image, prompt, reprovision, out):
     record = bases.Registry().get(name) or {}
     # --image naming another VM than the one adopted: adopt it in its place (e.g. Windows in another language)
     other_image = bool(image and record.get("image") and _image_vmx(image) != Path(record["image"]).resolve())
+    sound_off(vm, out)
     if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not (reprovision or other_image):
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
         return
@@ -218,6 +219,7 @@ def _adopt(wizard, name, vm, image):
     save_credentials(vm.name, found["user"], found["password"], found["vm_password"])
     wizard.out("copying %s into %s (an APFS clone: instant, and it shares the original's disk space)" % (source, vm.vmx.parent))
     source_vm.clone_copy(vm)
+    sound_off(vm, wizard.out)  # before Windows first runs as a Base guest; Lab copies inherit it
     bases.Registry().put(name, {
         "provider": "fusion", "os": "windows", "arch": host_arch(), "vm": vm.name, "vmx": str(vm.vmx), "image": str(source),
         "user": found["user"], "installed": True, "provisioned": None,

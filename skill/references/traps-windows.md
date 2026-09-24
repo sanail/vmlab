@@ -1,6 +1,6 @@
 # Windows Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing pace, and output encoding (UTF-8 everywhere).
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing pace, output encoding (UTF-8 everywhere), and sound (Guests have no sound device, so nothing reaches the Host's speakers).
 
 ## Installing needs elevation
 
@@ -41,6 +41,10 @@ A new app's tray icon waits among the hidden icons. Bring it onto the taskbar wi
 ## Notifications
 
 Read the app's toasts from the Action Center's history rather than the screen: in PowerShell, `[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null`, then `[Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('APP_ID')`, and each toast's `Content.GetElementsByTagName('text')` holds its title and body. `APP_ID` is the AppUserModelID the app's installer gives its Start menu shortcut (a Tauri app's: its identifier), so the app must be installed by its installer, not run as a bare `.exe`. Put a nonce in what the app sends.
+
+## No sound device
+
+A Guest has no sound device, so Windows shows a crossed-out speaker in the tray, and nothing covers the app for it. Playing a sound succeeds without error and nobody hears it. An app that refuses to start or shows its own "no audio output" error without one behaves the same on a user's PC with no speakers: a Check can expect it. A Scenario cannot test what the app sounds like; vmlab has no setting that gives a Guest sound.
 
 ## PowerShell parses twice
 

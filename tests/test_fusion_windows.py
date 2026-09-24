@@ -207,6 +207,15 @@ class WindowsCloneTest(WindowsTestCase):
         self.assertNotIn("generatedAddress", text, "the copy gets its own MAC address")
         self.assertTrue(self.base_vmx.exists())
 
+    def test_the_copy_starts_without_the_sound_device_fusions_windows_vm_has(self):
+        self.base_vmx.write_text(self.base_vmx.read_text() + 'sound.present = "TRUE"\nsound.virtualDev = "hdaudio"\nsound.autoDetect = "TRUE"\n')
+
+        self.vmlab("up")
+
+        text = Path(self.clone_vmx()).read_text()
+        self.assertIn('sound.present = "FALSE"', text)
+        self.assertNotIn('sound.present = "TRUE"', text)
+
     def test_every_vmrun_call_on_the_copy_carries_the_vm_password(self):
         self.vmlab("up")
         self.vmlab("down")
@@ -333,6 +342,34 @@ class WindowsBaseWizardTest(WindowsTestCase):
 
         self.assertExit(r, 0)
         self.assertIn("Base guest windows-11 is ready", r.out)
+
+    def test_a_ready_base_guest_gets_its_sound_device_turned_off(self):
+        base = self.windows_base()
+        base.write_text(base.read_text() + 'sound.present = "TRUE"\nsound.virtualDev = "hdaudio"\n')
+
+        r = self.wizard()
+
+        self.assertExit(r, 0)
+        self.assertIn("sound device off", r.out)
+        self.assertIn('sound.present = "FALSE"', base.read_text())
+        self.assertNotIn('sound.present = "TRUE"', base.read_text())
+
+    def test_provisioning_starts_the_base_guest_without_a_sound_device(self):
+        base = self.windows_base()
+        base.write_text(base.read_text() + 'sound.present = "TRUE"\n')
+        self.set_base_record(provisioned=None, elevated=False)
+        state = json.loads(self.state_path.read_text())
+        state["gui_refused"] = True  # the wizard then stops right after trying to start it, with nobody there
+        self.state_path.write_text(json.dumps(state))
+        open_stub = self.project.root / "fake-open"
+        open_stub.write_text("#!/bin/sh\n")
+        open_stub.chmod(open_stub.stat().st_mode | stat.S_IXUSR)
+
+        r = self.wizard(security=self.keychain(VM_PASSWORD), open_stub=open_stub)
+
+        self.assertIn("Start the Guest in a Fusion window", r.err)
+        self.assertIn('sound.present = "FALSE"', base.read_text())
+        self.assertNotIn('sound.present = "TRUE"', base.read_text())
 
     def test_a_guest_fusion_will_not_start_in_a_window_is_opened_in_fusion(self):
         # Fusion refuses `vmrun start gui` for an encrypted VM whose password it cannot read
