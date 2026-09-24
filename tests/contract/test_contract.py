@@ -292,10 +292,17 @@ def scenario(g):
         g.check("a missing command raises", False)
     except Exception as exc:
         g.check("a missing command raises, naming it", "no-such-command-vmlab-" + tag in str(exc), detail=str(exc))
+    try:  # sh's 127; PowerShell's CommandNotFoundException, whatever the Guest's language
+        g.wait_for(exec=cmd(g, "no-such-command-vmlab-" + tag, "no-such-command-vmlab-" + tag), timeout=30)
+        g.check("a missing command in a script raises", False)
+    except Exception as exc:
+        named = "no such command" in str(exc) and (g.os != "windows" or "CommandNotFoundException" in str(exc))
+        g.check("a missing command in a script raises", named, detail=str(exc))
     # A process with a name of its own that quits after a few seconds: on macOS a link to sleep
     # (macOS kills a copy of a system binary), on Linux a script (its sleep is a multicall
-    # binary that goes by the name it is called with), on Windows a copy of ping.
-    name = "vs" + tag
+    # binary that goes by the name it is called with), on Windows a copy of ping. Longer than
+    # the 15 bytes of a name Linux keeps.
+    name = "vmlab-long-name-" + tag
     darwin = g.os != "windows" and g.exec(["uname"]).stdout.strip() == "Darwin"  # a Fake Lab runs on the Host
     posix = 'ln -sf /bin/sleep "$0" && "$0" 8' if darwin else 'printf "#!/bin/sh\\nsleep 8\\n" > "$0" && chmod +x "$0" && "$0"'
     g.exec(background(g, posix.replace("$0", "${TMPDIR:-/tmp}/" + name),

@@ -35,6 +35,11 @@ class UsageError(Exception):
     """The command line (or a Scenario's call) asked for something malformed or impossible. Exit 2."""
 
 
+def is_argv(value):
+    """Is value a command: a non-empty list of strings, the first (the program) not empty?"""
+    return isinstance(value, (list, tuple)) and bool(value) and all(isinstance(a, str) for a in value) and bool(value[0])
+
+
 class ConfigError(Exception):
     def __init__(self, path, key, problem, fix):
         self.path, self.key, self.problem, self.fix = path, key, problem, fix
@@ -271,7 +276,7 @@ def _ready(path, key, ready):
             if not isinstance(value, bool):
                 raise ConfigError(path, key + ".gone", "must be true or false", "e.g. gone = true")
         elif k == "exec":
-            if not (isinstance(value, list) and value and all(isinstance(a, str) and a for a in value)):
+            if not is_argv(value):
                 raise ConfigError(path, key + ".exec", "must be a command: a non-empty list of strings", 'e.g. exec = ["curl", "-fsS", "http://127.0.0.1:8080/health"]')
         elif not (isinstance(value, str) and value):
             raise ConfigError(path, "%s.%s" % (key, k), "must be a non-empty string", 'e.g. %s = "MyApp"' % k)

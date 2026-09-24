@@ -10,6 +10,8 @@ editor for stage-text (ui_call). Options, under [labs.<name>.fake]:
     channels = ["ssh", "exec"]      # Channel names, preferred first
     broken_channels = ["ssh"]       # these Channels fail every call (fault injection)
     hung_channels = ["ssh"]         # these Channels hang until the call times out
+    mute_channels = ["ssh"]         # these Channels come back from every call with exit 255 and no
+                                    # output, as ssh failing without a message of its own
     latency = {ssh = 0.2}           # seconds each call over a Channel takes on top (doctor --bench)
     boot_seconds = 0                # how long the Guest takes to become reachable
 """
@@ -30,7 +32,7 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
-OPTIONS = ("ui_tree", "channels", "broken_channels", "hung_channels", "latency", "boot_seconds")
+OPTIONS = ("ui_tree", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds")
 
 
 class FakeProvider(Provider):
@@ -145,7 +147,7 @@ class FakeProvider(Provider):
         channels = options.get("channels", DEFAULT_CHANNELS)
         if not (isinstance(channels, list) and channels and all(isinstance(c, str) for c in channels)):
             raise ConfigError(config_path, key + ".channels", "must be a non-empty list of names", 'e.g. channels = ["ssh", "exec"]')
-        for fault in ("broken_channels", "hung_channels"):
+        for fault in ("broken_channels", "hung_channels", "mute_channels"):
             unknown = [c for c in options.get(fault, []) if c not in channels]
             if unknown:
                 raise ConfigError(
@@ -279,6 +281,8 @@ class FakeChannel(Channel):
         if self.name in options.get("hung_channels", []):
             time.sleep(timeout)
             raise _timeout(argv, timeout, self.name)
+        if self.name in options.get("mute_channels", []):
+            return ExecResult(argv, 255, "", "")
         try:
             env = dict(os.environ, HOME=str(p.fs / "home"), **env)
             code, out, err = hostproc.run(argv, timeout, cwd=str(p.fs), env=env, stdin=stdin)

@@ -347,7 +347,10 @@ def _ui(project, args):
     elif c == "type":
         result = contract.type(args.text)
     elif c == "wait-for":
-        condition = ui.condition(args.text, args.role, args.app, args.gone, args.process, args.file, args.log, args.pattern, args.exec)
+        condition = ui.condition(
+            text=args.text, role=args.role, app=args.app, gone=args.gone, process=args.process,
+            file=args.file, log=args.log, pattern=args.pattern, exec=args.exec,
+        )  # fmt: skip
         result = contract.wait_for(condition, timeout=args.timeout)
     elif c == "clipboard":
         result = contract.clipboard(set=args.set)

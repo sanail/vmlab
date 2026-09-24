@@ -17,7 +17,7 @@ import base64
 import subprocess
 import uuid
 
-from vmlab.config import UsageError
+from vmlab.config import UsageError, is_argv
 from vmlab.providers.base import GuestError
 
 NO_COMMAND = 127  # the start script's exit code when the Guest has no such command
@@ -27,8 +27,8 @@ TERM_SECONDS = 5  # how long a process gets to end on SIGTERM before SIGKILL (PO
 
 
 def validate_argv(argv):
-    """argv as a list; UsageError unless it is a non-empty list of strings."""
-    if not (isinstance(argv, (list, tuple)) and argv and all(isinstance(a, str) for a in argv)):
+    """argv as a list; UsageError unless it is a command (config.is_argv)."""
+    if not is_argv(argv):
         raise UsageError("spawn needs a command: a non-empty argv list of strings, e.g. [\"python3\", \"-m\", \"http.server\"]")
     return list(argv)
 

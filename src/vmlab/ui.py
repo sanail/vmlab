@@ -20,7 +20,7 @@ their windows and tray (status) items.
 import re
 import time
 
-from vmlab.config import UsageError
+from vmlab.config import UsageError, is_argv
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path
 
 NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
@@ -246,17 +246,26 @@ class Query:
         return [dict({k: v for k, v in n.items() if k != "children"}, app=a) for n, a in candidates]
 
 
-# Conditions for wait_for. poll(ui, timeout) returns (holds, extra result fields); wait_for inverts
-# holds for gone=True. UNANSWERED is the extra fields before any poll has answered.
+# Conditions for wait_for. poll(ui, timeout) returns (holds, extra result fields); Gone inverts
+# holds. unanswered is the extra fields before any poll has answered. A poll the Guest did not
+# answer raises instead (NoAnswer, ChannelError, GuestTimeout), which wait_for counts as "not met
+# yet" for every condition: gone=True never holds on a failed call.
 STDOUT_TAIL = 2000  # characters of an exec condition's last output kept in the result
-# How a Guest says it has no such command: sh's 127; on Windows, what call.ps1 and cmd.exe exit
-# with (9009), or PowerShell's error for an unknown command (exit 1).
+# How a Guest says it has no such command: sh's 127; on Windows, what vmlab's call runner and
+# cmd.exe exit with (9009); or PowerShell's error for an unknown command (exit 1), which Windows
+# PowerShell names CommandNotFoundException in every language. PowerShell 7's concise error view
+# shows only the message, which is localized: its English one is known too.
 MISSING_CODES = (127, 9009)
-NOT_RECOGNIZED = "is not recognized as"
+MISSING_MARKS = ("CommandNotFoundException", "is not recognized as")
+LINUX_NAME_BYTES = 15  # of a process's name, Linux keeps (and pgrep matches) this many
+
+
+class NoAnswer(GuestError):
+    """A condition's command came back without the Guest's answer: a Channel failed without saying so."""
 
 
 class ElementCondition:
-    UNANSWERED = {}
+    unanswered = {}
 
     def __init__(self, query):
         self.query = query
@@ -270,7 +279,7 @@ class ElementCondition:
 
 
 class ProcessCondition:
-    UNANSWERED = {}
+    unanswered = {}
 
     def __init__(self, name):
         self.name = name
@@ -279,11 +288,11 @@ class ProcessCondition:
         return {"process": self.name}
 
     def poll(self, ui, timeout):
-        return ui.provider.exec(ui.probes.process_argv(ui.provider, self.name), timeout).ok, {}
+        return ui.ask(self, ui.probes.process_argv(ui.provider, self.name), timeout, answers=(0, 1)).ok, {}
 
 
 class FileCondition:
-    UNANSWERED = {}
+    unanswered = {}
 
     def __init__(self, path):
         self.path = path
@@ -292,11 +301,11 @@ class FileCondition:
         return {"file": self.path}
 
     def poll(self, ui, timeout):
-        return ui.provider.exec(ui.probes.exists_argv(ui.provider, self.path), timeout).ok, {}
+        return ui.ask(self, ui.probes.exists_argv(ui.provider, self.path), timeout, answers=(0, 1)).ok, {}
 
 
 class LogCondition:
-    UNANSWERED = {}
+    unanswered = {}
 
     def __init__(self, path, pattern):
         self.path, self.pattern = path, pattern
@@ -306,14 +315,15 @@ class LogCondition:
         return {"log": self.path, "pattern": self.pattern}
 
     def poll(self, ui, timeout):
-        result = ui.provider.exec(ui.probes.read_argv(ui.provider, self.path), timeout)
-        return result.ok and self.regex.search(result.stdout) is not None, {}
+        # A file that is not there has no matching line; one that cannot be read gives no answer.
+        result = ui.ask(self, ui.probes.read_argv(ui.provider, self.path), timeout, answers=(0,))
+        return self.regex.search(result.stdout) is not None, {}
 
 
 class ExecCondition:
     """argv exits 0, or with a pattern, its stdout matches whatever the exit code."""
 
-    UNANSWERED = {"code": None, "stdout": ""}
+    unanswered = {"code": None, "stdout": ""}
 
     def __init__(self, argv, pattern):
         self.argv, self.pattern = argv, pattern
@@ -323,8 +333,8 @@ class ExecCondition:
         return dict({"exec": self.argv}, **({} if self.pattern is None else {"pattern": self.pattern}))
 
     def poll(self, ui, timeout):
-        result = ui.provider.exec(self.argv, timeout)
-        if result.code in MISSING_CODES or (result.code and NOT_RECOGNIZED in result.stderr):
+        result = ui.ask(self, ui.probes.exec_argv(self.argv), timeout)
+        if result.code in MISSING_CODES or (result.code and any(mark in result.stderr for mark in MISSING_MARKS)):
             detail = (result.stderr.strip().splitlines() or ["exit %d" % result.code])[-1]
             raise GuestError("wait-for --exec %s: the Guest has no such command (%s)" % (self.argv, detail), "check the command's name and that it is installed in the Guest")
         held = result.ok if self.regex is None else self.regex.search(result.stdout) is not None
@@ -336,7 +346,7 @@ class Gone:
 
     def __init__(self, inner):
         self.inner = inner
-        self.UNANSWERED = inner.UNANSWERED
+        self.unanswered = inner.unanswered
 
     def describe(self):
         return dict(self.inner.describe(), gone=True)
@@ -373,26 +383,74 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
             raise UsageError("wait-for --log needs --pattern")
         found = LogCondition(log, pattern)
     else:
-        if not (isinstance(exec, (list, tuple)) and exec and all(isinstance(a, str) for a in exec)):
+        if not is_argv(exec):
             raise UsageError("wait-for --exec needs a command: a non-empty argv list of strings, e.g. --exec test -e /tmp/ready")
         found = ExecCondition(list(exec), pattern)
     return Gone(found) if gone else found
 
 
+# A condition's command runs in sh, which then writes its exit code as the last line of stderr:
+# a result without that line is not the Guest's answer (ssh's own exit 255, a call killed).
+POSIX_ANSWER = '\nc=$?; printf "\\nvmlab-answered %d\\n" "$c" >&2; exit "$c"'
+POSIX_ANSWER_LINE = re.compile(r"\n?vmlab-answered (\d+)\n\Z")
+# Is a process running? $1 is a pgrep pattern (extended regex, matched against the name the
+# kernel keeps); $2, when not empty, the full name to confirm each match by, from its command line
+# (its program's path or name, which for a script is the script's). Never this sh itself.
+POSIX_PROCESS = r"""pids=$(pgrep -- "$1"); c=$?
+if [ "$c" -eq 0 ]; then
+    c=1
+    for pid in $pids; do
+        [ "$pid" = "$$" ] && continue
+        if [ -z "$2" ]; then c=0; break; fi
+        args=$(ps -o args= -p "$pid") || continue
+        case $args in "$2"|"$2 "*|*/"$2"|*/"$2 "*) c=0; break;; esac
+    done
+fi
+(exit "$c")"""
+
+
 class PosixProbes:
-    """Commands that check the Guest from its shell, for process, file and log conditions."""
+    """Commands that check the Guest from its shell, for wait_for's conditions."""
+
+    def __init__(self, os_name):
+        self.os = os_name
+
+    def _answered(self, script, args):
+        return ["sh", "-c", script + POSIX_ANSWER, "sh"] + list(args)
+
+    def exec_argv(self, argv):
+        return self._answered('"$@"', argv)
 
     def process_argv(self, provider, name):
-        return ["pgrep", "-x", name]
+        """pgrep matches a name exactly (as text, not a regex). Linux keeps only the first 15 bytes
+        of a longer one: those match, then the full name in the process's command line."""
+        cut = name.encode("utf-8")[:LINUX_NAME_BYTES].decode("utf-8", "ignore")
+        if self.os == "linux" and cut != name:
+            return self._answered(POSIX_PROCESS, ["^" + _ere(cut), name])
+        return self._answered(POSIX_PROCESS, ["^%s$" % _ere(name), ""])
 
     def exists_argv(self, provider, path):
-        return ["sh", "-c", EXPAND_TILDE + 'test -e "$p"', "sh", path]
+        return self._answered(EXPAND_TILDE + 'test -e "$p"', [path])
 
     def read_argv(self, provider, path):
-        return ["sh", "-c", EXPAND_TILDE + 'cat -- "$p"', "sh", path]
+        return self._answered(EXPAND_TILDE + '[ ! -e "$p" ] || cat -- "$p"', [path])
+
+    def answer(self, result):
+        """result, if it is the Guest's answer (its stderr without the answer line); else None."""
+        found = POSIX_ANSWER_LINE.search(result.stderr)
+        if not found or int(found.group(1)) != result.code:
+            return None
+        result.stderr = result.stderr[: found.start()]
+        return result
 
 
 class PowerShellProbes:
+    """The same on Windows. Every Windows call's result comes from vmlab's call runner in the Guest
+    (vmlab.providers.windows), so it is the Guest's answer; a failed call raises."""
+
+    def exec_argv(self, argv):
+        return argv
+
     def process_argv(self, provider, name):
         return provider.shell_argv("if (Get-Process -Name '%s' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % name.replace("'", "''"))
 
@@ -400,7 +458,15 @@ class PowerShellProbes:
         return provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % ps_path(path))
 
     def read_argv(self, provider, path):
-        return provider.shell_argv("Get-Content -Raw -LiteralPath %s" % ps_path(path))
+        return provider.shell_argv("$p = %s; if (Test-Path -LiteralPath $p) { Get-Content -Raw -LiteralPath $p }" % ps_path(path))
+
+    def answer(self, result):
+        return result
+
+
+def _ere(text):
+    """text as a POSIX extended regex that matches it literally."""
+    return re.sub(r"([.\[\]()*+?{}|^$\\])", r"\\\1", text)
 
 
 class UI:
@@ -414,7 +480,7 @@ class UI:
         self.provider = provider
         self.os = provider.lab.os
         self.call_timeout = call_timeout
-        self.probes = PowerShellProbes() if self.os == "windows" else PosixProbes()
+        self.probes = PowerShellProbes() if self.os == "windows" else PosixProbes(self.os)
 
     def _call(self, command, params):
         return self.provider.ui_call(command, params, self.call_timeout("ui %s" % command))
@@ -478,6 +544,16 @@ class UI:
         result["pressed"] = chord_text(pressed["key"], pressed["modifiers"]) if pressed else None
         return result
 
+    def ask(self, condition, argv, timeout, answers=None):
+        """The result of condition's command argv, as the Guest answered it. NoAnswer when it came
+        back without an answer, or with an exit code other than answers (None: any code)."""
+        raw = self.provider.exec(argv, timeout)
+        result = self.probes.answer(raw)
+        if result is None or (answers is not None and result.code not in answers):
+            detail = (raw.stderr.strip().splitlines() or ["no output"])[-1]
+            raise NoAnswer("no answer from the Guest to wait-for %s: exit %s, %s" % (condition.describe(), raw.code, detail))
+        return result
+
     def wait_for(self, condition, timeout=None):
         """Poll condition until it holds or timeout seconds (default: the Lab's step_timeout) pass.
 
@@ -487,7 +563,7 @@ class UI:
         timeout = self.provider.lab.step_timeout if timeout is None else timeout
         started = time.time()
         deadline = started + timeout
-        extra, error = dict(condition.UNANSWERED), None
+        extra, error = dict(condition.unanswered), None
         first = True
         while True:
             # A poll may not outlive the wait by more than a moment, except the first: the answer
@@ -499,8 +575,9 @@ class UI:
             try:
                 met, extra = condition.poll(self, poll_timeout)
                 error = None
-            except (ChannelError, GuestTimeout) as exc:
-                # A failed Channel or a slow or hung poll just means "not met yet". A Scenario
+            except (NoAnswer, ChannelError, GuestTimeout) as exc:
+                # A poll the Guest did not answer (a failed Channel, a slow or hung call) just
+                # means "not met yet", for every condition and gone=True alike. A Scenario
                 # running out of time (a subclass of GuestTimeout) still ends the Scenario.
                 if isinstance(exc, GuestTimeout) and type(exc) is not GuestTimeout:
                     raise

@@ -69,7 +69,9 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 - Chords: `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`win`/`super`) and one key (`a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, arrows, `minus`, `comma`, `slash`, ...). They are sent by physical key, so they work on any keyboard layout; `type` sends Unicode.
 - `wait_for` takes exactly one condition and returns `"met": false` on timeout rather than raising: check it. The conditions: an element (`text=`/`role=`/`app=`, with `"matches"`), a process by name (`process=`), a Guest path (`file=`), a line in a Guest file (`log=` with `pattern=`, a Python regex), or a command (`exec=[argv]`: it exits 0; with `pattern=`, its stdout matches, whatever the exit code; the result carries the last answer's `code` and the tail of its `stdout`).
 - `gone=True` waits for any condition to stop holding: the element or process gone, the file removed, no matching log line, the command failing.
-- A poll that gets no answer (a failed Channel, a hung call) counts as "not met yet"; `"error"` says why the last one failed. A command the Guest does not have (a typo in `exec=`) raises at once instead of waiting out the timeout.
+- A poll that gets no answer from the Guest (a failed Channel, a hung call) counts as "not met yet", with `gone=True` too; `"error"` says why the last one failed.
+- A command the Guest does not have (exit 127, 9009 on Windows, or PowerShell's CommandNotFoundException) raises at once, so a typo in `exec=` does not wait out the timeout. To wait for a command an install is still putting in place, wait for its file (`file=`) first.
+- `process=` matches a process's name exactly, as text. Linux keeps only the first 15 bytes of a longer name; vmlab matches those, then the full name in the process's command line.
 - To show that nothing happens for N seconds, wait for it with `timeout=N` and check `"met"` is false.
 - App names: macOS and Linux use the application's name; Windows uses the process name (`Notepad`, `explorer`), and the taskbar and tray belong to `explorer`.
 

@@ -5,8 +5,10 @@ stage-text, so the same shapes can be checked here as on real Guests (Seam 2).
 """
 
 import json
+import subprocess
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from harness import FAKE_LAB, VmlabTestCase
@@ -220,6 +222,31 @@ class UiCliTest(UiTestCase):
         self.assertIn("--flag", r.err)
         self.ui("wait-for", "--timeout", "30", "--exec", "sh", "-c", "no-such-command-vmlab", code=1)
 
+    def test_a_powershell_command_not_found_fails_at_once_in_any_language(self):
+        # Windows PowerShell names the error in every language; its message is localized.
+        german = 'echo Die Benennung Get-Nope wurde nicht erkannt. >&2; echo "    + FullyQualifiedErrorId : CommandNotFoundException" >&2; exit 1'
+        started = time.time()
+        r = self.ui("wait-for", "--timeout", "30", "--exec", "sh", "-c", german, code=1)
+        self.assertLess(time.time() - started, 15)
+        self.assertIn("no such command", r.err)
+
+    def test_process_names_are_matched_literally(self):
+        name = "vmlab (t%s)" % uuid.uuid4().hex[:4]
+        self.assert_process_waits(name)
+
+    def assert_process_waits(self, name):
+        link = self.guest_home() / name
+        link.symlink_to("/bin/sleep")
+        proc = subprocess.Popen([str(link), "30"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        self.assertTrue(self.ui("wait-for", "--process", name, "--timeout", "10")["met"])
+        self.ui("wait-for", "--process", name[:-1], "--timeout", "1", code=1)
+        self.ui("wait-for", "--process", name, "--gone", "--timeout", "1", code=1)
+        proc.kill()
+        proc.wait()
+        self.assertTrue(self.ui("wait-for", "--process", name, "--gone", "--timeout", "10")["met"])
+
     def test_exec_keeps_only_a_tail_of_its_output(self):
         waited = self.ui("wait-for", "--timeout", "1", "--exec", "sh", "-c", "seq 1 5000")
         self.assertTrue(waited["stdout"].endswith("4999\n5000\n"))
@@ -252,6 +279,34 @@ class UiCliTest(UiTestCase):
         self.assertIn("--lab", r.err)
         self.assertExit(self.project.vmlab("up", "win"), 0)
         self.assertEqual(self.ui("tree", "--lab", "win")["role"], "desktop")
+
+
+class LinuxProcessWaitTest(UiTestCase):
+    def setUp(self):
+        VmlabTestCase.setUp(self)
+        self.project.config('[labs.lin]\nprovider = "fake"\nos = "linux"\n')
+        self.assertExit(self.project.vmlab("up"), 0)
+
+    guest_home = UiCliTest.guest_home
+    assert_process_waits = UiCliTest.assert_process_waits
+
+    def test_a_name_longer_than_linux_keeps_is_matched_in_full(self):
+        # Linux keeps 15 bytes of a process's name: the probe matches those, then the full name.
+        self.assert_process_waits("vmlab-a-long-process-(%s)" % uuid.uuid4().hex[:4])
+
+
+class MuteChannelWaitTest(VmlabTestCase):
+    def test_a_call_that_comes_back_without_an_answer_is_never_met(self):
+        # A Channel may fail without saying so, as ssh exiting 255 with no message of its own.
+        self.project.config(FAKE_LAB + '[labs.mac.fake]\nchannels = ["ssh"]\nmute_channels = ["ssh"]\n')
+        self.assertExit(self.project.vmlab("up"), 0)
+        for condition in (["--process", "no-such-process-vmlab"], ["--file", "~/nope"], ["--log", "~/nope", "--pattern", "x"], ["--exec", "false"]):
+            for gone in ([], ["--gone"]):
+                r = self.project.vmlab("ui", "wait-for", "--timeout", "1", *(gone + condition))
+                self.assertExit(r, 1)
+                waited = json.loads(r.out)
+                self.assertFalse(waited["met"], (condition, gone))
+                self.assertIn("no answer", waited["error"])
 
 
 class BrokenChannelWaitTest(VmlabTestCase):

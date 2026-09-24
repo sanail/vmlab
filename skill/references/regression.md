@@ -12,7 +12,7 @@ Start from what already works: an Ad-hoc run's Scenario (`.vmlab/runs/ad-hoc/NAM
 - Only deterministic Checks: the UI tree, `wait_for`, `exec` output, files, logs, processes. Turn a visual Check from an Ad-hoc run into one of these, or drop it and keep the `g.screenshot` as evidence.
 - Name each Check for the behaviour it guards, in words a reader of a red CI job understands: the name is what the `FAIL` line and `junit.xml` show first.
 - `FRESH = True` when the Scenario must not see what earlier Scenarios left in the Guest.
-- No `time.sleep` in a Scenario: every wait is `wait_for` with a timeout, so it shows in the report and ends with the Scenario's clock. What no other condition says (a server answering, a tray icon registered) is an `exec=` condition; what every Scenario would wait for after the launch belongs in the Lab's `app.ready`; a process quitting is `process=..., gone=True`. Every read-based Check first waits for what it reads.
+- No `time.sleep` in a Scenario: every wait is `wait_for` with a timeout, so it ends with the Scenario's clock; `g.check` its result (`detail=` the result) and it shows in the report, with what the last poll saw. What no other condition says (a server answering, a tray icon registered) is an `exec=` condition; what every Scenario would wait for after the launch belongs in the Lab's `app.ready`; a process quitting is `process=..., gone=True`. Every read-based Check first waits for what it reads.
 - Nothing from your exploration: no paths outside the project, no state you set up by hand in a Guest. The Lab's `[labs.LAB.app]` recipes and the Scenario itself must bring the Guest to where the Checks start.
 
 ## 2. Run as CI would
