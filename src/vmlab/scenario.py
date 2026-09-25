@@ -396,7 +396,8 @@ def run_scenario(path, guest, prepare, left_open, still_running):
     before the Scenario's clock starts, per its FRESH and LAUNCH declarations.
 
     What the Scenario staged and spawned ends with the Run, however it ends.
-    When it ends with no result (a ConfigError, Ctrl-C, sys.exit()), the
+    sys.exit() in the Scenario errors it like any exception. When it ends with
+    no result (a ConfigError, Ctrl-C), the
     exception goes on after that, and left_open(entry) is called for each
     Staged document vmlab could not close and still_running(entry) for each
     process it could not stop, since no report will name them.
@@ -456,6 +457,9 @@ def _execute(path, guest, prepare):
         return str(exc)
     except (GuestError, UsageError) as exc:
         return "%s: %s" % (_scenario_line(path, sys.exc_info()[2]), exc)
+    except SystemExit as exc:  # the Scenario author means "stop this Scenario", not the Runner
+        called = "sys.exit()" if exc.code is None else "sys.exit(%r)" % (exc.code,)
+        return "%s: the Scenario called %s" % (_scenario_line(path, sys.exc_info()[2]), called)
     except Exception:
         return traceback.format_exc(limit=-3).strip()
     return None

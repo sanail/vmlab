@@ -14,6 +14,7 @@ from harness import FAKE_LAB, VmlabTestCase
 # A process with a child: it writes the child's pid to ~/child.pid, then prints and waits.
 PARENT_AND_CHILD = '["sh", "-c", "sleep 300 & echo $! > \\"$HOME/child.pid\\"; echo started; echo oops >&2; sleep 300"]'
 # A process that starts a child and exits, leaving the child in its process group.
+PASS_ONE = 'def scenario(g):\n    g.check("ran", True)\n'
 ORPHAN = '["sh", "-c", "sleep 300 & echo $! > \\"$HOME/child.pid\\""]'
 
 
@@ -250,15 +251,54 @@ def scenario(g):
         self.assertIn("KeyboardInterrupt", err)
         self.assertTrue(gone(self.child_pid()), "what the Scenario spawned still runs")
 
-    def test_sys_exit(self):
+    def test_sys_exit_errors_that_scenario_and_the_run_goes_on(self):
         self.project.scenario("spawn.py", """
 def scenario(g):
     g.spawn(%s)
     g.wait_for(file="~/child.pid", timeout=10)
     raise SystemExit(3)
 """ % PARENT_AND_CHILD)
-        self.assertExit(self.project.vmlab("run"), 3)
+        self.project.scenario("then.py", PASS_ONE)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 1)
+        spawn, then = self.project.report()["scenarios"]
+        self.assertEqual(spawn["status"], "error", spawn)
+        self.assertEqual(spawn["error"], "spawn.py:5: the Scenario called sys.exit(3)")
+        self.assertIn("ERROR mac/spawn: spawn.py:5: the Scenario called sys.exit(3)", r.out)
+        self.assertEqual(spawn["spawned"][0]["ended"], "run")
+        self.assertEqual(then["status"], "passed", then)
         self.assertTrue(gone(self.child_pid()), "what the Scenario spawned still runs")
+
+    def test_every_form_of_sys_exit_errors_its_scenario(self):
+        forms = {"a_none": ("sys.exit()", "sys.exit()"), "b_text": ('sys.exit("had enough")', "sys.exit('had enough')"), "c_zero": ("sys.exit(0)", "sys.exit(0)")}
+        for name, (call, _) in forms.items():
+            self.project.scenario(name + ".py", """
+import sys
+def scenario(g):
+    %s
+    g.check("unreachable", True)
+""" % call)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 1)
+        scenarios = self.project.report()["scenarios"]
+        self.assertEqual([s["name"] for s in scenarios], sorted(forms))
+        for scenario in scenarios:
+            self.assertEqual(scenario["status"], "error", scenario)
+            self.assertEqual(scenario["error"], "%s.py:4: the Scenario called %s" % (scenario["name"], forms[scenario["name"]][1]))
+            self.assertEqual(scenario["checks"], [])
+
+    def test_sys_exit_while_the_scenario_file_loads(self):
+        self.project.scenario("then.py", PASS_ONE)
+        r, scenario = self.run_scenario("""
+import sys
+sys.exit(2)
+def scenario(g):
+    g.check("unreachable", True)
+""")
+        self.assertExit(r, 1)
+        self.assertEqual(scenario["status"], "error", scenario)
+        self.assertEqual(scenario["error"], "spawn.py:3: the Scenario called sys.exit(2)")
+        self.assertEqual(self.project.report()["scenarios"][1]["status"], "passed")
 
     def test_a_process_vmlab_cannot_stop_is_warned_about_when_the_run_ends_with_no_report(self):
         # A path outside the Guest is a ConfigError under the Fake Provider: the Run ends with no report.
