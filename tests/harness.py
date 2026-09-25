@@ -9,6 +9,7 @@ import atexit
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,8 @@ class Project:
             cwd=str(cwd or self.root / "app"),
             env=self.environ(env, bare),
             stdin=subprocess.DEVNULL,  # never a terminal: vmlab must not wait for an answer
+            # Ctrl-C tests signal vmlab: it takes SIGINT even when these tests run as a background job, which ignores it
+            preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

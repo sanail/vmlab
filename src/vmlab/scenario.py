@@ -48,6 +48,13 @@ class ScenarioTimeout(GuestTimeout):
     """The Scenario as a whole ran out of time."""
 
 
+class Interrupted(KeyboardInterrupt):
+    """Ctrl-C, taken by another thread: this Lab's Run ends as Ctrl-C ends a serial one."""
+
+    def __init__(self):
+        super().__init__("the Run was interrupted (Ctrl-C)")
+
+
 class ChannelUse:
     """Which Channels served a series of Guest calls, and the fallbacks on the way."""
 
@@ -61,7 +68,7 @@ class ChannelUse:
 
 
 class Guest:
-    def __init__(self, lab, provider, run_dir, launch_app):
+    def __init__(self, lab, provider, run_dir, launch_app, interrupt=None):
         self.lab = lab.name
         self.os = lab.os
         self.arch = lab.arch  # the Build artifact's
@@ -74,6 +81,7 @@ class Guest:
         self._step_timeout = lab.step_timeout
         self._limit = lab.scenario_timeout
         self._deadline = None
+        self._interrupt = interrupt  # a threading.Event set on Ctrl-C in a parallel Run
         self.checks = []
         self.screenshots = []
         self.spawned = []  # every process the Scenario spawned (Spawned), stopped at the end of the Run
@@ -86,6 +94,8 @@ class Guest:
         self._deadline = time.time() + limit
 
     def _remaining(self, doing):
+        if self._interrupt is not None and self._interrupt.is_set():
+            raise Interrupted()
         remaining = self._deadline - time.time()
         if remaining <= 0:
             raise ScenarioTimeout("Scenario exceeded its %ss timeout (before %s)" % (self._limit, doing))
@@ -389,7 +399,7 @@ def decode_content(guest_path, data):
         raise UsageError("%s is not UTF-8 text (%s); read it with binary=True" % (guest_path, exc.reason))
 
 
-def run_scenario(path, guest, prepare, left_open, still_running):
+def run_scenario(path, guest, prepare, unreported):
     """Execute one Scenario file against guest and return its result dict.
 
     prepare(fresh, launch) readies the Guest (restore, app reset and launch)
@@ -397,22 +407,15 @@ def run_scenario(path, guest, prepare, left_open, still_running):
 
     What the Scenario staged and spawned ends with the Run, however it ends.
     sys.exit() in the Scenario errors it like any exception. When it ends with
-    no result (a ConfigError, Ctrl-C), the
-    exception goes on after that, and left_open(entry) is called for each
-    Staged document vmlab could not close and still_running(entry) for each
-    process it could not stop, since no report will name them.
+    no result (a ConfigError, Ctrl-C), the exception goes on after that, and
+    unreported(staged, spawned) gets the report entries of its Staged documents
+    and spawned processes, since no report will name them.
     """
     started = time.time()
     try:
         error = _execute(path, guest, prepare)
     except BaseException:
-        staged, spawned = guest._end_run(with_output=False)
-        for entry in staged:
-            if entry["ended"] == STILL_OPEN:
-                left_open(entry)
-        for entry in spawned:
-            if entry["ended"] == STILL_RUNNING:
-                still_running(entry)
+        unreported(*guest._end_run(with_output=False))
         raise
 
     if error:

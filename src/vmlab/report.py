@@ -90,6 +90,23 @@ def still_running(lab, scenario, entry):
         lab, scenario, command_line(entry["argv"]), entry["pid"], entry["stop_error"].splitlines()[0])
 
 
+def unreported(lab, scenario, staged, spawned):
+    """The console's lines about a Scenario that ended with no report: the Staged documents
+    (report entries) vmlab closed and could not close, and the processes it stopped and could not."""
+    lines = []
+    for entry in staged:
+        if entry["ended"] == WITH_RUN:
+            lines.append("%s/%s: Staged document %s was closed in %s" % (lab, scenario, entry["file"], entry["app"]))
+        elif entry["ended"] == STILL_OPEN:
+            lines.append(still_open(lab, scenario, entry))
+    for entry in spawned:
+        if entry["ended"] == WITH_RUN:
+            lines.append("%s/%s: spawned `%s` (pid %s) was stopped" % (lab, scenario, command_line(entry["argv"]), entry["pid"]))
+        elif entry["ended"] == STILL_RUNNING:
+            lines.append(still_running(lab, scenario, entry))
+    return lines
+
+
 def still_open(lab, scenario, entry):
     """The warning about a Staged document vmlab could not close (its report entry)."""
     return "warning: %s/%s: Staged document %s is still open in %s: %s" % (lab, scenario, entry["file"], entry["app"], entry["close_error"].splitlines()[0])

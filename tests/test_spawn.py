@@ -4,6 +4,7 @@ The Fake Provider runs Guest commands on the Host, so a spawned process is a
 Host process here: the tests look it up by pid, and kill whatever is left.
 """
 
+import json
 import os
 import re
 import signal
@@ -250,6 +251,8 @@ def scenario(g):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("KeyboardInterrupt", err)
         self.assertTrue(gone(self.child_pid()), "what the Scenario spawned still runs")
+        self.assertRegex(out, r"(?m)^mac/spawn: spawned `sh -c .*` \(pid \d+\) was stopped$")
+        self.assertIn("Guests stopped: mac\n", out)
 
     def test_sys_exit_errors_that_scenario_and_the_run_goes_on(self):
         self.project.scenario("spawn.py", """
@@ -339,3 +342,98 @@ def scenario(g):
         self.assertIn("not running", second["stop_error"])
         self.assertIn("still running", r.out)
         self.assertIn("still running", (self.project.only_run_dir() / "summary.md").read_text())
+
+
+TWO_LABS = FAKE_LAB + """
+[labs.ubuntu]
+provider = "fake"
+os = "linux"
+arch = "arm64"
+"""
+
+# Spawns a process with a child, says it is ready, then waits on the Scenario's clock.
+SPAWN_AND_WAIT = """
+def scenario(g):
+    g.spawn(%s)
+    g.wait_for(file="~/child.pid", timeout=10)
+    g.put("~/ready", "")
+    g.wait_for(file="~/never", timeout=60)
+    g.check("unreachable", True)
+""" % PARENT_AND_CHILD
+
+
+class ParallelCtrlCTest(SpawnCase):
+    """Ctrl-C in `vmlab run --parallel` ends every Lab's Run as it ends a serial one."""
+
+    def setUp(self):
+        super().setUp()
+        self.project.config(TWO_LABS)
+
+    def start(self, *args):
+        proc = self.project.vmlab_background("run", "--parallel", *args, env={"VMLAB_FREE_MEMORY_GB": "64"})
+        self.addCleanup(proc.kill)
+        deadline = time.time() + 30
+        while len(list(self.project.home.glob("fake/*/fs/home/ready"))) < 2:
+            self.assertLess(time.time(), deadline, "the Scenarios never got going on both Labs")
+            if proc.poll() is not None:
+                self.fail("vmlab ended early: %s" % (proc.communicate(),))
+            time.sleep(0.05)
+        return proc
+
+    def child_pids(self):
+        return [int(p.read_text()) for p in self.project.home.glob("fake/*/fs/home/child.pid")]
+
+    def guests_running(self):
+        return {g["lab"]: g["running"] for g in json.loads(self.project.vmlab("status", "--json").out)}
+
+    def test_ctrl_c_ends_what_every_lab_spawned_and_stops_its_guests(self):
+        self.project.scenario("spawn.py", SPAWN_AND_WAIT)
+        proc = self.start()
+        os.kill(proc.pid, signal.SIGINT)
+        out, err = proc.communicate(timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("KeyboardInterrupt", err)
+        self.assertIn("Ctrl-C again", out)
+        [mac, ubuntu] = self.child_pids()
+        self.assertTrue(gone(mac) and gone(ubuntu), "what a Scenario spawned still runs")
+        for lab in ("mac", "ubuntu"):
+            [pid] = re.findall(r"(?m)^%s/spawn: spawned `sh -c .*` \(pid (\d+)\) was stopped" % lab, out)
+            self.assertTrue(gone(int(pid)), "the process %s spawned still runs" % lab)
+        # A Regression suite stops the Guests vmlab started, and says so.
+        self.assertEqual(self.guests_running(), {"mac": False, "ubuntu": False})
+        self.assertRegex(out, r"(?m)^Guests stopped: (mac, ubuntu|ubuntu, mac)$")
+        self.assertNotIn("Kept running", out)
+
+    def test_ctrl_c_in_an_ad_hoc_run_names_the_guests_it_keeps(self):
+        scenario = self.project.root / "adhoc.py"
+        scenario.write_text(SPAWN_AND_WAIT)
+        proc = self.start(scenario)
+        os.kill(proc.pid, signal.SIGINT)
+        out, err = proc.communicate(timeout=60)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertTrue(all(gone(pid) for pid in self.child_pids()), "what a Scenario spawned still runs")
+        self.assertEqual(self.guests_running(), {"mac": True, "ubuntu": True})
+        self.assertRegex(out, r"(?m)^Kept running: (mac, ubuntu|ubuntu, mac)\. Stop with: .*vmlab.* down (mac ubuntu|ubuntu mac)$")
+        self.assertNotIn("Guests stopped", out)
+
+    def test_a_second_ctrl_c_exits_at_once(self):
+        # Python code that blocks outside g.* calls never sees the first Ctrl-C.
+        self.project.scenario("stuck.py", """
+import time
+def scenario(g):
+    g.put("~/ready", "")
+    time.sleep(120)
+    g.check("unreachable", True)
+""")
+        proc = self.start()
+        os.kill(proc.pid, signal.SIGINT)
+        time.sleep(1)  # the first Ctrl-C is taken, not merged with the second
+        self.assertIsNone(proc.poll(), "vmlab should wait for the Labs after the first Ctrl-C")
+        os.kill(proc.pid, signal.SIGINT)
+        started = time.time()
+        out, err = proc.communicate(timeout=60)
+        self.assertLess(time.time() - started, 10, "the second Ctrl-C did not exit at once")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("KeyboardInterrupt", err)
+        for lab in ("mac", "ubuntu"):
+            self.assertIn("warning: %s had not ended its Run" % lab, out)

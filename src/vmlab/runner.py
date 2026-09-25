@@ -9,6 +9,11 @@ Scenario file outside the scenarios folder) keeps Guest state and leaves its
 Guests running. A Scenario declaring FRESH, or --fresh, restores before a
 Scenario. The Lab's app state paths are removed before every Run.
 
+Ctrl-C ends every Lab's Run as it ends a serial one: what its Scenario staged and
+spawned ends, the Guest policy applies, and vmlab says what it stopped and left.
+Under --parallel the Labs get up to INTERRUPT_WAIT_S for that; a second Ctrl-C
+exits at once.
+
 A Lab this Host does not cover (vmlab.arch) is skipped: no build, no Guest, a
 warning, and reports with status "skipped".
 """
@@ -25,7 +30,9 @@ from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
-from vmlab.scenario import STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, run_scenario
+from vmlab.scenario import STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, run_scenario
+
+INTERRUPT_WAIT_S = 60  # how long Ctrl-C in a parallel Run waits for the Labs to end theirs
 
 
 def discover(project, names):
@@ -75,10 +82,16 @@ def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parall
         with lock:
             out(line)
 
-    def work(lab_run):
-        return lab_run.run(scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh)
+    interrupt = threading.Event()
 
-    outcomes = _run_parallel(runs, work, locked_out) if parallel else [work(r) for r in runs]
+    def work(lab_run):
+        return lab_run.run(scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh, interrupt=interrupt)
+
+    try:
+        outcomes = _run_parallel(runs, work, locked_out, interrupt) if parallel else [work(r) for r in runs]
+    except KeyboardInterrupt:
+        _say_what_was_left(runs, locked_out, stop_command)
+        raise
     reports, kept = [], []
     for lab_run, (data, still_ours) in zip(runs, outcomes):
         reports.append(data)
@@ -88,9 +101,12 @@ def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parall
     return reports
 
 
-def _run_parallel(runs, work, out):
+def _run_parallel(runs, work, out, interrupt):
     """Run work(lab_run) concurrently, starting a Lab only while its memory_gb fits in free
-    Host memory. A Guest that is already running needs none. Returns outcomes in order."""
+    Host memory. A Guest that is already running needs none. Returns outcomes in order.
+
+    On Ctrl-C it sets interrupt, which ends each Lab's Run, waits up to INTERRUPT_WAIT_S for
+    them, and raises KeyboardInterrupt; a second Ctrl-C raises it at once."""
     free = free_memory_gb()
     if free is None:
         out("warning: cannot measure free Host memory; starting all Labs at once")
@@ -98,6 +114,7 @@ def _run_parallel(runs, work, out):
     pending = list(runs)
     running = {}  # lab_run -> GB reserved
     outcomes, errors, announced = {}, [], set()
+    threads = []
     done = threading.Condition()
 
     def target(lab_run):
@@ -110,26 +127,49 @@ def _run_parallel(runs, work, out):
                 del running[lab_run]
                 done.notify_all()
 
-    with done:
-        while pending or running:
-            for lab_run in list(pending):
-                lab = lab_run.lab
-                need = 0 if lab_run.skipped or provider_for(lab_run.project, lab).is_running() else lab.memory_gb
-                available = free - sum(running.values())
-                if need > available and running:
-                    if lab.name not in announced:
-                        announced.add(lab.name)
-                        out("queued %s: needs %g GB, %.1f GB free while %s run" % (lab.name, need, available, ", ".join(r.lab.name for r in running)))
-                    continue
-                if need > available:
-                    out("warning: %s needs %g GB, more memory than is free (%.1f GB); running it alone" % (lab.name, need, available))
-                pending.remove(lab_run)
-                running[lab_run] = need
-                threading.Thread(target=target, args=(lab_run,), daemon=True).start()
-            done.wait()
+    try:
+        with done:
+            while pending or running:
+                for lab_run in list(pending):
+                    lab = lab_run.lab
+                    need = 0 if lab_run.skipped or provider_for(lab_run.project, lab).is_running() else lab.memory_gb
+                    available = free - sum(running.values())
+                    if need > available and running:
+                        if lab.name not in announced:
+                            announced.add(lab.name)
+                            out("queued %s: needs %g GB, %.1f GB free while %s run" % (lab.name, need, available, ", ".join(r.lab.name for r in running)))
+                        continue
+                    if need > available:
+                        out("warning: %s needs %g GB, more memory than is free (%.1f GB); running it alone" % (lab.name, need, available))
+                    pending.remove(lab_run)
+                    running[lab_run] = need
+                    threads.append(threading.Thread(target=target, args=(lab_run,), daemon=True))
+                    threads[-1].start()
+                done.wait()
+    except KeyboardInterrupt:
+        interrupt.set()
+        out("Interrupted: ending the Run on every Lab, for up to %ds (Ctrl-C again exits at once)" % INTERRUPT_WAIT_S)
+        deadline = time.time() + INTERRUPT_WAIT_S
+        with done:  # a thread is not alive before start() nor once it has ended
+            while any(t.is_alive() for t in threads) and time.time() < deadline:
+                done.wait(0.2)
+        raise
     if errors:
         raise errors[0]
     return [outcomes[r] for r in runs]
+
+
+def _say_what_was_left(runs, out, stop_command):
+    """After Ctrl-C: which Labs' Guests vmlab stopped, which Labs had not ended their Run, and
+    which Guests vmlab started and left running."""
+    stopped = [r.lab.name for r in runs if r.guest_stopped]
+    if stopped:
+        out("Guests stopped: %s" % ", ".join(stopped))
+    for r in runs:
+        if r.began and not r.done:
+            out("warning: %s had not ended its Run: its Scenario may still be running, and what it spawned in the Guest" % r.lab.name)
+    left = [r.lab.name for r in runs if r.ours and not r.guest_stopped and _is_running(provider_for(r.project, r.lab))]
+    kept_running(left, out, stop_command)
 
 
 def deploy(project, lab_names, out, stop_command="vmlab down"):
@@ -209,6 +249,10 @@ class _LabRun:
         self.coverage = arch.coverage(lab)
         self.warnings = [w for w in [arch.warning(lab)] if w]
         self.skipped = bool(self.warnings)
+        # What Ctrl-C needs to say what was stopped and left (see _say_what_was_left)
+        self.began = self.done = False
+        self.ours = False  # vmlab started this Lab's Guest, or holds it from an earlier Run
+        self.guest_stopped = False
 
     def build(self):
         if self.skipped:
@@ -218,8 +262,16 @@ class _LabRun:
         except GuestError as exc:
             self.error = str(exc)
 
-    def run(self, scenarios, out, keep, ad_hoc, fresh):
-        """Returns (report, whether vmlab left a Guest it owns running)."""
+    def run(self, scenarios, out, keep, ad_hoc, fresh, interrupt):
+        """Returns (report, whether vmlab left a Guest it owns running). interrupt, once set, ends
+        the Run as Ctrl-C does (at the Scenario's next g.* call, or before the next Scenario)."""
+        self.began = True
+        try:
+            return self._run(scenarios, out, keep, ad_hoc, fresh, interrupt)
+        finally:
+            self.done = True
+
+    def _run(self, scenarios, out, keep, ad_hoc, fresh, interrupt):
         lab = self.lab
         provider = provider_for(self.project, lab)
         started_guests = StartedGuests()
@@ -234,19 +286,20 @@ class _LabRun:
                 lock = guest_lock(provider)
             except GuestError as exc:
                 self.error = str(exc)
-        ours = lock is not None and (key in started_guests or not provider.is_running())
+        ours = self.ours = lock is not None and (key in started_guests or not provider.is_running())
         if lock:
             try:
                 if not provider.is_running():
                     started_guests.add(key)
                 provider.up()
-                results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out)
+                results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt)
             except GuestError as exc:
                 self.error = str(exc)
             finally:
                 if ours and not keep:
                     provider.down()
                     started_guests.discard(key)
+                    self.guest_stopped = True
                 lock.release()
 
         data = {
@@ -272,7 +325,7 @@ class _LabRun:
         _print_summary(data, out)
         return data, ours and keep and provider.is_running()
 
-    def _scenarios(self, provider, scenarios, ad_hoc, fresh, lab_calls, out):
+    def _scenarios(self, provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt):
         lab = self.lab
         provider.on_exec = lab_calls.record
         artifact = self.built["artifact"] if self.built else None
@@ -299,11 +352,16 @@ class _LabRun:
 
         results = []
         for path in scenarios:
-            guest = Guest(lab, provider, self.run_dir, launch_app)
+            if interrupt.is_set():
+                raise Interrupted()
+            guest = Guest(lab, provider, self.run_dir, launch_app, interrupt)
             provider.on_exec = guest.channel_use.record
-            left_open = lambda entry: out(report.still_open(lab.name, path.stem, entry))  # noqa: E731
-            still_running = lambda entry: out(report.still_running(lab.name, path.stem, entry))  # noqa: E731
-            results.append(run_scenario(path, guest, prepare, left_open, still_running))
+
+            def unreported(staged, spawned, name=path.stem):
+                for line in report.unreported(lab.name, name, staged, spawned):
+                    out(line)
+
+            results.append(run_scenario(path, guest, prepare, unreported))
         return results
 
 
