@@ -39,7 +39,7 @@ from vmlab.providers.fusion import (
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
 
-PROVISION_VERSION = 3  # bump when provision.ps1 changes; `base create` then re-provisions
+PROVISION_VERSION = 4  # bump when provision.ps1 changes; `base create` then re-provisions
 PROBE = ["cmd", "/c", "exit 0"]
 ELEVATION_TIMEOUT = 180  # s: Windows cancels an unanswered UAC prompt after about two minutes
 POLICIES = r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"

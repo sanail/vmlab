@@ -82,10 +82,49 @@ public static class VmlabLsa {
 Say 'no updates, sleep, screen saver or lock screen'
 Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoUpdate 1
 Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoRebootWithLoggedOnUsers 1
-foreach ($service in 'wuauserv', 'UsoSvc') {
-    Stop-Service $service -Force -ErrorAction SilentlyContinue
-    Set-Service $service -StartupType Disabled -ErrorAction SilentlyContinue
+# The policy covers the operating system's updates only. Windows Update Medic sets wuauserv back to
+# start on demand, and minutes after every boot of a clone the Microsoft Store updates its apps
+# through it (Notepad among them, during a Run): about 2 GB of each clone's disk. Its tasks and
+# the Medic are protected from administrators: SYSTEM turns them off, in a task run once.
+$noUpdates = @'
+$log = Join-Path $env:ProgramData 'vmlab-no-updates.log'
+Set-Content -LiteralPath $log -Value @()
+$tasks = @{
+    '\Microsoft\Windows\InstallService\' = 'ScanForUpdates', 'ScanForUpdatesAsUser', 'SmartRetry'
+    '\Microsoft\Windows\WindowsUpdate\' = 'Scheduled Start'
+    '\Microsoft\Windows\UpdateOrchestrator\' = '*'
 }
+foreach ($path in $tasks.Keys) {
+    foreach ($task in Get-ScheduledTask -TaskPath $path -ErrorAction SilentlyContinue) {
+        if (-not @($tasks[$path] | Where-Object { $task.TaskName -like $_ }).Count) { continue }
+        # A task Windows removes meanwhile ("Element not found") needs nothing.
+        Disable-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue | Out-Null
+    }
+}
+foreach ($service in 'WaaSMedicSvc', 'wuauserv', 'UsoSvc') {
+    Stop-Service $service -Force -ErrorAction SilentlyContinue
+    try { Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Services\$service" Start 4 -ErrorAction Stop }
+    catch { Add-Content -LiteralPath $log -Value "failed: $service stays on: $_" }
+}
+Add-Content -LiteralPath $log -Value 'done'
+'@
+$script = Join-Path $env:ProgramData 'vmlab-no-updates.ps1'
+$result = Join-Path $env:ProgramData 'vmlab-no-updates.log'
+Set-Content -LiteralPath $script -Value $noUpdates -Encoding ASCII
+Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $result
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
+Register-ScheduledTask -TaskName 'vmlab-no-updates' -Action $action -User 'SYSTEM' -RunLevel Highest -Force | Out-Null
+Start-ScheduledTask -TaskName 'vmlab-no-updates'
+$done = $false
+for ($i = 0; $i -lt 120 -and -not $done; $i++) {
+    Start-Sleep -Seconds 1
+    $done = @(Get-Content -LiteralPath $result -ErrorAction SilentlyContinue) -contains 'done'
+}
+Unregister-ScheduledTask -TaskName 'vmlab-no-updates' -Confirm:$false
+$failures = @(Get-Content -LiteralPath $result -ErrorAction SilentlyContinue | Where-Object { $_ -like 'failed:*' })
+Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $script, $result
+if (-not $done) { throw 'turning Windows Update off as SYSTEM did not finish in 2 minutes' }
+if ($failures) { throw ($failures -join '; ') }
 foreach ($setting in 'standby-timeout-ac', 'monitor-timeout-ac', 'hibernate-timeout-ac', 'disk-timeout-ac') { & powercfg.exe /change $setting 0 }
 & powercfg.exe /hibernate off
 & powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK 0
@@ -95,6 +134,11 @@ Set-Value 'HKCU:\Control Panel\Desktop' ScreenSaveActive '0' String
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement' ScoobeSystemSettingEnabled 0
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' SubscribedContent-310093Enabled 0
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' SoftLandingEnabled 0
+
+Say 'no recent documents'
+# Every Run opens files (Staged documents): each would leave one more shortcut in Recent Items.
+Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' NoRecentDocsHistory 1
+Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' ClearRecentDocsOnExit 1
 
 Say 'no OneDrive'
 # OneDrive starts at logon (the user's Run key, then a Scheduled Task ten minutes later) and a

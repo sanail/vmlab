@@ -50,6 +50,10 @@ A Guest has no sound device, so Windows shows a crossed-out speaker in the tray,
 
 Provisioning turns OneDrive off by policy (`DisableFileSyncNGSC`): it quits as soon as anything starts it, so its "Turn On Windows Backup" prompt never covers the app. A Scenario cannot test what the app does with OneDrive (syncing, files on demand, backed-up folders); Documents and Desktop are plain local folders.
 
+## No updates, no recent documents
+
+Provisioning turns Windows Update off, the Microsoft Store's app updates with it (Notepad among them, which the Store otherwise updates minutes after every boot of a Guest), and keeps no Recent Items (`NoRecentDocsHistory`), since every Run opens files. An app that installs through the Store or needs a Windows update cannot get it in a Base guest. An app's jump list and the shell's recent files stay empty: a Scenario that tests them removes that policy first (`Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' NoRecentDocsHistory`) and restarts `explorer`.
+
 ## Clock hours off
 
 **Symptom**: times the Guest reports (`g.notifications()`, file times, the app's own logs) are hours off the Host's, and `vmlab doctor` warns `Clock: the Guest's clock runs ... the Host's`.
