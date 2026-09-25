@@ -250,7 +250,7 @@ class FusionDoctorTest(FusionTestCase):
         self.base_guest("first")
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"].update(dict({"provisioned": 5}, **record))
+        records["ubuntu-26.04"].update(dict({"provisioned": 6}, **record))
         path.write_text(json.dumps(records))
         if credentials:
             (self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.credentials.json").write_text('{"user": "vmlab", "password": "pw"}')
@@ -266,7 +266,7 @@ class FusionDoctorTest(FusionTestCase):
 
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"ok\s+linux: Provider fusion")
-        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v5\)")
+        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v6\)")
         self.assertRegex(r.out, r"info\s+linux: Clone: none yet")
 
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
@@ -275,7 +275,7 @@ class FusionDoctorTest(FusionTestCase):
 
         r = self.vmlab("doctor")
 
-        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v5\)")
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v6\)")
 
     def test_a_base_guest_without_its_provisioned_snapshot_fails(self):
         self.project.config(FUSION_LAB)
@@ -687,7 +687,7 @@ class FusionOldSnapshotsTest(FusionTestCase):
         self.base_guest(provisioned_id)
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"]["provisioned"] = 5  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
+        records["ubuntu-26.04"]["provisioned"] = 6  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
         path.write_text(json.dumps(records))
         self.set_state(self.base_vmx_path(), snapshots=old + ["vmlab-provisioned-%s" % provisioned_id])
 

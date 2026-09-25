@@ -34,6 +34,8 @@ Panels keep Tray icons and their menus out of `ui tree`: read and choose from a 
 
 - `pkill -x NAME` matches the kernel's process name, cut to 15 characters: use `pkill -f /path/to/binary` for longer names.
 - `apt-get` in `install` fails with a lock while another apt runs. Base guests turn background updates off, so a lock means something in the Guest started one: pass `-o DPkg::Lock::Timeout=300` to wait for it.
+- UI calls fail with "no graphical session is logged in" after dozens of Runs on one boot, and the Guest's journal says "Too many open files": the Base guest predates provisioning v6, whose sessions keep AT-SPI off peer-to-peer connections (`ATSPI_DISABLE_P2P=1`); over them every UI call left file descriptors in each GTK app until the session died. `vmlab base create <base> --reprovision`.
+- An app's list of recent files stays empty: Base guests remember no recent files (`org.gnome.desktop.privacy remember-recent-files`), since every Run opens files and the list would only grow. A Scenario that tests such a list turns it on first: `g.exec(["gsettings", "set", "org.gnome.desktop.privacy", "remember-recent-files", "true"])`.
 - A black screenshot means the Guest's screen is off; restart it (`vmlab down LAB && vmlab up LAB`) and report it if it returns, since provisioning turns blanking off.
 
 ## Keyboard layouts

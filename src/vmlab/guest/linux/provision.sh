@@ -27,6 +27,8 @@ say "apt: no background updates (they hold the package lock and pop up dialogs d
 sudo -n systemctl disable --now unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
 printf 'APT::Periodic::Update-Package-Lists "0";\nAPT::Periodic::Unattended-Upgrade "0";\n' |
   sudo -n tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
+say "snaps: no background refreshes (they download hundreds of MB into every clone and restart apps during Runs)"
+sudo -n snap refresh --hold >/dev/null || fail "cannot hold snap refreshes"
 # Wait for an apt run that started at boot, instead of failing on its lock.
 for _ in $(seq 1 300); do
   sudo -n fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
@@ -86,7 +88,7 @@ with open(sys.argv[1], "w") as f:
     config.write(f, space_around_delimiters=False)
 EOF
 
-say "desktop: no screen lock, blanking or sleep; accessibility on; no welcome tour"
+say "desktop: no screen lock, blanking or sleep; accessibility on; no welcome tour; no recent files"
 sudo -n mkdir -p /etc/dconf/profile /etc/dconf/db/local.d
 printf 'user-db:user\nsystem-db:local\n' | sudo -n tee /etc/dconf/profile/user >/dev/null
 sudo -n tee /etc/dconf/db/local.d/00-vmlab >/dev/null <<'EOF'
@@ -117,6 +119,15 @@ welcome-dialog-last-shown-version='999'
 [org/gnome/software]
 download-updates=false
 allow-updates=false
+
+# Every Run opens files (Staged documents): a list of recent files would grow with each one.
+# gnome-text-editor keeps its own, which this turns off too.
+[org/gnome/desktop/privacy]
+remember-recent-files=false
+
+# The stock editor reopens no documents an earlier Run left open.
+[org/gnome/TextEditor]
+restore-session=false
 
 [org/gnome/shell]
 enabled-extensions=['vmlab-ui@vmlab']
@@ -161,11 +172,15 @@ EOF
 sudo -n systemctl --global enable "$RECORDER_UNIT" >/dev/null
 rm -rf "$EXTENSION_SRC"
 
-say "session environment: Qt apps join the accessibility bus; WebKitGTK draws without DMA-BUF"
+say "session environment: Qt apps join the accessibility bus; no peer-to-peer AT-SPI; WebKitGTK draws without DMA-BUF"
 # WebKitGTK's DMA-BUF renderer paints a window once and then never again on the Guest's
 # software GL (Fusion passes no 3D to arm64 Linux): screenshots would freeze on the first frame.
+# ATSPI_DISABLE_P2P: GTK 3 apps (atk-bridge) otherwise take peer-to-peer connections from every
+# AT-SPI client, and libdbus keeps each client's pidfd after it disconnects: every UI call, a
+# process of its own, left 3 in each app, and the Xfce session ran out of fds after a few dozen
+# Runs. Over the accessibility bus nothing is left behind.
 sudo -n mkdir -p /etc/environment.d
-printf 'QT_ACCESSIBILITY=1\nQT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\nWEBKIT_DISABLE_DMABUF_RENDERER=1\n' | sudo -n tee /etc/environment.d/90-vmlab-a11y.conf >/dev/null
+printf 'QT_ACCESSIBILITY=1\nQT_LINUX_ACCESSIBILITY_ALWAYS_ON=1\nATSPI_DISABLE_P2P=1\nWEBKIT_DISABLE_DMABUF_RENDERER=1\n' | sudo -n tee /etc/environment.d/90-vmlab-a11y.conf >/dev/null
 
 say "X11: no screen blanking"
 sudo -n mkdir -p /etc/X11/xorg.conf.d
