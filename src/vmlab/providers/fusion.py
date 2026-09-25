@@ -1181,7 +1181,7 @@ class HostVMs:
         return {name: os.path.realpath(str(vmx_path(name))) in running for name in names}
 
     def delete_vm(self, name):
-        """Delete the VM name, encrypted or not.
+        """Delete the VM name, encrypted or not, stopping it first if it runs.
 
         An encrypted VM opens only with the password vmlab keeps for a Base guest: its own, the
         one of the Base guest its clone record names, or — when that record is what went missing,
@@ -1210,8 +1210,8 @@ class HostVMs:
         )
 
     def stop_hint(self, name):
-        base = fusion_bases().get(name)
-        return stop_hint(base[0]) if base else "vmrun stop '%s'" % vmx_path(name)
+        """How the person stops the Base guest whose VM is name (`vmlab clean` stops a Lab's clone itself)."""
+        return stop_hint(fusion_bases()[name][0])
 
     def old_snapshots(self, vms):
         return old_snapshots(vms)

@@ -473,6 +473,8 @@ class HostVMs:
         return {name: bool(row.get("Running")) for name, row in list_vms("local").items()}
 
     def delete_vm(self, name):
+        if list_vms("local").get(name, {}).get("Running"):
+            tart_ok(["stop", name], CALL_TIMEOUT)
         tart_ok(["delete", name], CALL_TIMEOUT)
 
     def old_snapshots(self, vms):

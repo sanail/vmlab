@@ -21,10 +21,11 @@ RECORD = ".json"
 class Leftover:
     """Something of vmlab's on this Host that no known Lab needs any more."""
 
-    def __init__(self, kind, name, reason, remove, stop_hint=None, running=False, needs_bases=False, kept=None):
+    def __init__(self, kind, name, reason, remove, stop_hint=None, running=False, needs_bases=False, kept=None, stops_first=False):
         self.kind, self.name, self.reason, self.remove = kind, name, reason, remove
         self.stop_hint = stop_hint  # how to stop it by hand
-        self.running = running  # never deleted while running
+        self.running = running  # never deleted while running, unless stops_first
+        self.stops_first = stops_first  # remove() stops it first: no one but vmlab can
         self.needs_bases = needs_bases  # a Base guest: deleted only with --bases (re-creating one downloads its image)
         self.kept = kept  # why it stays after all (a Lab clone still needs it), or None
 
@@ -70,7 +71,8 @@ def _leftovers(inventory, vms, records, used):
         if reason is None:
             used.add(base)
         else:
-            found.append(Leftover("clone", vm, reason, lambda vm=vm: _delete_clone(inventory, vm), inventory.stop_hint(vm), running))
+            # No Lab needs it, so no `vmlab down` can stop it: deleting it stops it first.
+            found.append(Leftover("clone", vm, reason, lambda vm=vm: _delete_clone(inventory, vm), running=running, stops_first=True))
     for name, record in sorted(records.items()):
         vm = record.get("vm") or bases.vm_name(name)
         if name not in used and vm in vms:

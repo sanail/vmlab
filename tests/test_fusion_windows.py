@@ -270,6 +270,25 @@ class WindowsCloneTest(WindowsTestCase):
         self.assertEqual(delete[:2], ["-vp", VM_PASSWORD])
         self.assertNotIn(clone, self.vms())
 
+    def test_clean_stops_a_running_orphaned_copy_with_the_vm_password_then_deletes_it(self):
+        # `vmrun stop` without the password fails on an encrypted copy, and no Lab's `vmlab down` stops it.
+        self.vmlab("up")
+        clone = self.clone_vmx()
+        self.set_state(clone, running=True)
+        self.project.config(WINDOWS_LAB.replace("[labs.win]", "[labs.other]"))
+
+        listed = self.vmlab("clean")  # no terminal: list only
+        self.assertIn("running: to stop and delete", listed.out)
+        self.assertNotIn("vmrun stop", listed.out)
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        on_clone = [c for c in self.raw_calls() if c[2:3] in (["stop"], ["deleteVM"]) and Path(c[3]).resolve() == Path(clone)]
+        self.assertEqual([c[2] for c in on_clone], ["stop", "deleteVM"])
+        self.assertEqual({tuple(c[:2]) for c in on_clone}, {("-vp", VM_PASSWORD)})
+        self.assertNotIn(clone, self.vms())
+
 
 class WindowsOldSnapshotsTest(WindowsTestCase):
     """vmrun and vmcli only drop an encrypted VM's snapshot from its list and never merge its disks:

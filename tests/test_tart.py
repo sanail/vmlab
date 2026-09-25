@@ -36,7 +36,12 @@ FAKE_TART = textwrap.dedent(
     elif args[:1] == ["clone"]:
         state["local"].append(args[2])
         json.dump(state, open(state_path, "w"))
+    elif args[:1] == ["stop"]:
+        state["running"].remove(args[1])
+        json.dump(state, open(state_path, "w"))
     elif args[:1] == ["delete"]:
+        if args[1] in state["running"]:
+            sys.exit("fake tart: %s is running" % args[1])
         state["local"].remove(args[1])
         json.dump(state, open(state_path, "w"))
     elif args[:1] == ["set"]:
@@ -357,15 +362,21 @@ class CleanTest(TartTestCase):
         self.assertIn("vmlab-old-12345678-mac", r.out)
         self.assertIn("unknown", r.out)
 
-    def test_a_running_leftover_is_never_deleted(self):
+    def test_a_running_leftover_clone_is_stopped_and_deleted_when_confirmed(self):
+        # No Lab needs it: no `vmlab down` can stop it, and clean needs no hint to do it itself.
         other = self.other_project()
         clone = self.clone_for(cwd=other)
         shutil.rmtree(str(other))
         self.tart_state(local=self.local_vms(), oci=[], running=[clone])
+
+        r = self.vmlab("clean")  # no terminal: list only
+        self.assertIn("running: to stop and delete", r.out)
+        self.assertIn(clone, self.local_vms())
+
         r = self.vmlab("clean", "--yes")
         self.assertExit(r, 0)
-        self.assertIn("running", r.out)
-        self.assertIn(clone, self.local_vms())
+        self.assertNotIn(clone, self.local_vms())
+        self.assertEqual([c[0] for c in self.tart_calls() if c[0] in ("stop", "delete")], ["stop", "delete"])
 
     def test_vms_vmlab_did_not_make_are_never_touched(self):
         r = self.vmlab("clean", "--yes", "--bases")

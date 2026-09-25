@@ -213,12 +213,12 @@ def _clean(args):
     for item in found:
         if item.kept:
             note = "kept: %s" % item.kept
-        elif item.running:
+        elif item.running and not item.stops_first:
             note = "running: left alone (%s)" % item.stop_hint
         elif item.needs_bases and not args.bases:
             note = "kept: pass --bases to delete it"
         else:
-            note = "to delete"
+            note = "running: to stop and delete" if item.running else "to delete"
             deletable.append(item)
         print("%-6s %s\n       %s; %s" % (item.kind, item.name, item.reason, note))
     if not deletable:

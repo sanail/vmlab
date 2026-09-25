@@ -601,19 +601,24 @@ class FusionCleanTest(FusionTestCase):
         self.assertFalse(clone.parent.exists())
         self.assertEqual([f.name for f in (self.project.home / "fusion").iterdir() if f.name.startswith(clone.stem)], [])
 
-    def test_a_running_leftover_is_never_deleted(self):
+    def test_a_running_leftover_clone_is_stopped_and_deleted_when_confirmed(self):
+        # No Lab needs it: no `vmlab down` can stop it, and clean needs no hint to do it itself.
         other = self.other_project()
         clone = self.clone_for(cwd=other)
         shutil.rmtree(str(other))
-        state = json.loads(self.state_path.read_text())
-        state["vms"][str(clone.resolve())]["running"] = True
-        self.state_path.write_text(json.dumps(state))
+        self.set_state(clone, running=True)
 
-        r = self.vmlab("clean", "--yes")
-
-        self.assertExit(r, 0)
-        self.assertIn("running", r.out)
+        r = self.vmlab("clean")  # no terminal: list only
+        self.assertIn("running: to stop and delete", r.out)
+        self.assertNotIn("vmrun stop", r.out)
         self.assertTrue(clone.exists())
+
+        before = len(self.raw_calls())
+        r = self.vmlab("clean", "--yes")
+        self.assertExit(r, 0)
+        on_clone = [c[0] for c in map(_without_auth, self.raw_calls()[before:]) if c[0] in ("stop", "deleteVM") and Path(c[1]).resolve() == clone.resolve()]
+        self.assertEqual(on_clone, ["stop", "deleteVM"])
+        self.assertFalse(clone.parent.exists())
 
     def test_an_unused_base_guest_is_deleted_only_with_bases_with_its_credentials(self):
         self.clone_for()
