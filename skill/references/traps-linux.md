@@ -1,6 +1,6 @@
 # Linux Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: input, pointer and window focus on Wayland (vmlab's GNOME Shell extension; `xdotool` reaches only Xwayland apps there, and `ydotool` misplaces the pointer), typing any character on any layout, GTK's wrong element coordinates, hidden widgets left in the tree, a WebKitGTK page under containers that say they are not visible, WebKitGTK frozen on its first frame, reboots blocked by an editor, and screen lock, blanking and suspend.
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: input, pointer and window focus on Wayland (vmlab's GNOME Shell extension; `xdotool` reaches only Xwayland apps there, and `ydotool` misplaces the pointer), typing any character on any layout, GTK's wrong element coordinates, hidden widgets left in the tree, a WebKitGTK page under containers that say they are not visible, WebKitGTK frozen on its first frame, a busy editor that takes a select-all before its new document is loaded or a close before its save is done, reboots blocked by an editor, and screen lock, blanking and suspend.
 
 Drive input only through `g.press`, `g.type`, `g.click` and `g.clipboard`: the same Scenario then works in both Desktop sessions.
 

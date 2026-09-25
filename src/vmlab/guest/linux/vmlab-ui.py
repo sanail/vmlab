@@ -35,6 +35,11 @@ Traps (README: "Linux Guests with VMware Fusion"):
   without the VISIBLE or SHOWING state; they are left out. But a WebKitGTK page
   (a Tauri app's) sits under containers without VISIBLE while it is on
   screen: under such a container, what is SHOWING is kept.
+- A busy editor (on a loaded Guest) takes stage-text's select-all before the new
+  document's view has focus or its text, and a close before its save is done
+  as "close without saving?". So select-all is pressed again until the view on
+  screen that holds the text has it selected, and close-staged closes once the
+  file holds what the view shows (or after SAVE_WAIT).
 - Registrations of apps that no longer answer would cost AT-SPI's default
   timeout each: timeouts are short.
 """
@@ -57,11 +62,13 @@ POLL = 0.1
 SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP")
 REPROVISION = "re-provision the Base guest: vmlab base create NAME --reprovision"
 SELECT_ALL = ("a", ["ctrl"])
+SELECT_AGAIN = 0.5  # s between select-alls while the Staged text is not selected
 SAVE, CLOSE = ("s", ["ctrl"]), ("w", ["ctrl"])
 STAGE = "vmlab-stage-"  # + 8 hex digits: the name of every file stage-text opens
 STAGED = re.compile(STAGE + "[0-9a-fA-F]{8}\\.txt")
 STAGING = "/tmp"  # where stage-text writes them
 CLOSE_WAIT = 5  # s for one staged document to close
+SAVE_WAIT = 10  # s for its save to reach the file before it is closed
 NOTIFICATIONS = "~/.cache/vmlab/notifications.jsonl"  # what the recorder writes, a JSON line per Notification
 
 # linux/input-event-codes.h, for the Wayland session
@@ -807,27 +814,67 @@ class UI:
         self.bring_to_front(target, name, deadline)
         emit({"app": name, "window": raised, "frontmost": self.frontmost()})
 
-    def selection(self, pid):
-        """The selected text in the app's focused element, or None."""
+    def on_screen(self, accessible):
+        """The descendants of accessible that are on screen, depth first: a tab in the background
+        keeps its text view, and may keep it FOCUSED, but not SHOWING."""
+        self.nodes = 0  # showing_within's count; each read walks afresh
+        stack, seen = [accessible], 0
+        while stack and seen < MAX_NODES:
+            node = stack.pop()
+            seen += 1
+            yield node
+            stack.extend(reversed([c for c in self.shown_children(node) if self.has(c, self.S.SHOWING)]))
+
+    def selected(self, accessible):
+        """The text selected in a text element, or None."""
         Text = self.Atspi.Text
+        try:
+            if not Text.get_n_selections(accessible):
+                return None
+            r = Text.get_selection(accessible, 0)
+            return Text.get_text(accessible, r.start_offset, r.end_offset)
+        except Exception:
+            return None
+
+    def selection(self, pid):
+        """The selected text in the app's focused element on screen, or None."""
         for app, _, p in self.apps():
             if p != pid:
                 continue
-            stack = self.toplevels(app)
-            seen = 0
-            while stack and seen < MAX_NODES:
-                node = stack.pop()
-                seen += 1
-                try:
-                    if node.get_state_set().contains(self.S.FOCUSED) and "Text" in node.get_interfaces():
-                        if not Text.get_n_selections(node):
-                            return None
-                        r = Text.get_selection(node, 0)
-                        return Text.get_text(node, r.start_offset, r.end_offset)
-                    stack.extend(c for c in (node.get_child_at_index(i) for i in range(node.get_child_count())) if c is not None)
-                except Exception:
-                    continue
+            for top in self.toplevels(app):
+                for node in self.on_screen(top):
+                    try:
+                        if node.get_state_set().contains(self.S.FOCUSED) and "Text" in node.get_interfaces():
+                            return self.selected(node)
+                    except Exception:
+                        continue
         return None
+
+    def views(self, window):
+        """[(text view, its text)] on screen in the window: the tab in front's, not a background tab's."""
+        found = []
+        for app, _, pid in self.apps():
+            if pid != window.pid:
+                continue
+            tops = self.toplevels(app)
+            for top in [t for t in tops if (t.get_name() or "") == window.title] or (tops if len(tops) == 1 else []):
+                for node in self.on_screen(top):
+                    try:
+                        if "EditableText" in node.get_interfaces():
+                            found.append((node, self.text(node)))
+                    except Exception:
+                        continue
+        return found
+
+    def front_view(self, window):
+        """(The document's text view on screen in the window, a multi-line one first, its text), or None."""
+        views = self.views(window)
+        return next((v for v in views if self.has(v[0], self.S.MULTI_LINE)), views[0] if views else None)
+
+    def document_view(self, window, text):
+        """The text view on screen in the window that holds exactly text (a Staged document's own
+        view, once the editor has loaded the file into it), or None."""
+        return next((view for view, shown in self.views(window) if shown == text), None)
 
     def page_tabs(self, top):
         """The page tabs under a window's accessible (an editor's documents)."""
@@ -917,7 +964,24 @@ class UI:
             window, top, tab = found
         else:
             self.bring_to_front(window, app, deadline)
+        self.refresh()
+        window = next((w for w in self.windows if w.id == window.id), window)  # its title now names the document
+        view = self.front_view(window)
+        typed = view[1] if view is not None and len(view[1]) < MAX_TEXT else None  # None: cannot tell when it is saved
         self.press(*SAVE)
+        if typed is not None:
+            # A close before the save is done asks about saving (on a busy Guest): wait for the file.
+            # An editor that changes the text as it saves (trims, CRLF) never matches: close anyway.
+            staged = os.path.join(STAGING, name)
+
+            def saved():
+                try:
+                    with open(staged, encoding="utf-8", errors="replace") as f:
+                        return True if f.read() in (typed, typed + "\n") else None
+                except OSError:
+                    return None
+
+            self.wait_for(min(deadline, time.time() + SAVE_WAIT), saved)
         self.press(*CLOSE)
 
         def closed():
@@ -956,10 +1020,27 @@ class UI:
             fail("%s showed no window for %s in time; windows: %s" % (app, os.path.basename(path), [w.title for w in self.windows]))
         name = self.wait_for(deadline, lambda: next((n for _, n, p in self.apps() if p == window.pid), None)) or app
         self.bring_to_front(window, name, deadline)
-        self.press(*SELECT_ALL)
-        selected = self.wait_for(deadline, lambda: text if self.selection(window.pid) == text else None)
+        # The editor may take the keys before the new tab's view has focus, or before the file is
+        # loaded into it (on a busy Guest): a select-all then selects nothing, so it is pressed
+        # again until the document's own view has its text selected.
+        pressed_at = []
+
+        def read():
+            view = self.document_view(window, text)
+            return self.selected(view) if view is not None else self.selection(window.pid)
+
+        def select():
+            if read() == text:
+                return text
+            if not pressed_at or time.time() - pressed_at[-1] >= SELECT_AGAIN:
+                self.bring_to_front(window, name, deadline)
+                self.press(*SELECT_ALL)
+                pressed_at.append(time.time())
+            return None
+
+        selected = self.wait_for(deadline, select)
         if selected is None:
-            selected = self.selection(window.pid)
+            selected = read()
         self.refresh()
         frontmost = self.frontmost()  # what the trigger lands on, recorded before it is pressed
         pressed = None
