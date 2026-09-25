@@ -186,7 +186,10 @@ class Guest:
         return [dict(doc) for doc in self.staged]
 
     def _end_spawned(self, attempt, with_output):
-        entries = []
+        """with_output keeps each process's whole output in the run folder (spawned/<its log's
+        name>) and its tail in the report. The logs of the processes that ended are deleted from
+        the Guest; one still running keeps writing to its own."""
+        entries, ended_logs = [], []
         for handle in self.spawned:
             entry = {"argv": handle.argv, "pid": handle.pid, "log": handle.log, "ended": handle._ended}
             if entry["ended"] is None:
@@ -196,11 +199,27 @@ class Guest:
                     entry["ended"], entry["stop_error"] = STILL_RUNNING, str(exc) or type(exc).__name__
             if with_output:
                 try:
-                    entry["output_tail"] = _text(attempt(lambda: self._provider.read_file(handle.log, self._step_timeout)))[-OUTPUT_TAIL:]
+                    output = _text(attempt(lambda: self._provider.read_file(handle.log, self._step_timeout)))
+                    entry["output_tail"] = output[-OUTPUT_TAIL:]
+                    entry["output_file"] = self._keep_output(handle.log, output)
                 except Exception as exc:
                     entry["output_tail"], entry["output_error"] = None, str(exc) or type(exc).__name__
+            if entry["ended"] != STILL_RUNNING:
+                ended_logs.append(handle.log)
             entries.append(entry)
+        try:
+            attempt(lambda: self._provider.remove_paths(ended_logs, self._step_timeout))
+        except Exception:  # best-effort: a log left in the Guest's temp folder harms no Run
+            pass
         return entries
+
+    def _keep_output(self, guest_log, output):
+        """Write a spawned process's output to the run folder; its path relative to the folder."""
+        rel = "spawned/%s" % re.split(r"[\\/]", guest_log)[-1]
+        dest = self._run_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(output, encoding="utf-8")
+        return rel
 
     # The UI contract (vmlab.ui): each method returns what `vmlab ui <command>` prints.
 

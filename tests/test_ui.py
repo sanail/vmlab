@@ -5,6 +5,7 @@ stage-text, so the same shapes can be checked here as on real Guests (Seam 2).
 """
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -62,6 +63,10 @@ class UiTestCase(VmlabTestCase):
         r = self.project.vmlab("ui", *args)
         self.assertExit(r, code)
         return json.loads(r.out) if code == 0 else r
+
+    def staged_files(self):
+        """The Staged documents' files left in the Fake Guest's temp folder."""
+        return sorted(p.name for p in self.project.home.glob("fake/*/fs/tmp/vmlab-stage-*.txt"))
 
     def write_tree(self, covered_by=None):
         """The scripted tree, with MyApp's Run button covered by covered_by (the Fake refuses to click it)."""
@@ -209,6 +214,20 @@ class UiCliTest(UiTestCase):
         staged = self.ui("stage-text", "text")
         self.ui("close-staged", "--file", staged["file"])
         self.assertEqual(self.ui("close-staged", "--file", staged["file"]), {"file": staged["file"], "closed": False})
+
+    def test_close_staged_removes_the_staged_documents_file_from_the_guest(self):
+        first = self.ui("stage-text", "first")
+        second = self.ui("stage-text", "second")
+        self.assertEqual(self.staged_files(), sorted([Path(first["file"]).name, Path(second["file"]).name]))
+        self.ui("close-staged", "--file", first["file"])
+        self.assertEqual(self.staged_files(), [Path(second["file"]).name])
+
+    def test_close_staged_removes_the_file_of_one_the_editor_closed_already(self):
+        staged = self.ui("stage-text", "text")
+        [state] = self.project.home.glob("fake/*/fs/ui-state.json")
+        state.unlink()  # the editor closed it
+        self.assertEqual(self.ui("close-staged", "--file", staged["file"]), {"file": staged["file"], "closed": False})
+        self.assertEqual(self.staged_files(), [])
 
     def test_close_staged_refuses_a_file_not_named_as_staged(self):
         r = self.ui("close-staged", "--file", "/tmp/notes.txt", code=2)
@@ -668,6 +687,7 @@ class StagedCleanupTest(UiTestCase):
         self.assertEqual(closed["ended"], "scenario", closed)
         self.assertEqual(kept["ended"], "run", kept)
         self.assertEqual(self.ui("find", "--role", "textarea")["matches"], [])
+        self.assertEqual(self.staged_files(), [], "a closed Staged document's file stays in the Guest")
         self.assertIn("%s: closed at the end of the Run" % kept["file"], (self.project.only_run_dir() / "summary.md").read_text())
 
     def test_a_passing_scenario(self):
@@ -698,6 +718,7 @@ class StagedCleanupTest(UiTestCase):
         self.assertEqual(kept["ended"], "failed", kept)
         self.assertIn("not running", kept["close_error"])
         self.assertIn("warning: mac/stage: Staged document %s is still open" % kept["file"], r.out)
+        self.assertEqual(self.staged_files(), [os.path.basename(kept["file"])])  # it is still open: its file stays
         self.assertIn("still open", (self.project.only_run_dir() / "summary.md").read_text())
 
 

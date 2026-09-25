@@ -52,6 +52,10 @@ class SpawnCase(VmlabTestCase):
                 except (ProcessLookupError, PermissionError):
                     pass
 
+    def guest_logs(self):
+        """The spawned processes' logs left in the Fake Guest (its log folder is the home)."""
+        return sorted(p.name for p in self.project.home.glob("fake/*/fs/home/vmlab-spawn-*.log"))
+
     def child_pid(self):
         [path] = self.project.home.glob("fake/*/fs/home/child.pid")
         return int(path.read_text())
@@ -91,7 +95,9 @@ def scenario(g):
         self.assertEqual(spawned["argv"][:2], ["sh", "-c"])
         self.assertEqual(spawned["ended"], "scenario")
         self.assertNotIn("output_tail", spawned)  # a passing Run carries no output
+        self.assertNotIn("output_file", spawned)
         self.assertTrue(gone(spawned["pid"]))
+        self.assertEqual(self.guest_logs(), [], "its log stays in the Guest")
 
     def test_stop_ends_the_processes_children(self):
         self.assertPasses("""
@@ -188,14 +194,21 @@ def scenario(g):
         self.assertEqual(spawned["ended"], "run", spawned)
         self.assertTrue(gone(spawned["pid"]), "the spawned process still runs")
         self.assertTrue(gone(self.child_pid()), "its child still runs")
+        self.assertEqual(self.guest_logs(), [], "its log stays in the Guest")
         if tail:
             self.assertIn("sleep 300", " ".join(spawned["argv"]))
             self.assertEqual(spawned["output_tail"], "started\noops\n")
-            summary = (self.project.only_run_dir() / "summary.md").read_text()
+            # The whole output is kept with the report, the Guest's log gone.
+            run_dir = self.project.only_run_dir()
+            self.assertRegex(spawned["output_file"], r"^spawned/vmlab-spawn-[0-9a-f]+\.log$")
+            self.assertEqual((run_dir / spawned["output_file"]).read_text(), "started\noops\n")
+            summary = (run_dir / "summary.md").read_text()
             self.assertIn("sleep 300 &", summary)
+            self.assertIn("output in %s" % spawned["output_file"], summary)
             self.assertIn("  started\n  oops\n", summary)
         else:
             self.assertNotIn("output_tail", spawned)
+            self.assertNotIn("output_file", spawned)
 
     def test_a_passing_scenario(self):
         r, scenario = self.run_leaving_it_running("pass")

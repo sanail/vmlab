@@ -240,7 +240,7 @@ class Provider:
             return
         result = self.exec(self.guest_os.remove_paths_argv(paths), timeout)
         if not result.ok:
-            raise GuestError("resetting app state %s failed: %s" % (paths, result.stderr.strip()))
+            raise GuestError("removing %s from the Guest failed: %s" % (paths, result.stderr.strip()))
 
     def probe_argv(self):
         """A command that succeeds on any healthy Guest, used to test Channels."""

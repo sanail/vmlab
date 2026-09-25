@@ -61,7 +61,7 @@ One execution of a **Regression suite** (or the part of it asked for) on one **L
 _Avoid_: Run (for the whole suite), run folder (for one **Scenario**)
 
 **Staged document**:
-A document `stage_text` opened in a third-party editor, with the given text selected in it. It is a file vmlab wrote to the **Guest**'s temp folder, and it is known by that exact path, never by its name alone.
+A document `stage_text` opened in a third-party editor, with the given text selected in it. It is a file vmlab wrote to the **Guest**'s temp folder, and it is known by that exact path, never by its name alone; closing it deletes the file.
 _Avoid_: stage (as a noun), staging file
 
 **Tray icon**:

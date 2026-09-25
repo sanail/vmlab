@@ -764,11 +764,14 @@ class UI:
 
     def close_staged(self, file, app=None):
         """Close the Staged document at the Guest path file in the editor app (default: the OS's
-        stock one), saving it first. {"file", "closed"}; closed is false when it was not open."""
+        stock one), saving it first, then delete its file: nothing of it stays in the Guest.
+        {"file", "closed"}; closed is false when it was not open."""
         if not STAGED_NAME.fullmatch(re.split(r"[\\/]", file)[-1]):
             raise UsageError("%s is not a Staged document: close-staged takes the \"file\" a stage-text returned" % file)
         params = {"file": file, "app": app or self.guest_os.stage_app}
-        return {"file": file, "closed": bool(self._call_with_deadline("close-staged", params)["closed"])}
+        closed = bool(self._call_with_deadline("close-staged", params)["closed"])
+        self.provider.remove_paths([file], self.call_timeout("removing %s" % file))
+        return {"file": file, "closed": closed}
 
     def notifications(self, app=None, text=None, since=None, timeout=None):
         """The Notifications the Guest's OS recorded, oldest first: {"notifications": [{"app",

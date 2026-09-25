@@ -40,7 +40,7 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
-FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are (only by name: nothing is written there)
+FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are written (under fs, as every Guest path)
 OPTIONS = ("ui_tree", "notifications", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds")
 
 
@@ -269,6 +269,9 @@ class FakeProvider(Provider):
             return {"app": app["name"], "window": window, "frontmost": app["name"]}
         if command == "stage-text":
             path = "%s/vmlab-stage-%s.txt" % (FAKE_TEMP, uuid.uuid4().hex[:8])
+            written = self._host_path(path, "the Staged document")
+            written.parent.mkdir(parents=True, exist_ok=True)
+            written.write_text(params["text"], encoding="utf-8")
             window = {"role": "window", "name": os.path.basename(path), "bounds": {"x": 100, "y": 100, "w": 600, "h": 400}, "children": [
                 {"role": "textarea", "value": params["text"], "focused": True, "bounds": {"x": 100, "y": 130, "w": 600, "h": 370}},
             ]}  # fmt: skip

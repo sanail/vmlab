@@ -161,7 +161,8 @@ def _markdown(report):
             if d.get("close_error"):
                 lines.append("  %s" % d["close_error"].splitlines()[0])
         for p in s["spawned"]:
-            lines += ["", "- spawned `%s` (pid %s, output in %s): %s" % (command_line(p["argv"]), p["pid"], p["log"], ENDED[p["ended"]])]
+            kept = ", output in %s" % p["output_file"] if p.get("output_file") else ""
+            lines += ["", "- spawned `%s` (pid %s%s): %s" % (command_line(p["argv"]), p["pid"], kept, ENDED[p["ended"]])]
             if p.get("stop_error"):
                 lines.append("  %s" % p["stop_error"].splitlines()[0])
             if "output_tail" in p:
