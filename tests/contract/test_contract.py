@@ -706,6 +706,7 @@ import re
 FAKE = %r  # the Fake editor opens Staged documents only
 EDITOR = {"macos": ["open", "-a", "TextEdit"], "windows": ["notepad.exe"], "linux": ["gnome-text-editor"]}
 COPY = {"macos": "cmd+c"}
+CLOSE = {"macos": "cmd+w"}
 
 def stems(g, app):
     # The documents named like staged ones the editor shows: in window titles, tabs and proxy icons alike.
@@ -722,11 +723,25 @@ def scenario(g):
     own = "vmlab-stage-" + uuid.uuid4().hex[:8]  # the editor's own document, named like a staged one
     if FAKE:
         outside = "/home/contract/%%s.txt" %% own
-    else:
-        outside = g.put("~/%%s.txt" %% own, "own " + tag)
+        stage_around(g, app, tag, first, own, outside)
+        return
+    outside = g.put("~/%%s.txt" %% own, "own " + tag)
+    try:
         g.spawn(EDITOR[g.os] + [outside])
         opened = g.wait_for(text=own, app=app, timeout=30)
         g.check("the editor opened a document of its own", opened["met"], detail=opened)
+        stage_around(g, app, tag, first, own, outside)
+        g.check("and stays open", own in stems(g, app), detail=sorted(stems(g, app)))
+    finally:
+        # However the Scenario ends: an editor that restores its session would reopen it in every
+        # later Run, and each Run would leave it one more document.
+        try:
+            close_own(g, app, own)
+        finally:
+            g.exec(cmd(g, "rm -f '%%s'" %% outside, "Remove-Item -Force -LiteralPath '%%s'" %% outside))
+    # The second stays open: its Run closes it.
+
+def stage_around(g, app, tag, first, own, outside):
     second = g.stage_text("second " + tag)
     g.check("the second's text is selected and frontmost", (second["selected"], second["frontmost"]) == ("second " + tag, app), detail=second)
     shown = stems(g, app)
@@ -746,10 +761,17 @@ def scenario(g):
     except Exception as exc:
         refused = str(exc)
     g.check("a document outside the staging folder is refused", refused and "not a Staged document" in refused, detail=refused)
-    if not FAKE:
-        g.check("and stays open", own in stems(g, app), detail=sorted(stems(g, app)))
-        g.exec(cmd(g, "rm -f '%%s'" %% outside, "Remove-Item -Force -LiteralPath '%%s'" %% outside))
-    # The second stays open: its Run closes it.
+
+def close_own(g, app, own):
+    if own not in stems(g, app):
+        return
+    if g.os == "macos":
+        g.focus(app, window=own)  # TextEdit: a window per document
+    else:
+        g.click(role="tab", text=own, app=app, timeout=10)
+    g.press(CLOSE.get(g.os, "ctrl+w"))
+    gone = g.wait_for(text=own, app=app, gone=True, timeout=30)
+    g.check("the editor's own document closes", gone["met"], detail=[gone, sorted(stems(g, app))])
 """ % (self.target.provider == "fake"))
         self.assertPassed(proc, report)
         [first, second] = report["scenarios"][0]["staged"]
