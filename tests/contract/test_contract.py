@@ -542,15 +542,13 @@ def scenario(g):
         # call; when ssh fails before that, its file copy must make the folder too.
         if (self.target.provider, self.target.os) != ("fusion", "windows"):
             self.skipTest("the vmrun Channel into Windows Guests is Fusion's")
-        # Set aside, not deleted: files scp sent over ssh's elevated session cannot be deleted from
-        # the desktop session. The ssh call that does it is served by the call server, which uses no files.
-        vmlab_dir, aside = "C:\\ProgramData\\vmlab", "calls-aside-%d" % os.getpid()
-        calls = vmlab_dir + "\\calls"
+        # Deleted from the desktop session, although ssh's elevated session sent files into it: the
+        # call folder grants the Guest user Modify. The ssh call that does it is served by the call
+        # server, which uses no files; the next call that sends one makes the folder again.
+        calls = "C:\\ProgramData\\vmlab\\calls"
         powershell = ["exec", "--lab", self.target.lab, "--", "powershell", "-NoProfile", "-Command"]
-        moved = self.target.vmlab(*powershell, "Rename-Item -LiteralPath '%s' -NewName %s; Test-Path -LiteralPath '%s'" % (calls, aside, calls))
-        self.assertEqual((moved.returncode, moved.stdout.strip()), (0, "False"), moved.stderr)
-        restore = "Remove-Item -Recurse -Force -LiteralPath '%s'; Rename-Item -LiteralPath '%s\\%s' -NewName calls" % (calls, vmlab_dir, aside)
-        self.addCleanup(self.target.vmlab, *powershell, restore)
+        gone = self.target.vmlab(*powershell, "Remove-Item -Recurse -Force -LiteralPath '%s'; Test-Path -LiteralPath '%s'" % (calls, calls))
+        self.assertEqual((gone.returncode, gone.stdout.strip()), (0, "False"), gone.stderr)
         stand_in = Path(tempfile.mkdtemp(prefix="vmlab-no-ssh-"))
         self.addCleanup(shutil.rmtree, str(stand_in), ignore_errors=True)
         for name in ("ssh", "scp"):  # ssh cannot reach the Guest: every call falls back to vmrun
@@ -569,6 +567,23 @@ def scenario(g):
         )  # fmt: skip
         self.assertEqual((got.returncode, got.stdout), (0, data), got.stderr)
         self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
+
+    def test_06c5_put_over_ssh_leaves_no_archive_in_the_guest(self):
+        # copy_in's archive is sent by ssh's elevated session and deleted by the desktop session's call.
+        if self.target.os != "windows":
+            self.skipTest("only Windows Guests carry files in as archives in the call folder")
+        path = "~/contract-archive-%d.txt" % os.getpid()
+        put = subprocess.run(
+            [sys.executable, str(zipapp_path()), "put", path, "--lab", self.target.lab],
+            cwd=str(self.target.root), env=self.target.env, input=b"archive", capture_output=True, timeout=300,
+        )  # fmt: skip
+        self.assertEqual(put.returncode, 0, put.stderr)
+        self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
+        left = self.target.vmlab(
+            "exec", "--lab", self.target.lab, "--", "powershell", "-NoProfile", "-Command",
+            "(Get-ChildItem -LiteralPath C:\\ProgramData\\vmlab\\calls -Filter 'vmlab-copy-*.tar' | ForEach-Object Name) -join ' '",
+        )  # fmt: skip
+        self.assertEqual((left.returncode, left.stdout.strip()), (0, ""), left.stderr)
 
     def test_06d_put_and_get_on_the_cli(self):
         data = bytes(range(256)) * 16 + "é✓".encode("utf-8")

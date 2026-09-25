@@ -180,6 +180,39 @@ class WindowsSshChannelTest(unittest.TestCase):
         self.assertLess(time.time() - started, 10)
         self.assertIn("within 1s", caught.exception.message)
 
+    def commands(self):
+        """The command lines ssh sessions ran in the Guest."""
+        log = [json.loads(line) for line in (self.guest / "log").read_text().splitlines()]
+        return [args[-1] for args in log if args[0] == "ssh" and "-W" not in args and "-O" not in args and "-N" not in args]
+
+    def test_files_sent_over_ssh_go_to_a_call_folder_the_desktop_session_may_delete_from(self):
+        # scp writes as the elevated ssh session; the desktop call that unpacks an archive must be
+        # able to delete it, so the folder grants the Guest user Modify on all it holds.
+        local = self.tmp / "a.tar"
+        local.write_bytes(b"x")
+        self.channel.send_file(local, windows.CALL_DIR + "\\a.tar", 5)
+        self.channel.send_file(local, windows.CALL_DIR + "\\b.tar", 5)
+        self.assertEqual(self.calls(), ["mkdir", "scp", "scp"])
+        [command] = self.commands()
+        self.assertIn("icacls", command)
+        self.assertIn("(OI)(CI)M", command)
+        self.assertIn("WindowsIdentity]::GetCurrent().User.Value", command)
+
+    def test_after_the_guest_stopped_the_call_folder_is_made_again_before_a_file_is_sent(self):
+        local = self.tmp / "a.tar"
+        local.write_bytes(b"x")
+        self.channel.send_file(local, windows.CALL_DIR + "\\a.tar", 5)
+        self.channel.close()
+        self.channel.send_file(local, windows.CALL_DIR + "\\b.tar", 5)
+        self.assertEqual(self.calls(), ["mkdir", "scp", "mkdir", "scp"])
+
+    def test_starting_the_server_makes_the_call_folder_once(self):
+        self.channel.exec(["cmd", "/c", "exit 0"], 5, {})
+        local = self.tmp / "a.tar"
+        local.write_bytes(b"x")
+        self.channel.send_file(local, windows.CALL_DIR + "\\a.tar", 5)
+        self.assertEqual(self.calls(), ["forward", "mkdir", "scp", "start", "forward", "scp"])
+
     def test_each_version_of_the_server_has_its_own_port(self):
         ports = {windows.server_port("%012x" % n) for n in range(0, 2**48, 2**40)}
         self.assertEqual(len(ports), 256)
@@ -242,6 +275,15 @@ class WindowsCopyInTest(unittest.TestCase):
         [script] = provider.scripts
         self.assertIn(ps_path("~/notes [1]"), script)
         self.assertNotRegex(script, r"\s-Path\b")  # PowerShell's -Path takes [ ] as a wildcard
+
+    def test_archives_earlier_copies_left_are_removed_by_their_age_against_this_one(self):
+        # The Host's time, which scp keeps, does not compare with the Guest's clock: an archive
+        # ages against this copy's own archive, which came the same way.
+        provider = StandInProvider(send_seconds=0)
+        windows.copy_in(provider, self.src, "~/notes", 5)
+        [script] = provider.scripts
+        self.assertIn("-Filter 'vmlab-copy-*.tar'", script)
+        self.assertIn(".LastWriteTime.AddHours(-1)", script)
 
 
 class PowerShellPathTest(unittest.TestCase):

@@ -140,21 +140,41 @@ class WindowsSshChannel(SshChannel):
         # Known to be gone: the Guest stopped since (close). A try would first wait ~2 s for
         # Windows to refuse the connection.
         self._server_gone = False
+        self._call_dir = False  # made, and its access granted, since the Guest last stopped
 
     def close(self):
         super().close()
         self._server_gone = True
+        self._call_dir = False
+
+    def _make_call_dir(self):
+        """Make the call folder and grant the Guest user Modify on it and all it holds, inherited.
+        What scp writes belongs to the elevated ssh session, and a file there gets only read for
+        Users from ProgramData: the desktop session's calls, not elevated, could then delete neither
+        it (copy_in's archive) nor the folder. Granting it again also reaches the files already there."""
+        grant = "('*' + [Security.Principal.WindowsIdentity]::GetCurrent().User.Value + ':(OI)(CI)M')"
+        result = self.run_command(
+            "powershell -NoProfile -NonInteractive -Command \"New-Item -ItemType Directory -Force -Path '%s' | Out-Null; "
+            "icacls.exe '%s' /grant %s /Q | Out-Null; exit $LASTEXITCODE\"" % (CALL_DIR, CALL_DIR, grant),
+            ["mkdir", CALL_DIR], MKDIR_TIMEOUT, None,
+        )  # fmt: skip
+        if not result.ok:
+            raise ChannelError(
+                "the Guest's call folder %s could not be made, or the Guest user given Modify on it: %s" % (CALL_DIR, (result.stderr or result.stdout).strip()),
+                "check the Guest's disk, and the folder's permissions (icacls %s)" % CALL_DIR,
+            )
+        self._call_dir = True
+
+    def send_file(self, local, guest_path, timeout):
+        # Files go to the call folder (copy_in's archive, the call server's script).
+        if not self._call_dir:
+            self._make_call_dir()
+        super().send_file(local, guest_path, timeout)
 
     def _start_server(self):
         """Send call-server.ps1 and have it start its Scheduled Task; ChannelError if it does not listen."""
         script = pkgutil.get_data("vmlab", "guest/windows/call-server.ps1")
         path = r"%s\vmlab-call-server-%s.ps1" % (CALL_DIR, self._version)
-        result = self.run_command(
-            "powershell -NoProfile -NonInteractive -Command \"New-Item -ItemType Directory -Force -Path '%s' | Out-Null\"" % CALL_DIR,
-            ["mkdir", CALL_DIR], MKDIR_TIMEOUT, None,
-        )  # fmt: skip
-        if not result.ok:
-            raise ChannelError("the Guest's call folder %s could not be made: %s" % (CALL_DIR, result.stderr.strip()), "check the Guest's disk")
         with tempfile.NamedTemporaryFile(suffix=".ps1") as local:
             local.write(script)
             local.flush()
@@ -240,12 +260,17 @@ def copy_in(provider, src, guest_dir, timeout=None):
         provider.send_file(local, archive, remaining())
     # The folder by its name as is: New-Item's -Path would take [ ] as a wildcard. Relative to
     # PowerShell's location, where a call starts, not the process's. Continue for tar: its stderr
-    # may reach PowerShell as errors, which Stop would make fatal.
+    # may reach PowerShell as errors, which Stop would make fatal. Archives earlier copies left
+    # (a Host that went away) go first; the Host's time, which a sent file keeps, does not compare
+    # with the Guest's clock, so they age against this archive, which came the same way.
     script = (
+        "$sent = (Get-Item -LiteralPath %s).LastWriteTime.AddHours(-1); "
+        "Get-ChildItem -LiteralPath %s -Filter 'vmlab-copy-*.tar' | Where-Object { $_.LastWriteTime -lt $sent } | "
+        "Remove-Item -Force -ErrorAction SilentlyContinue; "
         "$ErrorActionPreference = 'Stop'; try { $d = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(%s); "
         "$d = [IO.Directory]::CreateDirectory($d).FullName; $ErrorActionPreference = 'Continue'; tar.exe -xf %s -C $d; $code = $LASTEXITCODE } "
         "finally { Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath %s }; if ($code) { exit $code }; $d"
-        % (ps_path(guest_dir), ps_quote(archive), ps_quote(archive))
+        % (ps_quote(archive), ps_quote(CALL_DIR), ps_path(guest_dir), ps_quote(archive), ps_quote(archive))
     )
     result = provider.exec(provider.shell_argv(script), remaining())
     if not result.ok:
