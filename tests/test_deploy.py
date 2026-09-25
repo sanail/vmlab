@@ -300,6 +300,22 @@ def scenario(g):
         self.assertNotIn("later: deployed", r.out)
         status = {g["lab"]: g["running"] for g in json.loads(self.project.vmlab("status", "--json").out)}
         self.assertEqual(status, {"mac": True, "later": False})
+        # The Lab that was not ready still has its Guest up: the user is told, and how to stop it.
+        self.assertRegex(r.out, r"(?m)^Kept running: mac\. Stop with: .*vmlab.* down mac$")
+
+    def test_a_failed_deploy_names_the_guests_it_left_running(self):
+        self.project.config(
+            FAKE_LAB.replace("labs.mac", "labs.first") + '[labs.first.app]\nlaunch = "true"\n'
+            + FAKE_LAB.replace("labs.mac", "labs.second") + '[labs.second.app]\nlaunch = "true"\n'
+            + FAKE_LAB + '[labs.mac.app]\nartifact = "dist/MyApp.zip"\nbuild = "exit 7"\n'
+        )  # fmt: skip
+        r = self.project.vmlab("deploy")
+        self.assertExit(r, 1)
+        self.assertIn("second: deployed", r.out)
+        # mac's build failed before its Guest was started: it is not named.
+        self.assertRegex(r.out, r"(?m)^Kept running: first, second\. Stop with: .*vmlab.* down first second$")
+        status = {g["lab"]: g["running"] for g in json.loads(self.project.vmlab("status", "--json").out)}
+        self.assertEqual(status, {"first": True, "second": True, "mac": False})
 
 
 class ReadyConfigTest(VmlabTestCase):

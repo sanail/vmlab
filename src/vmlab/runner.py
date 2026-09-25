@@ -84,8 +84,7 @@ def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parall
         reports.append(data)
         if still_ours:
             kept.append(lab_run.lab.name)
-    if kept:
-        out("Kept running: %s. Stop with: %s %s" % (", ".join(kept), stop_command, " ".join(kept)))
+    kept_running(kept, out, stop_command)
     return reports
 
 
@@ -134,30 +133,49 @@ def _run_parallel(runs, work, out):
 
 
 def deploy(project, lab_names, out, stop_command="vmlab down"):
-    """Build if stale, start, install, reset and launch the app on each Lab; leave the Guests running."""
+    """Build if stale, start, install, reset and launch the app on each Lab; leave the Guests running.
+
+    It stops at the first Lab that fails, still naming the Guests it left running."""
     started_guests = StartedGuests()
-    kept = []
-    for lab in project.select_labs(lab_names):
-        warning = arch.warning(lab)
-        if warning:
-            out("warning: %s: %s (skipped)" % (lab.name, warning))
-            continue
-        provider = provider_for(project, lab)
-        built = build_if_stale(project, lab)
-        lock = guest_lock(provider)
-        try:
-            if not provider.is_running():
-                started_guests.add(guest_key(provider))
-            if guest_key(provider) in started_guests:
-                kept.append(lab.name)
-            provider.up()
-            guest_artifact = install(provider, lab, built["artifact"]) if built else None
-            prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
-        finally:
-            lock.release()
-        out("%s: deployed %s%s" % (lab.name, guest_artifact or "(no artifact)", " (rebuilt)" if built and built["built"] else ""))
-    if kept:
-        out("Kept running: %s. Stop with: %s %s" % (", ".join(kept), stop_command, " ".join(kept)))
+    kept = []  # (Lab name, its provider) whose Guest vmlab started
+    try:
+        for lab in project.select_labs(lab_names):
+            warning = arch.warning(lab)
+            if warning:
+                out("warning: %s: %s (skipped)" % (lab.name, warning))
+                continue
+            provider = provider_for(project, lab)
+            built = build_if_stale(project, lab)
+            lock = guest_lock(provider)
+            try:
+                if not provider.is_running():
+                    started_guests.add(guest_key(provider))
+                if guest_key(provider) in started_guests:
+                    kept.append((lab.name, provider))
+                provider.up()
+                guest_artifact = install(provider, lab, built["artifact"]) if built else None
+                prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
+            finally:
+                lock.release()
+            out("%s: deployed %s%s" % (lab.name, guest_artifact or "(no artifact)", " (rebuilt)" if built and built["built"] else ""))
+    except BaseException:
+        kept_running([name for name, provider in kept if _is_running(provider)], out, stop_command)
+        raise
+    kept_running([name for name, _ in kept], out, stop_command)
+
+
+def kept_running(names, out, stop_command):
+    """Tell the user which Labs' Guests vmlab started and left running, and how to stop them."""
+    if names:
+        out("Kept running: %s. Stop with: %s %s" % (", ".join(names), stop_command, " ".join(names)))
+
+
+def _is_running(provider):
+    """Is provider's Guest running? True when that cannot be told (the hypervisor fails): stopping it is harmless."""
+    try:
+        return provider.is_running()
+    except Exception:
+        return True
 
 
 def guest_key(provider):
