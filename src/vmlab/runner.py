@@ -9,10 +9,9 @@ Scenario file outside the scenarios folder) keeps Guest state and leaves its
 Guests running. A Scenario declaring FRESH, or --fresh, restores before a
 Scenario. The Lab's app state paths are removed before every Run.
 
-Ctrl-C ends every Lab's Run as it ends a serial one: what its Scenario staged and
-spawned ends, the Guest policy applies, and vmlab says what it stopped and left.
-Under --parallel the Labs get up to INTERRUPT_WAIT_S for that; a second Ctrl-C
-exits at once.
+Ctrl-C ends every Lab's Suite run: what its Scenario staged and spawned ends, the
+Guest policy applies, and vmlab says what it stopped and left. Under --parallel
+the Labs get up to INTERRUPT_WAIT_S for that; a second Ctrl-C exits at once.
 
 A Lab this Host does not cover (vmlab.arch) is skipped: no build, no Guest, a
 warning, and reports with status "skipped".
@@ -105,7 +104,7 @@ def _run_parallel(runs, work, out, interrupt):
     """Run work(lab_run) concurrently, starting a Lab only while its memory_gb fits in free
     Host memory. A Guest that is already running needs none. Returns outcomes in order.
 
-    On Ctrl-C it sets interrupt, which ends each Lab's Run, waits up to INTERRUPT_WAIT_S for
+    On Ctrl-C it sets interrupt, which ends each Lab's Suite run, waits up to INTERRUPT_WAIT_S for
     them, and raises KeyboardInterrupt; a second Ctrl-C raises it at once."""
     free = free_memory_gb()
     if free is None:
@@ -148,7 +147,7 @@ def _run_parallel(runs, work, out, interrupt):
                 done.wait()
     except KeyboardInterrupt:
         interrupt.set()
-        out("Interrupted: ending the Run on every Lab, for up to %ds (Ctrl-C again exits at once)" % INTERRUPT_WAIT_S)
+        out("Interrupted: ending the Suite run on every Lab, for up to %ds (Ctrl-C again exits at once)" % INTERRUPT_WAIT_S)
         deadline = time.time() + INTERRUPT_WAIT_S
         with done:  # a thread is not alive before start() nor once it has ended
             while any(t.is_alive() for t in threads) and time.time() < deadline:
@@ -167,8 +166,9 @@ def _say_what_was_left(runs, out, stop_command):
         out("Guests stopped: %s" % ", ".join(stopped))
     for r in runs:
         if r.began and not r.done:
-            out("warning: %s had not ended its Run: its Scenario may still be running, and what it spawned in the Guest" % r.lab.name)
-    left = [r.lab.name for r in runs if r.ours and not r.guest_stopped and _is_running(provider_for(r.project, r.lab))]
+            out("warning: %s had not ended its Suite run: its Scenario may still be running, and what it spawned in the Guest" % r.lab.name)
+    # A Lab still ending its Suite run may be stopping its Guest: it is named without asking the hypervisor.
+    left = [r.lab.name for r in runs if r.ours and not r.guest_stopped and (not r.done or _is_running(provider_for(r.project, r.lab)))]
     kept_running(left, out, stop_command)
 
 
@@ -211,7 +211,8 @@ def kept_running(names, out, stop_command):
 
 
 def _is_running(provider):
-    """Is provider's Guest running? True when that cannot be told (the hypervisor fails): stopping it is harmless."""
+    """Is provider's Guest running? True when that cannot be told (the hypervisor fails): naming a
+    stopped Guest as left running costs the user less than hiding a running one."""
     try:
         return provider.is_running()
     except Exception:
@@ -264,7 +265,7 @@ class _LabRun:
 
     def run(self, scenarios, out, keep, ad_hoc, fresh, interrupt):
         """Returns (report, whether vmlab left a Guest it owns running). interrupt, once set, ends
-        the Run as Ctrl-C does (at the Scenario's next g.* call, or before the next Scenario)."""
+        the Suite run as Ctrl-C does: before the next Scenario, or at the Scenario's next Guest call."""
         self.began = True
         try:
             return self._run(scenarios, out, keep, ad_hoc, fresh, interrupt)
@@ -358,7 +359,7 @@ class _LabRun:
             provider.on_exec = guest.channel_use.record
 
             def unreported(staged, spawned, name=path.stem):
-                for line in report.unreported(lab.name, name, staged, spawned):
+                for line in report.unreported_lines(lab.name, name, staged, spawned):
                     out(line)
 
             results.append(run_scenario(path, guest, prepare, unreported))

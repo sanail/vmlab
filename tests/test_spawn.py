@@ -15,8 +15,9 @@ from harness import FAKE_LAB, VmlabTestCase
 # A process with a child: it writes the child's pid to ~/child.pid, then prints and waits.
 PARENT_AND_CHILD = '["sh", "-c", "sleep 300 & echo $! > \\"$HOME/child.pid\\"; echo started; echo oops >&2; sleep 300"]'
 # A process that starts a child and exits, leaving the child in its process group.
-PASS_ONE = 'def scenario(g):\n    g.check("ran", True)\n'
 ORPHAN = '["sh", "-c", "sleep 300 & echo $! > \\"$HOME/child.pid\\""]'
+# A Scenario that passes: it shows the Suite run went on.
+PASS_ONE = 'def scenario(g):\n    g.check("ran", True)\n'
 
 
 def gone(pid, within=5):
@@ -363,7 +364,7 @@ def scenario(g):
 
 
 class ParallelCtrlCTest(SpawnCase):
-    """Ctrl-C in `vmlab run --parallel` ends every Lab's Run as it ends a serial one."""
+    """Ctrl-C in `vmlab run --parallel` ends every Lab's Suite run as it ends a serial one."""
 
     def setUp(self):
         super().setUp()
@@ -436,4 +437,4 @@ def scenario(g):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("KeyboardInterrupt", err)
         for lab in ("mac", "ubuntu"):
-            self.assertIn("warning: %s had not ended its Run" % lab, out)
+            self.assertIn("warning: %s had not ended its Suite run" % lab, out)

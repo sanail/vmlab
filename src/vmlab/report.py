@@ -90,7 +90,7 @@ def still_running(lab, scenario, entry):
         lab, scenario, command_line(entry["argv"]), entry["pid"], entry["stop_error"].splitlines()[0])
 
 
-def unreported(lab, scenario, staged, spawned):
+def unreported_lines(lab, scenario, staged, spawned):
     """The console's lines about a Scenario that ended with no report: the Staged documents
     (report entries) vmlab closed and could not close, and the processes it stopped and could not."""
     lines = []

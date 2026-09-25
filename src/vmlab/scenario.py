@@ -49,7 +49,7 @@ class ScenarioTimeout(GuestTimeout):
 
 
 class Interrupted(KeyboardInterrupt):
-    """Ctrl-C, taken by another thread: this Lab's Run ends as Ctrl-C ends a serial one."""
+    """Ctrl-C, taken by another thread: this Lab's Suite run ends as a serial one does on Ctrl-C."""
 
     def __init__(self):
         super().__init__("the Run was interrupted (Ctrl-C)")
