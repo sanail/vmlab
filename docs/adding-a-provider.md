@@ -93,7 +93,7 @@ VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac \
     python3 -m unittest discover -s tests -p 'test_contract.py' -v
 ```
 
-The Lab runs in a project of its own under `$VMLAB_HOME/contract/<lab>`, so its Guest is reused between runs and never touches your projects. Run the suite once per OS the Provider supports. A Provider is done when:
+The Lab gets a project of its own under `target/contract/<lab>` in this repo (ignored by git), so its Guest is reused between runs and never touches your projects; its Base guest comes from `$VMLAB_HOME` as usual. Run the suite once per OS the Provider supports. A Provider is done when:
 
 - Seam 2 is green for each supported OS.
 - `vmlab doctor` gives a fix for every failure you met while getting there.

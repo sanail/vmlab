@@ -7,8 +7,9 @@ table (the suite adds its own), and point the suite at it:
     VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac \\
         python3 -m unittest discover -s tests -p 'test_contract.py' -v
 
-A real Lab runs in a project of its own under $VMLAB_HOME/contract/<lab>, so
-its Guest is reused between runs and never touches your projects. Tests run
+A real Lab gets a project of its own under target/contract/<lab> in this
+repo (ignored by git), so its Guest is reused between runs and never touches
+your projects; its Base guest comes from $VMLAB_HOME as usual. Tests run
 in order: up, Channels, exec, timeouts, deploy, screenshot, the UI contract
 (in the OS's stock text editor; skipped on OSes that have no UI helper yet),
 restore, down.
@@ -30,7 +31,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from harness import zipapp_path
+from harness import REPO, zipapp_path
 
 UI_OSES = ("macos", "linux", "windows")  # Guest OSes with a UI helper (vmlab.uihelpers)
 
@@ -49,8 +50,7 @@ class Target:
         self.lab = os.environ.get("VMLAB_CONTRACT_LAB", "contract")
         self.env = dict(os.environ)
         if lab_file:
-            home = Path(os.environ.get("VMLAB_HOME") or Path.home() / ".vmlab")
-            self.root = home / "contract" / self.lab
+            self.root = REPO / "target" / "contract" / self.lab
             lab_toml = Path(lab_file).read_text(encoding="utf-8")
         else:
             self.tmp = tempfile.mkdtemp(prefix="vmlab-contract-")
