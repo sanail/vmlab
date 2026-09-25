@@ -193,6 +193,7 @@ class StandInProvider:
         self.lab.name, self.lab.app.install_timeout = "win", 600
         self.send_seconds = send_seconds
         self.timeouts = []  # (what, timeout) per call
+        self.scripts = []  # the PowerShell of each exec
 
     def send_file(self, local, guest_path, timeout):
         self.timeouts.append(("send_file", timeout))
@@ -206,6 +207,7 @@ class StandInProvider:
 
     def exec(self, argv, timeout, env=None, stdin=None):
         self.timeouts.append(("exec", timeout))
+        self.scripts.append(argv[-1])
         return ExecResult(argv, 0, "C:\\Users\\tester\\notes\r\n", "")
 
 
@@ -233,6 +235,13 @@ class WindowsCopyInTest(unittest.TestCase):
         self.assertLess(time.time() - started, 5)
         self.assertEqual([what for what, _ in provider.timeouts], ["send_file"])
 
+    def test_the_folder_is_named_literally_brackets_and_all(self):
+        provider = StandInProvider(send_seconds=0)
+        windows.copy_in(provider, self.src, "~/notes [1]", 5)
+        [script] = provider.scripts
+        self.assertIn(ps_path("~/notes [1]"), script)
+        self.assertNotRegex(script, r"\s-Path\b")  # PowerShell's -Path takes [ ] as a wildcard
+
 
 class PowerShellPathTest(unittest.TestCase):
     def test_tilde_is_the_profile_only_alone_or_before_a_slash(self):
@@ -245,6 +254,52 @@ class PowerShellPathTest(unittest.TestCase):
         expr = ps_path("~\\it's $HOME\\%TEMP%")
         self.assertNotIn("-replace", expr)
         self.assertIn("'\\it''s $HOME\\%TEMP%'", expr)  # single-quoted: no $ expansion
+
+
+class StandInGuest:
+    """What vmrun's guest operations reach in a Windows Guest: folders vmrun makes, and files it
+    copies in, which need their folder (vmrun makes no parents)."""
+
+    def __init__(self):
+        self.dirs = {"C:\\", "C:\\ProgramData"}
+        self.files = []
+
+    def vmrun(self, args, timeout, auth=()):
+        command, path = args[0], str(args[-1])
+        parent = path.rsplit("\\", 1)[0]
+        parent = parent + "\\" if parent.endswith(":") else parent
+        if command == "createDirectoryInGuest":
+            if path in self.dirs:
+                return 255, "Error: The file already exists\n"
+            if parent not in self.dirs:
+                return 255, "Error: A file was not found\n"
+            self.dirs.add(path)
+            return 0, ""
+        if command == "copyFileFromHostToGuest":
+            if parent not in self.dirs:
+                return 255, "Error: A file was not found\n"
+            self.files.append(path)
+            return 0, ""
+        return 255, "Error: stand-in: unsupported %r\n" % (args,)
+
+
+class WindowsVmrunChannelTest(unittest.TestCase):
+    def setUp(self):
+        from vmlab.providers import fusion
+
+        self.guest = StandInGuest()
+        for name, value in (("vmrun", self.guest.vmrun), ("credentials", lambda base_vm: {"user": "tester", "password": "pw"})):
+            patcher = mock.patch.object(fusion, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        vm = mock.Mock(vmx="/vms/guest-1.vmx", auth=[])
+        vm.name = "guest-1"
+        self.channel = fusion.WindowsVmrunChannel(vm, "vmlab-base-windows-11")
+
+    def test_a_file_is_sent_to_the_call_folder_before_any_call_made_it(self):
+        with tempfile.NamedTemporaryFile() as local:
+            self.channel.send_file(local.name, windows.CALL_DIR + "\\vmlab-copy.tar", 5)
+        self.assertEqual(self.guest.files, [windows.CALL_DIR + "\\vmlab-copy.tar"])
 
 
 if __name__ == "__main__":

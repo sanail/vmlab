@@ -751,12 +751,7 @@ class WindowsVmrunChannel(VmrunChannel):
         timed_out = GuestTimeout("%s timed out after %ss on Channel vmrun and was killed" % (list(argv), timeout))
         auth = self._auth()
         call = windows.new_call()
-        if not self._call_dir:
-            # vmrun makes them, and says so when they are already there. Remembered only once it
-            # worked: while the Guest boots these fail, and a Channel that gave up on them would
-            # then fail every later call.
-            made = [self._made(directory, auth) for directory in windows.CALL_DIRS]
-            self._call_dir = all(made)
+        self._make_call_dir(auth)
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp)
             (local / "script").write_text(windows.call_script(call, argv, env, timeout, stdin is not None), encoding="ascii")
@@ -768,6 +763,20 @@ class WindowsVmrunChannel(VmrunChannel):
             self._vmrun(["runProgramInGuest", self.vm.vmx, "-interactive"] + windows.runner_argv(call), deadline, auth, timed_out)
             self._vmrun(["copyFileFromGuestToHost", self.vm.vmx, call + ".result", local / "result"], deadline, auth, timed_out)
             return windows.parse_result(argv, (local / "result").read_text(encoding="utf-8", errors="replace"), self.name)
+
+    def send_file(self, local, guest_path, timeout):
+        # Files go to the call folder (copy_in's archive, the call server's script), which may not
+        # be there yet: ssh can fail before this Channel's first call.
+        self._make_call_dir(self._auth())
+        super().send_file(local, guest_path, timeout)
+
+    def _make_call_dir(self, auth):
+        if not self._call_dir:
+            # vmrun makes them, and says so when they are already there. Remembered only once it
+            # worked: while the Guest boots these fail, and a Channel that gave up on them would
+            # then fail every later call.
+            made = [self._made(directory, auth) for directory in windows.CALL_DIRS]
+            self._call_dir = all(made)
 
 
 def defaults(os_name):

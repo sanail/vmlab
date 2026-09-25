@@ -433,6 +433,8 @@ def scenario(g):
         "$p = Join-Path $env:TEMP '%s.exe'; Copy-Item C:\\Windows\\System32\\PING.EXE $p; & $p -n 9 127.0.0.1" % name))
     running = g.wait_for(process=name, timeout=30)
     g.check("the process runs", running["met"], detail=running)
+    pattern = g.wait_for(process=name[:-3] + "*", timeout=3)
+    g.check("a process name is text, not a pattern", not pattern["met"], detail=pattern)
     gone = g.wait_for(process=name, gone=True, timeout=60)
     g.check("process gone after it quits", gone["met"] and gone["condition"] == {"process": name, "gone": True}, detail=gone)
     g.exec(cmd(g, 'rm -f ~/%s "${TMPDIR:-/tmp}/%s"' % (flag, name), "Remove-Item -Force (Join-Path $HOME %s), (Join-Path $env:TEMP %s.exe)" % (flag, name)))
@@ -495,6 +497,72 @@ def scenario(g):
     g.exec(cmd(g, 'rm -rf "$HOME/%s" "$HOME/~%s"' % (folder, tag),
                "Remove-Item -Recurse -Force -LiteralPath (Join-Path $HOME '%s'), (Join-Path $HOME '~%s')" % (folder, tag)))
 """))
+
+    def test_06c3_brackets_in_names_are_taken_as_they_are(self):
+        # PowerShell takes [ ] in a -Path or -Name as a wildcard: every Guest path and name must reach it literally.
+        self.assertPassed(*self.target.scenario("files_brackets.py", COMMANDS + """
+import uuid
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:6]
+    sep = "\\\\" if g.os == "windows" else "/"
+    folder = "contract [1] %s" % tag
+    text = "bracket %s\\n" % tag
+    path = g.put("~/%s/[a].txt" % folder, text)
+    g.check("put into a folder with brackets", path.endswith(folder + sep + "[a].txt"), detail=path)
+    g.check("its round trip", g.get("~/%s/[a].txt" % folder) == text)
+    seen = g.wait_for(file="~/%s/[a].txt" % folder, timeout=30)
+    g.check("wait_for finds the file", seen["met"], detail=seen)
+    logged = g.wait_for(log="~/%s/[a].txt" % folder, pattern="bracket " + tag, timeout=30)
+    g.check("wait_for reads the file", logged["met"], detail=logged)
+    # A program in that folder, with brackets in its own name.
+    program = path[: -len("[a].txt")] + ("ps [1].exe" if g.os == "windows" else "run [1].sh")
+    made = g.exec(cmd(g, 'printf "#!/bin/sh\\necho started\\n" > "$0" && chmod +x "$0"'.replace("$0", program),
+                      "[IO.File]::Copy((Get-Command powershell.exe).Source, '%s')" % program))
+    g.check("the program is in place", made.ok, detail=made.stderr)
+    spawned = g.spawn([program, "-NoProfile", "-Command", "'started'; Start-Sleep 60"] if g.os == "windows" else [program])
+    said = g.wait_for(log=spawned.log, pattern="started", timeout=30)
+    g.check("spawn starts it", said["met"], detail=[said, spawned.output()])
+    if g.os == "windows":
+        running = g.wait_for(process="ps [1]", timeout=30)
+        g.check("wait_for finds its process by its name", running["met"], detail=running)
+        spawned.stop()
+        gone = g.wait_for(process="ps [1]", gone=True, timeout=30)
+        g.check("and sees it stop", gone["met"], detail=gone)
+    g.exec(cmd(g, 'rm -rf "$HOME/%s"' % folder, "Remove-Item -Recurse -Force -LiteralPath (Join-Path $HOME '%s')" % folder))
+"""))
+
+    def test_06c4_vmrun_carries_a_file_before_it_ran_any_call(self):
+        # A Windows Guest's files go to vmlab's call folder, which the vmrun Channel made at its first
+        # call; when ssh fails before that, its file copy must make the folder too.
+        if (self.target.provider, self.target.os) != ("fusion", "windows"):
+            self.skipTest("the vmrun Channel into Windows Guests is Fusion's")
+        # Set aside, not deleted: files scp sent over ssh's elevated session cannot be deleted from
+        # the desktop session. The ssh call that does it is served by the call server, which uses no files.
+        calls, aside = "C:\\ProgramData\\vmlab\\calls", "calls-aside-%d" % os.getpid()
+        powershell = ["exec", "--lab", self.target.lab, "--", "powershell", "-NoProfile", "-Command"]
+        moved = self.target.vmlab(*powershell, "Rename-Item -LiteralPath '%s' -NewName %s; Test-Path -LiteralPath '%s'" % (calls, aside, calls))
+        self.assertEqual((moved.returncode, moved.stdout.strip()), (0, "False"), moved.stderr)
+        self.addCleanup(self.target.vmlab, *powershell,
+                        "Remove-Item -Recurse -Force -LiteralPath '%s'; Rename-Item -LiteralPath '%s' -NewName calls" % (calls, calls.replace("calls", aside)))  # fmt: skip
+        stand_in = Path(tempfile.mkdtemp(prefix="vmlab-no-ssh-"))
+        self.addCleanup(shutil.rmtree, str(stand_in), ignore_errors=True)
+        for name in ("ssh", "scp"):  # ssh cannot reach the Guest: every call falls back to vmrun
+            (stand_in / name).write_text("#!/bin/sh\necho 'ssh: connect to host port 22: Connection refused' >&2\nexit 255\n")
+            (stand_in / name).chmod(0o755)
+        env = dict(self.target.env, PATH="%s:%s" % (stand_in, self.target.env["PATH"]))
+        data = b"over vmrun %d" % os.getpid()
+        put = subprocess.run(
+            [sys.executable, str(zipapp_path()), "put", "~/contract-vmrun-%d.txt" % os.getpid(), "--lab", self.target.lab],
+            cwd=str(self.target.root), env=env, input=data, capture_output=True, timeout=300,
+        )  # fmt: skip
+        self.assertEqual(put.returncode, 0, put.stderr)
+        got = subprocess.run(
+            [sys.executable, str(zipapp_path()), "get", "~/contract-vmrun-%d.txt" % os.getpid(), "--lab", self.target.lab],
+            cwd=str(self.target.root), env=self.target.env, capture_output=True, timeout=300,
+        )  # fmt: skip
+        self.assertEqual((got.returncode, got.stdout), (0, data), got.stderr)
+        self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
 
     def test_06d_put_and_get_on_the_cli(self):
         data = bytes(range(256)) * 16 + "é✓".encode("utf-8")

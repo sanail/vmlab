@@ -604,7 +604,8 @@ class PowerShellProbes:
         return argv
 
     def process_argv(self, provider, name):
-        return provider.shell_argv("if (Get-Process -Name %s -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }" % ps_quote(name))
+        """The name as text: Get-Process -Name would take it as a wildcard pattern."""
+        return provider.shell_argv("if ([Diagnostics.Process]::GetProcessesByName(%s).Length) { exit 0 } else { exit 1 }" % ps_quote(name))
 
     def exists_argv(self, provider, path):
         return provider.shell_argv("if (Test-Path -LiteralPath %s) { exit 0 } else { exit 1 }" % ps_path(path))

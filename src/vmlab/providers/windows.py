@@ -238,9 +238,12 @@ def copy_in(provider, src, guest_dir, timeout=None):
         with tarfile.open(str(local), mode="w") as tar_file:
             tar_file.add(str(src), arcname=src.name)
         provider.send_file(local, archive, remaining())
+    # The folder by its name as is: New-Item's -Path would take [ ] as a wildcard. Relative to
+    # PowerShell's location, where a call starts, not the process's.
     script = (
-        "$d = %s; New-Item -ItemType Directory -Force -Path $d | Out-Null; tar.exe -xf %s -C $d; $code = $LASTEXITCODE; "
-        "Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath %s; if ($code) { exit $code }; (Get-Item -LiteralPath $d).FullName"
+        "$ErrorActionPreference = 'Stop'; try { $d = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(%s); "
+        "$d = [IO.Directory]::CreateDirectory($d).FullName; tar.exe -xf %s -C $d; $code = $LASTEXITCODE } "
+        "finally { Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath %s }; if ($code) { exit $code }; $d"
         % (ps_path(guest_dir), ps_quote(archive), ps_quote(archive))
     )
     result = provider.exec(provider.shell_argv(script), remaining())

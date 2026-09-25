@@ -131,6 +131,20 @@ class TildeTest(unittest.TestCase):
         self.assertNotIn("USERPROFILE", script)
         self.assertIn("'~notes'", script)
 
+    def test_windows_takes_paths_literally_brackets_and_all(self):
+        # PowerShell's -Path takes [ ] as a wildcard; every Guest path goes to -LiteralPath.
+        windows = guestos.for_os("windows")
+        path = "~\\notes [1]\\a.txt"
+        scripts = [
+            windows.read_file_argv(path)[-1],
+            windows.remove_paths_argv([path])[-1],
+            windows.probes().exists_argv(windows, path)[-1],
+            windows.probes().read_argv(windows, path)[-1],
+        ]
+        for script in scripts:
+            self.assertIn("'\\notes [1]\\a.txt'", script)
+            self.assertNotRegex(script, r"\s-Path\b", script)
+
 
 class ProcessProbeTest(unittest.TestCase):
     LONG = "a-very-long-process-name"  # more than Linux's 15 bytes
@@ -146,6 +160,12 @@ class ProcessProbeTest(unittest.TestCase):
     def test_a_short_name_is_matched_whole_on_linux_too(self):
         argv = guestos.for_os("linux").probes().process_argv(None, "myapp.bin")
         self.assertEqual(argv[-2:], ["^myapp\\.bin$", ""])
+
+    def test_windows_matches_the_name_as_text_not_as_a_wildcard(self):
+        windows = guestos.for_os("windows")
+        script = windows.probes().process_argv(windows, "my[app]*")[-1]
+        self.assertIn("GetProcessesByName('my[app]*')", script)  # .NET: no wildcards, any case, as Windows names processes
+        self.assertNotIn("Get-Process", script)  # its -Name takes wildcards
 
 
 class ChoicesTest(unittest.TestCase):
