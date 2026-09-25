@@ -133,6 +133,7 @@ public static class Helper {
     const string STAGE = "vmlab-stage-";  // + 8 hex digits: the name of every file stage-text opens
     static Regex STAGED = new Regex("^" + STAGE + "[0-9a-fA-F]{8}\\.txt$", RegexOptions.IgnoreCase);
     const double CLOSE_WAIT = 5;  // s for one staged document to close
+    const double SELECT_WAIT = 2;  // s for a select-all to select a Staged document's text, before it is pressed again
 
     static int nodes;
     static bool truncated;
@@ -965,6 +966,29 @@ public static class Helper {
         if (tab.TryGetCurrentPattern(SelectionItemPattern.Pattern, out pattern)) ((SelectionItemPattern)pattern).Select();
     }
 
+    /// Keyboard focus into the text of the document in front of window, its selection kept: a tab
+    /// selected through UI Automation (WinUI's TabView) keeps the focus on the tab, where the
+    /// Scenario's next keys (a copy, typing) do nothing.
+    static void FocusDocument(IntPtr window) {
+        try {
+            AutomationElement root = AutomationElement.FromHandle(window);
+            foreach (ControlType type in new ControlType[] { ControlType.Document, ControlType.Edit }) {
+                foreach (AutomationElement e in root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, type))) {
+                    if (e.Current.IsOffscreen || !e.Current.IsKeyboardFocusable) continue;
+                    if (type == ControlType.Edit && !Multiline(e)) continue;
+                    e.SetFocus();
+                    return;
+                }
+            }
+        } catch (ElementNotAvailableException) {
+            // the window closed meanwhile
+        } catch (ArgumentException) {
+            // no such window any more
+        } catch (InvalidOperationException) {
+            // it takes no focus: keys go where the app puts them
+        }
+    }
+
     /// Save and close the Staged document p["file"] in p["app"]; the app's other documents stay, and
     /// the tab in front of its window before comes back to the front. Saved first (a Scenario may have
     /// typed into it), so the editor does not ask about saving. Keys go to the tab in front, the one
@@ -1008,6 +1032,7 @@ public static class Helper {
                 // closed meanwhile
             }
         }
+        if (d.Tab != null) FocusDocument(d.Window.Handle);
         return Obj("file", path, "closed", true);
     }
 
@@ -1095,8 +1120,17 @@ public static class Helper {
                 + json.Serialize(seen.ConvertAll(delegate(Win w) { return w.Title; })));
         string name = AppName(window.Pid);
         BringToFront(window.Handle, name, deadline);
-        Press("a", new List<string> { "ctrl" });
-        string selected = WaitFor<string>(deadline, delegate() { return Selection(window.Pid) == text ? text : null; }) ?? Selection(window.Pid);
+        // A select-all pressed before the editor has loaded the file, or while the focus is on its
+        // tab, selects nothing: pressed again, into the document, until the text is selected.
+        string selected;
+        while (true) {
+            FocusDocument(window.Handle);
+            Press("a", new List<string> { "ctrl" });
+            DateTime wait = DateTime.UtcNow.AddSeconds(SELECT_WAIT), soon = wait < deadline ? wait : deadline;
+            selected = WaitFor<string>(soon, delegate() { return Selection(window.Pid) == text ? text : null; });
+            if (selected != null || DateTime.UtcNow >= deadline) break;
+        }
+        selected = selected ?? Selection(window.Pid);
         string frontmost = Frontmost();  // what the trigger lands on, recorded before it is pressed
         object pressed = null;
         object then;
