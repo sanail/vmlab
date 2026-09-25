@@ -50,6 +50,14 @@ A Guest has no sound device, so Windows shows a crossed-out speaker in the tray,
 
 Provisioning turns OneDrive off by policy (`DisableFileSyncNGSC`): it quits as soon as anything starts it, so its "Turn On Windows Backup" prompt never covers the app. A Scenario cannot test what the app does with OneDrive (syncing, files on demand, backed-up folders); Documents and Desktop are plain local folders.
 
+## Clock hours off
+
+**Symptom**: times the Guest reports (`g.notifications()`, file times, the app's own logs) are hours off the Host's, and `vmlab doctor` warns `Clock: the Guest's clock runs ... the Host's`.
+
+**Cause**: Fusion hands Windows the Mac's local time as its hardware clock, and Windows reads it in its own time zone. A Base guest set up in another zone than the Mac's, or a Mac that has since moved to another zone, puts every Lab off by the difference.
+
+**Do**: relay doctor's fix to the user: the Base guest's time zone is set to the Mac's through `vmlab base create windows-11 --reprovision`, run in a terminal window of their own; it waits while they set it in Windows' Settings. A Guest already in the Mac's zone that is still off needs only a restart (`vmlab down LAB && vmlab up LAB`).
+
 ## PowerShell parses twice
 
 `g.exec(["powershell", "-Command", ...])` hands PowerShell a string it parses again: unquoted spaces split arguments, and a comma turns a value into an array. Pass arguments as argv items to a script file (`-File`), or write test data to a file with `g.put` and pass its path (`g.exec` takes no stdin). For the clipboard, `g.clipboard()` and `g.set_clipboard()`.

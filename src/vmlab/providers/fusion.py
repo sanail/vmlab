@@ -935,7 +935,7 @@ class FusionProvider(Provider):
 
     def diagnose_guest(self):
         if self.windows:
-            return [self._diagnose_language()]
+            return [self._diagnose_language(), self._diagnose_clock()]
         if not self.session:
             return []
         if self._seen_session != self.session:
@@ -982,6 +982,19 @@ class FusionProvider(Provider):
             return [("Shell extensions", OK, "on", None)]
         return [("Shell extensions", FAIL, "GNOME Shell turned user extensions off (it does when it stops within its first minute), so vmlab's extension is off",
                  "vmlab base create %s   (provisioning v%s locks them on; the Lab is cloned again at its next start)" % (self.base_name, PROVISION_VERSION))]  # fmt: skip
+
+    def _diagnose_clock(self):
+        from vmlab.providers import fusion_windows
+
+        cause, detail, fix = fusion_windows.guest_clock(self)
+        if cause is None:
+            return ("Clock", OK, detail, None)
+        if cause == fusion_windows.WRONG_ZONE:  # the Lab boots with its Base guest's time zone: set it there
+            fix = ("%s. Do it in Base guest %s, which the Lab starts from: vmlab base create %s --reprovision (in a terminal window: "
+                   "it waits while you do it; the Lab is copied again at its next start)" % (fix, self.base_name, self.base_name))  # fmt: skip
+        elif cause == fusion_windows.CLOCK_OFF:  # it reads the Mac's time again when it starts
+            fix = "restart the Guest: vmlab down %s && vmlab up %s" % (self.lab.name, self.lab.name)
+        return ("Clock", WARN, detail, fix)
 
     def _diagnose_language(self):
         from vmlab.providers import fusion_windows

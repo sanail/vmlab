@@ -69,6 +69,12 @@ WINDOW_START_WAIT = 60  # s for Fusion to power on a VM it opened
 SESSION = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $PID).SessionId; [Console]::OutputEncoding.CodePage; " + LANGUAGE_PS]
 DISPLAY_LANGUAGE = ["powershell", "-NoProfile", "-NonInteractive", "-Command", LANGUAGE_PS]
 FUSION_FOLDERS = ("Virtual Machines.localized", "Virtual Machines", "Documents/Virtual Machines.localized")
+# The Guest's clock: its UTC time in ms, its UTC offset now in minutes, its time zone's display name.
+CLOCK = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); [TimeZoneInfo]::Local.GetUtcOffset([DateTime]::UtcNow).TotalMinutes; [TimeZoneInfo]::Local.DisplayName"]  # fmt: skip
+CLOCK_TOLERANCE = 120  # s the Guest's UTC clock may differ from the Host's, the call's own time aside
+DATE_AND_TIME = "Settings > Time & language > Date & time"
+WRONG_ZONE, CLOCK_OFF, UNREAD = "wrong time zone", "clock off", "unread"  # why a Guest's clock does not match (guest_clock)
 
 GET_WINDOWS = """\
   1. In VMware Fusion: File > New..., choose "Get Windows from Microsoft", pick Windows 11
@@ -354,6 +360,7 @@ def _provision(wizard, name, vm):
         signed_in,
         ahead=True,
     )
+    check_clock(wizard, channel, vm)  # before the snapshot Labs boot from keeps Windows' time zone
 
     def silent():
         try:
@@ -474,3 +481,72 @@ def _desktop_session(vm, channel):
             raise GuestError("Channel %s did not reach %s within %ss after a reboot: %s" % (channel.name, vm.name, BASE_BOOT_TIMEOUT, problem),
                              "look at its screen (open -a 'VMware Fusion' '%s'); re-run `vmlab base create`" % vm.vmx)  # fmt: skip
         time.sleep(2)
+
+
+def host_time_zone():
+    """(name, UTC offset now in minutes) of the Mac's time zone, e.g. ("Europe/Moscow", 180)."""
+    try:
+        target = os.readlink("/etc/localtime")  # /var/db/timezone/zoneinfo/Europe/Moscow
+    except OSError:
+        target = ""
+    name = target.split("zoneinfo/", 1)[1] if "zoneinfo/" in target else time.strftime("%Z")
+    return name, time.localtime().tm_gmtoff // 60
+
+
+def guest_clock(channel):
+    """Does the Windows Guest's clock (in UTC) match the Host's? (cause, detail, fix): cause is None
+    when it does, else WRONG_ZONE, CLOCK_OFF (in the Mac's time zone) or UNREAD; fix says what to do
+    in Windows. Fusion hands Windows the Mac's local time as its hardware clock, and Windows reads
+    it in its own time zone: in another one than the Mac's, its clock runs hours off."""
+    before = time.time()
+    try:
+        result = channel.exec(CLOCK, CALL_TIMEOUT, {})
+    except GuestError as exc:
+        return UNREAD, "cannot read the Guest's clock: %s" % exc.message, exc.fix
+    after = time.time()
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    try:
+        guest_ms, guest_offset, zone = int(lines[0]), round(float(lines[1])), lines[2]
+    except (IndexError, ValueError):
+        return UNREAD, "cannot read the Guest's clock: %s" % (result.stderr.strip() or result.stdout.strip() or "no answer"), "check the Guest's PowerShell"
+    guest = guest_ms / 1000.0
+    if before - CLOCK_TOLERANCE <= guest <= after + CLOCK_TOLERANCE:
+        return None, "matches the Host's (time zone %s)" % zone, None
+    off = guest - (before + after) / 2
+    detail = "the Guest's clock runs %s %s the Host's (in UTC); Windows' time zone is %s, %s now" % (
+        _duration(abs(off)), "ahead of" if off > 0 else "behind", zone, _utc_offset(guest_offset))
+    mac_zone, mac_offset = host_time_zone()
+    if guest_offset == mac_offset:
+        return CLOCK_OFF, detail + ", and the time zone is the Mac's", "sync the clock: %s > Sync now (under Additional settings)" % DATE_AND_TIME
+    return WRONG_ZONE, detail + "; the Mac's is %s, %s now" % (mac_zone, _utc_offset(mac_offset)), (
+        "set Windows' time zone to the Mac's, %s (%s now): %s > Time zone (if \"Set time zone automatically\" is on, turn it off first), "
+        "then Sync now (under Additional settings): a new time zone leaves the clock as it was" % (mac_zone, _utc_offset(mac_offset), DATE_AND_TIME))
+
+
+def check_clock(wizard, channel, vm):
+    """The wizard's step: Windows' clock matches the Mac's before vmlab provisions the Guest."""
+    mac_zone, mac_offset = host_time_zone()
+
+    def check():
+        cause, detail, fix = guest_clock(channel)
+        return None if cause is None else ("%s.\n  To do: %s" % (detail, fix) if fix else detail)
+
+    wizard.step(
+        "Set Windows' clock to the Mac's",
+        "  Fusion gives Windows the Mac's local time, which Windows reads in its own time zone: in\n"
+        "  another one its clock runs hours off. In the Guest, %s: Time zone %s\n"
+        "  (%s now; an English (United States) install picks Pacific Time), then Sync now.\n"
+        "  If no window shows the Guest, open %s in Fusion." % (DATE_AND_TIME, mac_zone, _utc_offset(mac_offset), vm.vmx.parent),
+        check,
+    )
+
+
+def _utc_offset(minutes):
+    return "UTC%s%02d:%02d" % ("-" if minutes < 0 else "+", abs(minutes) // 60, abs(minutes) % 60)
+
+
+def _duration(seconds):
+    minutes = int(round(seconds / 60.0))
+    if minutes < 60:
+        return "%d min" % minutes
+    return "%d h" % (minutes // 60) + (" %d min" % (minutes % 60) if minutes % 60 else "")
