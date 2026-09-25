@@ -300,7 +300,8 @@ if ($Command -eq 'stop') {
 }
 # start
 $argv = @($p.argv)
-$app = Get-Command -CommandType Application -Name $argv[0] -ErrorAction SilentlyContinue | Select-Object -First 1
+# Escaped: -Name takes a wildcard pattern, and would run whatever matched first.
+$app = Get-Command -CommandType Application -Name ([Management.Automation.WildcardPattern]::Escape($argv[0])) -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $app) { [Console]::Error.WriteLine('no such command: ' + $argv[0]); exit 127 }
 $log = [Environment]::ExpandEnvironmentVariables($p.log)
 if (@('.exe', '.com') -contains [IO.Path]::GetExtension($app.Path).ToLowerInvariant()) {

@@ -434,7 +434,7 @@ def scenario(g):
     running = g.wait_for(process=name, timeout=30)
     g.check("the process runs", running["met"], detail=running)
     pattern = g.wait_for(process=name[:-3] + "*", timeout=3)
-    g.check("a process name is text, not a pattern", not pattern["met"], detail=pattern)
+    g.check("a process name is text, not a pattern", not pattern["met"] and not pattern.get("error"), detail=pattern)
     gone = g.wait_for(process=name, gone=True, timeout=60)
     g.check("process gone after it quits", gone["met"] and gone["condition"] == {"process": name, "gone": True}, detail=gone)
     g.exec(cmd(g, 'rm -f ~/%s "${TMPDIR:-/tmp}/%s"' % (flag, name), "Remove-Item -Force (Join-Path $HOME %s), (Join-Path $env:TEMP %s.exe)" % (flag, name)))
@@ -529,6 +529,11 @@ def scenario(g):
         spawned.stop()
         gone = g.wait_for(process="ps [1]", gone=True, timeout=30)
         g.check("and sees it stop", gone["met"], detail=gone)
+    try:  # PowerShell's Get-Command -Name would run whatever matches first
+        g.spawn(["powershel*" if g.os == "windows" else "s*"])
+        g.check("a program name is not a pattern", False)
+    except Exception as exc:
+        g.check("a program name is not a pattern", "no such command" in str(exc), detail=str(exc))
     g.exec(cmd(g, 'rm -rf "$HOME/%s"' % folder, "Remove-Item -Recurse -Force -LiteralPath (Join-Path $HOME '%s')" % folder))
 """))
 
@@ -539,12 +544,13 @@ def scenario(g):
             self.skipTest("the vmrun Channel into Windows Guests is Fusion's")
         # Set aside, not deleted: files scp sent over ssh's elevated session cannot be deleted from
         # the desktop session. The ssh call that does it is served by the call server, which uses no files.
-        calls, aside = "C:\\ProgramData\\vmlab\\calls", "calls-aside-%d" % os.getpid()
+        vmlab_dir, aside = "C:\\ProgramData\\vmlab", "calls-aside-%d" % os.getpid()
+        calls = vmlab_dir + "\\calls"
         powershell = ["exec", "--lab", self.target.lab, "--", "powershell", "-NoProfile", "-Command"]
         moved = self.target.vmlab(*powershell, "Rename-Item -LiteralPath '%s' -NewName %s; Test-Path -LiteralPath '%s'" % (calls, aside, calls))
         self.assertEqual((moved.returncode, moved.stdout.strip()), (0, "False"), moved.stderr)
-        self.addCleanup(self.target.vmlab, *powershell,
-                        "Remove-Item -Recurse -Force -LiteralPath '%s'; Rename-Item -LiteralPath '%s' -NewName calls" % (calls, calls.replace("calls", aside)))  # fmt: skip
+        restore = "Remove-Item -Recurse -Force -LiteralPath '%s'; Rename-Item -LiteralPath '%s\\%s' -NewName calls" % (calls, vmlab_dir, aside)
+        self.addCleanup(self.target.vmlab, *powershell, restore)
         stand_in = Path(tempfile.mkdtemp(prefix="vmlab-no-ssh-"))
         self.addCleanup(shutil.rmtree, str(stand_in), ignore_errors=True)
         for name in ("ssh", "scp"):  # ssh cannot reach the Guest: every call falls back to vmrun

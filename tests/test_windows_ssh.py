@@ -1,5 +1,6 @@
 """The Host half of the Windows ssh Channel: calls to vmlab's call server in the Guest's desktop
-session (vmlab.providers.windows), against a scripted stand-in for ssh and scp.
+session (vmlab.providers.windows), against a scripted stand-in for ssh and scp. Also the Host
+half of Fusion's vmrun Channel into Windows Guests, against a stand-in for vmrun's guest operations.
 
 The stand-in plays the Guest's sshd and the server: `ssh -W` answers as the server would, or
 with nothing while no server listens (as ssh does when Windows refuses the connection), and
