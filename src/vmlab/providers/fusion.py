@@ -992,7 +992,7 @@ class FusionProvider(Provider):
         if cause == fusion_windows.WRONG_ZONE:  # the Lab boots with its Base guest's time zone: set it there
             fix = ("%s. Do it in Base guest %s, which the Lab starts from: vmlab base create %s --reprovision (in a terminal window: "
                    "it waits while you do it; the Lab is copied again at its next start)" % (fix, self.base_name, self.base_name))  # fmt: skip
-        elif cause == fusion_windows.CLOCK_OFF:  # it reads the Mac's time again when it starts
+        elif cause == fusion_windows.CLOCK_OFF:  # it reads the Mac's time again when it starts: vmlab-clean is taken powered off
             fix = "restart the Guest: vmlab down %s && vmlab up %s" % (self.lab.name, self.lab.name)
         return ("Clock", WARN, detail, fix)
 

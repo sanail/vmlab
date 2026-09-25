@@ -323,6 +323,7 @@ def _provision(wizard, name, vm):
             _start_with_window(wizard, vm)
         else:
             vm.start()
+    windowed = not record.get("elevated")  # started in a window for the UAC click (or left in one by an earlier run)
 
     def signed_in():
         deadline = time.time() + BASE_BOOT_TIMEOUT
@@ -360,7 +361,14 @@ def _provision(wizard, name, vm):
         signed_in,
         ahead=True,
     )
-    check_clock(wizard, channel, vm)  # before the snapshot Labs boot from keeps Windows' time zone
+    def show():
+        if not windowed:
+            _keychain_save(vm)
+            _open_in_fusion(vm)
+
+    # Before the snapshot Labs boot from keeps Windows' time zone. A Base guest started headless
+    # (re-provisioning) is put in a window only when the person has to set it.
+    check_clock(wizard, channel, vm, show)
 
     def silent():
         try:
@@ -447,11 +455,7 @@ def _start_with_window(wizard, vm):
     except GuestError as exc:
         if "not supported" not in exc.message.lower():
             raise
-    opener = os.environ.get("VMLAB_OPEN") or "/usr/bin/open"
-    try:
-        hostproc.run([opener, "-a", "VMware Fusion", str(vm.vmx)], 60)
-    except (OSError, subprocess.TimeoutExpired):
-        pass  # the step below says how to open it by hand
+    _open_in_fusion(vm)
 
     def running():
         deadline = time.time() + (WINDOW_START_WAIT if wizard.prompt.interactive else 0)  # nobody to wait for otherwise
@@ -462,6 +466,16 @@ def _start_with_window(wizard, vm):
         return None
 
     wizard.step("Start the Guest in a Fusion window", START_IN_FUSION % vm.vmx, running, ahead=True)
+
+
+def _open_in_fusion(vm):
+    """Open vm in a Fusion window (a running one too), best-effort: the wizard's steps say how to
+    open it by hand. Fusion shows an encrypted VM only with its password in the Keychain (_keychain_save)."""
+    opener = os.environ.get("VMLAB_OPEN") or "/usr/bin/open"
+    try:
+        hostproc.run([opener, "-a", "VMware Fusion", str(vm.vmx)], 60)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _desktop_session(vm, channel):
@@ -504,7 +518,7 @@ def guest_clock(channel):
     except GuestError as exc:
         return UNREAD, "cannot read the Guest's clock: %s" % exc.message, exc.fix
     after = time.time()
-    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()] if result.ok else []
     try:
         guest_ms, guest_offset, zone = int(lines[0]), round(float(lines[1])), lines[2]
     except (IndexError, ValueError):
@@ -514,29 +528,34 @@ def guest_clock(channel):
         return None, "matches the Host's (time zone %s)" % zone, None
     off = guest - (before + after) / 2
     detail = "the Guest's clock runs %s %s the Host's (in UTC); Windows' time zone is %s, %s now" % (
-        _duration(abs(off)), "ahead of" if off > 0 else "behind", zone, _utc_offset(guest_offset))
+        _duration(abs(off)), "ahead of" if off > 0 else "behind", zone, _utc_offset(guest_offset))  # fmt: skip
     mac_zone, mac_offset = host_time_zone()
     if guest_offset == mac_offset:
         return CLOCK_OFF, detail + ", and the time zone is the Mac's", "sync the clock: %s > Sync now (under Additional settings)" % DATE_AND_TIME
     return WRONG_ZONE, detail + "; the Mac's is %s, %s now" % (mac_zone, _utc_offset(mac_offset)), (
         "set Windows' time zone to the Mac's, %s (%s now): %s > Time zone (if \"Set time zone automatically\" is on, turn it off first), "
-        "then Sync now (under Additional settings): a new time zone leaves the clock as it was" % (mac_zone, _utc_offset(mac_offset), DATE_AND_TIME))
+        "then Sync now (under Additional settings): a new time zone leaves the clock as it was" % (mac_zone, _utc_offset(mac_offset), DATE_AND_TIME))  # fmt: skip
 
 
-def check_clock(wizard, channel, vm):
-    """The wizard's step: Windows' clock matches the Mac's before vmlab provisions the Guest."""
-    mac_zone, mac_offset = host_time_zone()
+def check_clock(wizard, channel, vm, show):
+    """The wizard's step: Windows' clock matches the Mac's before vmlab provisions the Guest.
+    show() puts the Guest in a Fusion window, called once the person has something to do in it."""
+    shown = []
 
     def check():
         cause, detail, fix = guest_clock(channel)
-        return None if cause is None else ("%s.\n  To do: %s" % (detail, fix) if fix else detail)
+        if cause is None:
+            return None
+        if not shown:
+            shown.append(show())
+        return "%s.\n  To do: %s" % (detail, fix) if fix else detail
 
     wizard.step(
         "Set Windows' clock to the Mac's",
         "  Fusion gives Windows the Mac's local time, which Windows reads in its own time zone: in\n"
-        "  another one its clock runs hours off. In the Guest, %s: Time zone %s\n"
-        "  (%s now; an English (United States) install picks Pacific Time), then Sync now.\n"
-        "  If no window shows the Guest, open %s in Fusion." % (DATE_AND_TIME, mac_zone, _utc_offset(mac_offset), vm.vmx.parent),
+        "  another one its clock runs hours off (an English (United States) install picks Pacific\n"
+        "  Time). Set it in the Guest's Fusion window as the line below says; if no window shows the\n"
+        "  Guest, open %s in Fusion." % vm.vmx.parent,
         check,
     )
 

@@ -53,10 +53,11 @@ class ClockTestCase(unittest.TestCase):
 class WizardClockTest(ClockTestCase):
     def wizard(self, guest):
         said = []
+        self.shown = []
         vm = mock.Mock(vmx=Path("/vms/vmlab-base-windows-11.vmwarevm/vmlab-base-windows-11.vmx"))
         wizard = fusion_windows.Wizard("windows-11", NoTerminal(), said.append)
         try:
-            fusion_windows.check_clock(wizard, guest, vm)
+            fusion_windows.check_clock(wizard, guest, vm, show=lambda: self.shown.append(True))
         except GuestError as exc:
             return "\n".join(said), exc
         return "\n".join(said), None
@@ -71,13 +72,14 @@ class WizardClockTest(ClockTestCase):
         self.assertIn("UTC+03:00", out)
         self.assertIn("Settings > Time & language > Date & time", out)
         self.assertIn("Sync now", out, "a new time zone leaves Windows' UTC clock as it was")
-        self.assertIn("vmlab-base-windows-11.vmwarevm", out, "a Base guest started without a window needs one")
+        self.assertEqual(self.shown, [True], "the person needs the Guest in a window to set it")
 
     def test_a_clock_that_matches_the_hosts_lets_it_go_on(self):
         out, error = self.wizard(StandInGuest(ahead=3, offset=180, zone="(UTC+03:00) Moscow, St. Petersburg"))
 
         self.assertIsNone(error)
         self.assertIn("ok: ", out)
+        self.assertEqual(self.shown, [], "no window when nobody has anything to do in it")
 
     def test_in_the_macs_time_zone_but_still_off_it_says_to_sync_the_clock(self):
         out, error = self.wizard(StandInGuest(ahead=-10 * 3600, offset=180, zone="(UTC+03:00) Moscow, St. Petersburg"))
