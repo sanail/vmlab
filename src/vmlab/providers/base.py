@@ -160,7 +160,8 @@ class Provider:
         raise NotImplementedError
 
     def restore(self):
-        """Return the running Guest to its Clean state; it is reachable again afterwards."""
+        """Return the Guest to its Clean state, running or not; it is running and reachable
+        afterwards. A stopped Guest boots once, into its Clean state."""
         raise NotImplementedError
 
     def copy_in(self, src, guest_dir, timeout=None):

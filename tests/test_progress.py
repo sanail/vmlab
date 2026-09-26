@@ -31,7 +31,7 @@ STEP = re.compile(r"^(\w+): (building|cloning|deleting the old clone|booting|qui
 
 def steps(out):
     """The step lines of out, their times replaced by N so they can be compared."""
-    return [re.sub(r" done in \S+$", " done in N", line) for line in out.splitlines() if STEP.match(line)]
+    return [re.sub(r" in \d\S*(?= \(|$)", " in N", line) for line in out.splitlines() if STEP.match(line)]
 
 
 class DurationTest(VmlabTestCase):
@@ -121,25 +121,42 @@ class RunProgressTest(VmlabTestCase):
         self.project.scenario("ok.py", PASS)
         self.project.scenario("again.py", PASS)
 
-    def test_run_prints_its_steps_and_one_line_per_scenario(self):
+    def test_run_prints_its_steps_and_each_scenario_as_it_starts_and_ends(self):
         r = self.project.vmlab("run")
 
         self.assertExit(r, 0)
         self.assertEqual(steps(r.out), [
             "mac: building (log: %s/build.log)" % self.project.report()["run_dir"],
             "mac: building done in N",
+            "mac: restoring Clean state",  # a stopped Guest boots once, into its Clean state
             "mac: booting",
             "mac: booting done in N",
             "mac: waiting for Channels",
             "mac: waiting for Channels done in N",
-            "mac: restoring Clean state",
             "mac: restoring Clean state done in N",
             "mac: delivering",
             "mac: delivering done in N",
             "mac: installing",
             "mac: installing done in N",
             "mac: scenario again",
+            "mac: scenario again passed in N",
             "mac: scenario ok",
+            "mac: scenario ok passed in N",
+        ])  # fmt: skip
+
+    def test_a_scenario_that_ends_says_how(self):
+        self.project.scenario("again.py", 'def scenario(g):\n    g.check("ok", True)\n    g.skip("later", "not measured")\n')
+        self.project.scenario("broken.py", 'def scenario(g):\n    g.check("ok", True)\n    raise RuntimeError("boom")\n')
+        self.project.scenario("red.py", 'def scenario(g):\n    g.check("a", False)\n    g.check("b", False)\n    g.check("c", True)\n')
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        self.assertEqual([line for line in steps(r.out) if " in N" in line and "scenario" in line], [
+            "mac: scenario again passed in N (1 of 2 Checks skipped)",
+            "mac: scenario broken errored in N",
+            "mac: scenario ok passed in N",
+            "mac: scenario red failed in N (2 of 3 Checks failed)",
         ])  # fmt: skip
 
     def test_quiet_prints_what_run_printed_before(self):

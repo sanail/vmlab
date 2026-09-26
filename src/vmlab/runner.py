@@ -30,7 +30,7 @@ from vmlab.config import ConfigError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run, quit
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
-from vmlab.progress import Progress
+from vmlab.progress import Progress, duration
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 from vmlab.scenario import FAIL, SKIP, STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, outcome, run_scenario
@@ -342,9 +342,11 @@ class _LabRun:
         repetition = 1
         if lock:
             try:
-                if not provider.is_running():
+                stopped = not provider.is_running()
+                if stopped:
                     started_guests.add(key)
-                provider.up()
+                if not (stopped and (not ad_hoc or fresh)):
+                    provider.up()  # otherwise the Suite run's first restore boots it, once, into Clean state
                 while True:
                     if repeat > 1:
                         self.progress.say("repetition %d of %d" % (repetition, repeat))
@@ -448,8 +450,24 @@ class _LabRun:
                 for line in report.unreported_lines(lab.name, name, staged, spawned):
                     out(line)
 
-            results.append(run_scenario(path, guest, prepare, unreported))
+            result = run_scenario(path, guest, prepare, unreported)
+            self.progress.say("scenario %s %s" % (path.stem, _ended(result)))
+            results.append(result)
         return results
+
+
+def _ended(result):
+    """How a Scenario ended, for its progress line: 'passed in 41s (1 of 6 Checks skipped)'."""
+    how = {"passed": "passed", "failed": "failed", "error": "errored"}[result["status"]]
+    line = "%s in %s" % (how, duration(result["duration_s"]))
+    checks = result["checks"]
+    failed = sum(outcome(c) == FAIL for c in checks)
+    skipped = sum(outcome(c) == SKIP for c in checks)
+    if result["status"] == "failed":
+        line += " (%d of %d Checks failed)" % (failed, len(checks))
+    elif result["status"] == "passed" and skipped:
+        line += " (%d of %d Checks skipped)" % (skipped, len(checks))
+    return line
 
 
 def _shots_dirs(names):

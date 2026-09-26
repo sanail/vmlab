@@ -501,6 +501,19 @@ class FusionCloneTest(FusionTestCase):
         self.assertIn("-snapshot=vmlab-provisioned-second", self.calls("clone")[-1])
         self.assertEqual(len(self.clones()), 1)
 
+    def test_a_run_on_a_stopped_clone_of_an_older_base_makes_it_again_without_reverting_it(self):
+        # A Suite run on a stopped Guest boots it only by its first restore of Clean state.
+        self.vmlab("up")
+        self.vmlab("down")
+        self.base_guest("second")
+        self.project.scenario("ok.py", 'def scenario(g):\n    g.check("ok", True)\n')
+
+        self.vmlab("run")  # never reachable here: the wait for Channels fails
+
+        self.assertEqual(self.calls("revertToSnapshot"), [], "the old clone is deleted, not reverted first")
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+        self.assertIn("-snapshot=vmlab-provisioned-second", self.calls("clone")[-1])
+
     def test_a_clone_open_in_fusion_says_how_to_let_it_go(self):
         self.vmlab("up")
         self.vmlab("down")
@@ -531,6 +544,17 @@ class FusionCloneTest(FusionTestCase):
 
         self.assertEqual(len(self.calls("deleteVM")), 1, "a clone without Clean state is made again")
         self.assertEqual(len(self.calls("clone")), 2)
+
+    def test_a_run_on_a_clone_without_clean_state_makes_it_again(self):
+        self.project.config(FUSION_LAB + '[labs.linux.fusion]\nsession = "x11"\n')
+        self.vmlab("up")  # leaves a clone whose session switch did not finish: no vmlab-clean
+        self.project.scenario("ok.py", 'def scenario(g):\n    g.check("ok", True)\n')
+
+        r = self.vmlab("run")
+
+        self.assertNotIn("Invalid snapshot", r.out + r.err)
+        self.assertIn("X11 session", r.out + r.err, "it got as far as switching the new clone's session")
+        self.assertEqual(len(self.calls("deleteVM")), 1, "a clone without Clean state is made again")
 
     def test_changing_the_session_recreates_the_clone(self):
         self.vmlab("up")

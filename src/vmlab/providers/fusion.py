@@ -96,11 +96,16 @@ MERGE_TIMEOUT = 3600  # s to delete a snapshot, whose changes Fusion merges into
 PROVISIONED_PREFIX = "vmlab-provisioned-"  # + the provisioning's id: the Base guest's snapshot Labs are cloned from
 # Set to 1 to let `base create` delete earlier provisioned snapshots no Lab needs without asking.
 DELETE_OLD_SNAPSHOTS = "VMLAB_DELETE_OLD_SNAPSHOTS"
-# The graphical session is up (autologin done) and has published its environment: a Run
-# can drive the desktop. Prints the session type. logind knows the type; the user manager's
-# environment may still be the previous session's until the new one imports its own.
+# The graphical session is up (autologin done), has published its environment and holds the
+# screen: a Run can drive the desktop. Prints the session type. logind knows the type; the user
+# manager's environment may still be the previous session's until the new one imports its own.
+# plymouth quits at the end of the boot, seconds after autologin, and the console it hands back
+# can take the screen from the session: GDM then puts its login screen there, while the session
+# lives on behind it. So the boot must be past that, and a session off the screen is put back.
 DESKTOP_PROBE = ["/bin/sh", "-c", """
 uid=$(id -u); XDG_RUNTIME_DIR=/run/user/$uid; export XDG_RUNTIME_DIR
+u=plymouth-quit-wait.service
+[ "$(systemctl show -p LoadState --value $u 2>/dev/null)" != loaded ] || [ "$(systemctl show -p ActiveState --value $u)" = active ] || exit 1
 s=$(loginctl show-user "$uid" -p Display --value 2>/dev/null); [ -n "$s" ] || exit 1
 t=$(loginctl show-session "$s" -p Type --value) || exit 1
 env=$(systemctl --user show-environment 2>/dev/null) || exit 1
@@ -109,7 +114,12 @@ case $t in
 wayland) systemctl --user is-active --quiet graphical-session.target ;;
 x11) DISPLAY=$(printf '%s\\n' "$env" | sed -n 's/^DISPLAY=//p') XAUTHORITY=$(printf '%s\\n' "$env" | sed -n 's/^XAUTHORITY=//p') wmctrl -m >/dev/null 2>&1 ;;
 *) false ;;
-esac && echo "$t"
+esac || exit 1
+if [ "$(loginctl show-session "$s" -p Active --value)" != yes ]; then
+  loginctl activate "$s" >/dev/null 2>&1 || sudo -n loginctl activate "$s" >/dev/null 2>&1
+  exit 1
+fi
+echo "$t"
 """]
 # Runs a command with the desktop session's environment, as the user manager holds it, over what
 # the Channel's login set (XDG_SESSION_TYPE=tty, ...). Only plain values are taken, so the eval
@@ -1018,13 +1028,8 @@ class FusionProvider(Provider):
     def start(self):
         record = self._base()
         self._close_channels()
-        clone = _clone_record(self.guest_id)
-        made_from = clone.get("made_from")
-        if self.vm.exists() and (
-            made_from != bases.provisioning(record)  # the Base guest was provisioned again: the clone lacks what changed
-            or clone.get("session", DEFAULTS["session"]) != self.session
-            or CLEAN_SNAPSHOT not in self.vm.snapshots()  # its session switch did not finish
-        ):
+        made_from = _clone_record(self.guest_id).get("made_from")
+        if self.vm.exists() and not self._clone_is_current(record):
             with self.progress.step("deleting the old clone"):
                 self.vm.delete(self.lab.boot_timeout)
         if not self.vm.exists() and self.vm.vmx.parent.exists():
@@ -1050,6 +1055,16 @@ class FusionProvider(Provider):
         self._booting = True
         with self.progress.step("booting"):
             self.vm.start(self.lab.boot_timeout)
+
+    def _clone_is_current(self, record):
+        """Whether the existing clone is one start() keeps: made from the Base guest's current
+        provisioning, for the Lab's session, with its Clean state taken."""
+        clone = _clone_record(self.guest_id)
+        return (
+            clone.get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
+            and clone.get("session", DEFAULTS["session"]) == self.session
+            and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its session switch did not finish
+        )
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {
@@ -1119,7 +1134,7 @@ class FusionProvider(Provider):
             # A Guest that was already running has passed that: probing vmrun again costs seconds.
             return all(probes) if self._booting else any(probes)
         for channel in self.channels():
-            result = self._probes(channel, DESKTOP_PROBE)
+            result = self._probes(channel, DESKTOP_PROBE)  # it also puts a session off the screen back on it
             if result:
                 self._seen_session = result.stdout.strip()
                 return True
@@ -1151,10 +1166,11 @@ class FusionProvider(Provider):
                 channel.close()
 
     def restore(self):
-        """Clean state is the clone's vmlab-clean snapshot."""
+        """Clean state is the clone's vmlab-clean snapshot. A clone start() would make again is
+        not reverted first: its new clone is Clean state already."""
         if self.is_running():
             self.stop()
-        if self.vm.exists():
+        if self.vm.exists() and self._clone_is_current(self._base()):
             self.vm.revert(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self.up()
 

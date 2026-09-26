@@ -100,6 +100,7 @@ class FakeProvider(Provider):
         shutil.rmtree(str(fs))
         (fs / "home").mkdir(parents=True)
         self._record("restore")
+        self.up()
 
     def _host_path(self, guest_path, key):
         """Guest paths map into fs: ~ to fs/home, / to fs/. Never outside fs."""

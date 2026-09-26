@@ -63,7 +63,8 @@ class RepeatTest(VmlabTestCase):
         self.assertEqual(len(run_dirs), 3)
         self.assertEqual([self.project.report(d)["status"] for d in run_dirs], ["passed"] * 3)
         self.assertEqual((self.project.root / "app" / "build-count").read_text(), "build\n")
-        self.assertEqual([e for e in self.events() if e in ("up", "down", "restore")], ["up", "restore", "restore", "restore", "down"])
+        # The first restore boots the stopped Guest, into its Clean state.
+        self.assertEqual([e for e in self.events() if e in ("up", "down", "restore")], ["restore", "up", "restore", "restore", "down"])
         for i, run_dir in enumerate(run_dirs, 1):
             self.assertIn("PASSED mac (repetition %d of 3): 1 Scenario(s)" % i, r.out)
             self.assertRegex(r.out, r"report: \S*/%s\n" % re.escape(run_dir.name))
@@ -201,7 +202,9 @@ class RepeatTest(VmlabTestCase):
             report = self.project.report(run_dir)
             for key in ("started_at", "duration_s", "run_dir"):
                 del report[key]
-            return re.sub(r"\S*/runs/\S+", "RUN_DIR", r.out), report
+            for scenario in report["scenarios"]:
+                del scenario["duration_s"]
+            return re.sub(r" in \d\S*(?= \(|$)", " in N", re.sub(r"\S*/runs/\S+", "RUN_DIR", r.out), flags=re.M), report
 
         run()  # builds the Build artifact, so neither Run below does
         without_flag = run()

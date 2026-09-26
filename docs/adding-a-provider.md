@@ -19,7 +19,7 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | `stop()` | Power it off. The base `down()` calls it only when the Guest is running. |
 | `is_reachable()` | Has it booted far enough for its Channels to work (e.g. it has an IP and SSH answers)? The base `up()` polls it until the Lab's `boot_timeout`. |
 | `channels()` | The Guest's Channels, preferred first (see below). The base `exec()` falls back through them. |
-| `restore()` | Return the running Guest to its Clean state (snapshot revert, or re-clone from the Base guest). It must be reachable again when this returns. |
+| `restore()` | Return the Guest to its Clean state (snapshot revert, or re-clone from the Base guest), whether it runs or not. It must be running and reachable when this returns; a stopped Guest boots once, into its Clean state (a Suite run that starts on a stopped Guest does not start it first). |
 | `copy_in(src, guest_dir, timeout=None)` | Copy a Host file or folder into `guest_dir` (created; `~` is the Guest user's home) within `timeout` seconds, all of it (default: the Lab's `app.install_timeout`, for Build artifacts), and raise `GuestTimeout` when it runs out. Return the absolute Guest path of the copy. `g.put` and `vmlab put` are built on it (`put_file`), with the call's timeout. `copy_in_by_tar` does it over `exec`'s stdin for POSIX Guests; `vmlab.providers.windows.copy_in` does it for Windows ones by `send_file` and `tar.exe`, since Windows Channels hold a call's stdin whole. A file already at the copy's path is replaced, a symlink too (not written through), as `tar -x` does. |
 | `screenshot(dest)` | Write a PNG of the Guest's screen to `dest`, Host-side where the hypervisor can. |
 

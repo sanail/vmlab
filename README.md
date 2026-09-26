@@ -350,7 +350,7 @@ mac: waiting for ready {"process": "MyApp"}
 mac: waiting for ready done in 2m05s
 ```
 
-Only the steps that happen print: no building for a fresh Build artifact (and no log line outside `run`), no quitting without a `quit` recipe, no cloning for an existing clone (a Tart restore of Clean state clones afresh; a Fusion clone made from an earlier provisioning is first deleted, `deleting the old clone`), no booting nor waiting for Channels for a running Guest. `run` also prints `restoring Clean state` and one `scenario NAME` line as each Scenario starts (its result is in the Lab's summary); launching before a Run and a Scenario's own steps print nothing. The lines print without a TTY and are flushed at once; under `--parallel` every line is whole and carries its Lab. `--quiet` on `run` and `deploy` prints none of them, only the results.
+Only the steps that happen print: no building for a fresh Build artifact (and no log line outside `run`), no quitting without a `quit` recipe, no cloning for an existing clone (a Tart restore of Clean state clones afresh; a Fusion clone made from an earlier provisioning is first deleted, `deleting the old clone`), no booting nor waiting for Channels for a running Guest. `run` also prints `restoring Clean state` and each Scenario as it starts (`scenario NAME`) and ends: `scenario NAME passed in 41s` (`passed in 41s (1 of 6 Checks skipped)`), `failed in 1m12s (2 of 8 Checks failed)` or `errored in 5s` (the Checks themselves are in the Lab's summary); launching before a Run and a Scenario's own steps print nothing. The lines print without a TTY and are flushed at once; under `--parallel` every line is whole and carries its Lab. `--quiet` on `run` and `deploy` prints none of them, only the results.
 
 ## Lifecycle
 
