@@ -552,6 +552,89 @@ class TrayTest(UiTestCase):
         self.assertIn("choose takes a label or a list of labels", self.project.report()["scenarios"][0]["error"])
 
 
+class TrayWaitTest(TrayTest):
+    """wait_for's tray condition: met once g.tray would find the app's Tray icon; it never opens the menu."""
+
+    def tray_calls(self):
+        log = next(self.project.home.glob("fake/*/commands.jsonl")).read_text()
+        return [e["params"] for e in map(json.loads, log.splitlines()) if e["event"] == "ui" and e["command"] == "tray"]
+
+    def test_is_met_once_the_tray_icon_appears(self):
+        self.write_tray_tree(icon=None)
+        self.later(1, self.write_tray_tree)
+        waited = self.ui("wait-for", "--tray", "MyApp", "--timeout", "10")
+        self.assertTrue(waited["met"])
+        self.assertGreaterEqual(waited["waited_s"], 0.5)
+        self.assertEqual(waited["condition"], {"tray": "MyApp"})
+        # Every poll asks for the icon only: no menu is read or chosen from.
+        calls = self.tray_calls()
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(calls, [{"app": "MyApp", "icon_only": True}] * len(calls))
+        self.assertEqual(self.choices(), [])
+
+    def test_is_unmet_within_the_timeout_when_it_never_appears(self):
+        self.write_tray_tree(icon=None)
+        started = time.time()
+        waited = json.loads(self.ui("wait-for", "--tray", "MyApp", "--timeout", "1", code=1).out)
+        self.assertLess(time.time() - started, 8)
+        self.assertEqual((waited["met"], waited["condition"]), (False, {"tray": "MyApp"}))
+        self.assertGreaterEqual(waited["waited_s"], 1)
+
+    def test_gone_is_met_once_the_icon_goes(self):
+        self.later(1, lambda: self.write_tray_tree(icon=None))
+        waited = self.ui("wait-for", "--tray", "MyApp", "--gone", "--timeout", "10")
+        self.assertTrue(waited["met"])
+        self.assertEqual(waited["condition"], {"tray": "MyApp", "gone": True})
+        self.ui("wait-for", "--tray", "MyApp", "--timeout", "1", code=1)
+
+    def test_a_guest_that_shows_no_tray_icons_is_never_met_and_says_why(self):
+        tree = json.loads(json.dumps(TREE))
+        tree["tray_detail"] = "the Desktop session has no StatusNotifierWatcher"
+        (self.project.dir / "tree.json").write_text(json.dumps(tree))
+        for gone in ([], ["--gone"]):  # it cannot tell, so the icon is neither there nor gone
+            waited = json.loads(self.ui("wait-for", "--tray", "MyApp", "--timeout", "1", *gone, code=1).out)
+            self.assertEqual(waited["detail"], "the Desktop session has no StatusNotifierWatcher")
+            self.assertIn("no StatusNotifierWatcher", waited["error"])
+        code, _, err = self.tray("--app", "MyApp")
+        self.assertEqual(code, 1)
+        self.assertIn("no StatusNotifierWatcher", err)
+
+    def test_it_is_one_condition_without_app_pattern_or_since(self):
+        r = self.ui("wait-for", "--tray", "MyApp", "--process", "MyApp", code=2)
+        self.assertIn("exactly one condition", r.err)
+        self.assertIn("--tray", r.err)
+        r = self.ui("wait-for", "--tray", "MyApp", "--text", "Run", code=2)
+        self.assertIn("exactly one condition", r.err)
+        r = self.ui("wait-for", "--tray", "MyApp", "--app", "MyApp", code=2)
+        self.assertIn("--app goes with --text or --role", r.err)
+        r = self.ui("wait-for", "--tray", "MyApp", "--pattern", "x", code=2)
+        self.assertIn("--pattern goes with --log or --exec", r.err)
+        r = self.ui("wait-for", "--tray", "MyApp", "--since", "2026-09-25T10:00:00Z", code=2)
+        self.assertIn("--since goes with --notification", r.err)
+        r = self.ui("wait-for", "--tray", "", code=2)
+        self.assertIn("--tray needs the app", r.err)
+
+    def test_scenario_api(self):
+        self.write_tray_tree(icon=None)
+        self.later(1, self.write_tray_tree)
+        self.project.scenario("tray.py", """
+            def scenario(g):
+                waited = g.wait_for(tray="MyApp", timeout=10)
+                g.check("met", waited["met"] and waited["condition"] == {"tray": "MyApp"}, detail=waited)
+                g.check("the menu reads at once", g.tray("MyApp")["items"][0]["name"] == "Open")
+                g.check("another app's is not there", not g.wait_for(tray="Other", timeout=0.5)["met"])
+                g.check("nor gone from MyApp", not g.wait_for(tray="MyApp", gone=True, timeout=0.5)["met"])
+                try:
+                    g.wait_for(tray="MyApp", app="MyApp")
+                    g.check("app does not go with tray", False)
+                except Exception as exc:
+                    g.check("app does not go with tray", "app goes with text or role" in str(exc), detail=str(exc))
+        """)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
+        self.assertEqual(self.choices(), [])
+
+
 def iso(seconds_ago=0):
     """A time seconds_ago before now, as a helper gives a Notification's time (the Fake's Guest clock is the Host's)."""
     return datetime.fromtimestamp(time.time() - seconds_ago, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")

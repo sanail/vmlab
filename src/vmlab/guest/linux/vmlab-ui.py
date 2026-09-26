@@ -280,8 +280,8 @@ class Tray:
         if icon is None:
             pids = self.accessible_pids(wanted)
             icon = next((i for i in icons if i[2] in pids), None)
-        if icon is None:
-            return emit({"icon": False})
+        if icon is None or params.get("icon_only"):  # icon_only: whether it is there, nothing more
+            return emit({"icon": icon is not None})
         dest, item_path, _ = icon
         menu = self.prop(dest, item_path, "org.kde.StatusNotifierItem", "Menu")
         level = self.items(dest, menu, self.layout(dest, menu, 0))

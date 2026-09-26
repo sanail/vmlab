@@ -200,25 +200,50 @@ import re
 
 NAME = "vmlab-tray-" + uuid.uuid4().hex[:4]  # 15 characters: all of it is a Linux process's name
 HIDE = "Get-ChildItem 'HKCU:\\Control Panel\\NotifyIconSettings' | Where-Object { (Get-ItemProperty $_.PSPath).ExecutablePath -like '*\\%s.exe' } | ForEach-Object { Set-ItemProperty $_.PSPath IsPromoted 0 -Type DWord }"
+# Windows: prints the foreground window's handle and how many visible windows the process $Name has
+# (the fixture has none but an open Tray menu).
+WINDOWS = """param($Name)
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class VmlabTrayWait {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc p, IntPtr l);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public static int Visible(uint pid) {
+        int n = 0;
+        EnumWindows(delegate(IntPtr h, IntPtr l) { uint owner; GetWindowThreadProcessId(h, out owner); if (owner == pid && IsWindowVisible(h)) n++; return true; }, IntPtr.Zero);
+        return n;
+    }
+}
+'@
+$visible = 0
+foreach ($p in @(Get-Process -Name $Name -ErrorAction SilentlyContinue)) { $visible += [VmlabTrayWait]::Visible([uint32]$p.Id) }
+'{0} {1}' -f [VmlabTrayWait]::GetForegroundWindow().ToInt64(), $visible
+"""
 
 def start(g):
-    # Start the fixture; the Guest path of the file it records choices in.
+    # Start the fixture: (the Guest path of the file it records choices in, its g.spawn handle).
     if g.os == "windows":
         record = g.put("%TEMP%\\" + NAME + ".txt", "")
         script = g.put("%TEMP%\\" + NAME + ".ps1", SOURCE)
         exe = g.exec(cmd(g, "", "$p = Join-Path $env:TEMP '%s.exe'; Copy-Item -Force (Get-Command powershell.exe).Source $p; $p" % NAME)).stdout.strip()
-        g.spawn([exe, "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script, record])
-        return record
+        return record, g.spawn([exe, "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script, record])
     record = g.put("~/%s.txt" % NAME, "")
     exe = "/tmp/" + NAME
     if g.os == "macos":
         built = g.exec(["swiftc", "-o", exe, g.put("~/%s.swift" % NAME, SOURCE)], timeout=300)
         g.check("the fixture builds with the Guest's swiftc", built.ok, detail=built.stderr[-2000:])
-        g.spawn([exe, record])
-    else:
-        g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
-        g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), record])
-    return record
+        return record, g.spawn([exe, record])
+    g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
+    return record, g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), record])
+
+def windows_state(g):
+    # (the foreground window, how many visible windows the fixture has)
+    script = g.put("%TEMP%\\vmlab-tray-wait.ps1", WINDOWS)
+    out = g.exec(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, NAME]).stdout.split()
+    return int(out[0]), int(out[1])
 
 def recorded(g, record):
     # The labels the fixture recorded, without mnemonics.
@@ -235,8 +260,10 @@ def refused(g, choose):
         return str(exc)
 
 def scenario(g):
-    record = start(g)
-    listed = g.tray(NAME, timeout=60)
+    record, fixture = start(g)
+    waited = g.wait_for(tray=NAME, timeout=60)
+    g.check("wait_for(tray=) is met once the Tray icon is there", waited["met"] and waited["condition"] == {"tray": NAME}, detail=waited)
+    listed = g.tray(NAME)  # at once: the icon is there
     items = {i["name"]: i for i in listed["items"]}
     g.check("the Tray menu's items, in order, without the separator", list(items) == ["Open", "Settings", "Pinned", "Update", "Help", "Archive"], detail=listed)
     g.check("checked items", items["Pinned"]["checked"] and not items["Open"]["checked"], detail=listed)
@@ -248,6 +275,12 @@ def scenario(g):
     g.check("reading chooses nothing", listed["chosen"] is None and recorded(g, record) == [], detail=[listed, recorded(g, record)])
     if g.os == "windows":
         g.exec(cmd(g, "", HIDE % NAME))  # among the hidden icons, as a new app's icon is at first
+        before = windows_state(g)
+        hidden = g.wait_for(tray=NAME, timeout=30)
+        after = windows_state(g)
+        g.check("a hidden Tray icon is waited for", hidden["met"], detail=hidden)
+        g.check("without a change of the foreground window or an open menu", before == after and after[1] == 0, detail=[before, after])
+        g.exec(cmd(g, "", HIDE % NAME))  # hidden again: the wait promoted it
     chosen = g.tray(NAME, choose=["Settings", "Advanced"])
     g.check("a submenu's item is chosen", chosen["chosen"] == ["Settings", "Advanced"], detail=chosen)
     seen = g.wait_for(log=record, pattern="Advanced", timeout=20)
@@ -264,6 +297,9 @@ def scenario(g):
     disabled = refused(g, "Update")
     g.check("a disabled item fails", disabled and "disabled" in disabled, detail=disabled)
     g.check("nothing else was chosen", recorded(g, record) == ["Advanced", "Website"], detail=recorded(g, record))
+    fixture.stop()
+    gone = g.wait_for(tray=NAME, gone=True, timeout=30)
+    g.check("wait_for(tray=, gone=True) is met once the app quits", gone["met"], detail=gone)
 '''
 
 

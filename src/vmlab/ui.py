@@ -271,7 +271,12 @@ class NotClickable(GuestError):
 
 
 class NoAnswer(GuestError):
-    """A condition's command came back without the Guest's answer: a Channel failed without saying so."""
+    """A condition's command came back without the Guest's answer: a Channel failed without saying
+    so, or the Guest cannot tell (extra: the result fields that say why)."""
+
+    def __init__(self, message, fix=None, extra=None):
+        super().__init__(message, fix)
+        self.extra = extra or {}
 
 
 class TrayError(GuestError):
@@ -458,6 +463,25 @@ class NotificationCondition:
         return bool(posted), {"notifications": posted}
 
 
+class TrayCondition:
+    """app's Tray icon is there, as g.tray finds it (UI.tray_icon): the Tray menu is never opened,
+    read or chosen from. On Windows, finding it moves a hidden icon onto the taskbar, without input."""
+
+    unanswered = {}
+
+    def __init__(self, app):
+        self.app = app
+
+    def describe(self):
+        return {"tray": self.app}
+
+    def poll(self, ui, timeout):
+        result = ui.tray_icon(self.app, timeout)
+        if not result["icon"] and "detail" in result:  # a Guest that shows no Tray icons at all: neither there nor gone
+            raise NoAnswer("wait-for %s: %s" % (self.describe(), result["detail"]), extra={"detail": result["detail"]})
+        return result["icon"], {}
+
+
 class Gone:
     """Another condition, inverted: it holds while the other does not."""
 
@@ -487,20 +511,24 @@ def flag(key):
     return "--" + key
 
 
-def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, notification=None, since=None, named=flag):
+def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, notification=None, since=None, tray=None,
+              named=flag):  # fmt: skip
     """The one wait_for condition these arguments describe; ConditionError unless there is exactly one.
 
     gone=True inverts it. exec is an argv. notification is a pattern; since (a Guest time in ISO
-    8601, or a HostTime) goes with it, and None counts every Notification. named(key) spells an
-    argument in errors (default: its flag)."""
+    8601, or a HostTime) goes with it, and None counts every Notification. tray is an app, as
+    g.tray takes it. named(key) spells an argument in errors (default: its flag)."""
     element = text is not None or role is not None
-    if sum([element, process is not None, file is not None, log is not None, exec is not None, notification is not None]) != 1:
+    given = [element, process is not None, file is not None, log is not None, exec is not None, notification is not None, tray is not None]
+    if sum(given) != 1:
         raise ConditionError(
             None,
-            "wait-for needs exactly one condition: an element (%s/%s), %s, %s, %s with %s, %s, or %s"
-            % tuple(map(named, ("text", "role", "process", "file", "log", "pattern", "exec", "notification"))),
+            "wait-for needs exactly one condition: an element (%s/%s), %s, %s, %s with %s, %s, %s, or %s"
+            % tuple(map(named, ("text", "role", "process", "file", "log", "pattern", "exec", "notification", "tray"))),
             named,
         )
+    if tray is not None and not tray:
+        raise ConditionError("tray", "needs the app whose Tray icon to wait for", named)
     if app is not None and not element and notification is None:
         raise ConditionError("app", "goes with %s or %s (an element in one app) or %s (one app's)" % (named("text"), named("role"), named("notification")), named)
     if notification is not None:
@@ -538,6 +566,8 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
         found = LogCondition(log, pattern)
     elif notification is not None:
         found = NotificationCondition(notification, app, since)
+    elif tray is not None:
+        found = TrayCondition(tray)
     else:
         found = ExecCondition(list(exec), pattern)
     return Gone(found) if gone else found
@@ -741,6 +771,12 @@ class UI:
             raise TrayError(message, "labels match exactly, one per menu level; look at `vmlab ui tray --app %s`" % app, items)
         return {"items": items, "chosen": path or None}
 
+    def tray_icon(self, app, timeout):
+        """Is app's Tray icon there? {"icon": bool}, plus "detail" when the helper says why not.
+        The helper looks for the icon only: no menu is opened or read."""
+        result = self.provider.ui_call("tray", {"app": app, "icon_only": True}, timeout)
+        return dict({"icon": bool(result.get("icon"))}, **({"detail": result["detail"]} if result.get("detail") else {}))
+
     def press(self, chord):
         key, modifiers = parse_chord(chord)
         self._call("press", {"key": key, "modifiers": modifiers})
@@ -856,6 +892,7 @@ class UI:
                 if isinstance(exc, GuestTimeout) and type(exc) is not GuestTimeout:
                     raise
                 met, state["error"] = False, exc.message
+                state["extra"] = dict(state["extra"], **getattr(exc, "extra", {}))
             now = time.time()
             if met or now >= deadline:
                 return self._waited(condition, started, met, **state)

@@ -325,7 +325,7 @@ function tray(params) {
     const items = extras ? extras.menuBarItems() : [];
     if (items.length) { icon = items[0]; break; }
   }
-  if (!icon) return { icon: false };
+  if (!icon || params.icon_only) return { icon: !!icon }; // icon_only: whether it is there, nothing more
   const top = trayMenu(icon) || [];
   const items = top.map((i) => i.node);
   let level = top;

@@ -24,7 +24,7 @@ A Lab runs GNOME on Wayland (`session = "wayland"`) or Xfce on X11 (`"x11"`). Wh
 
 ## Tray menus
 
-Panels keep Tray icons and their menus out of `ui tree`: read and choose from a Tray menu with `g.tray(APP, choose=...)`, which drives it over D-Bus, the way the panel does, in both Desktop sessions. It finds StatusNotifierItem icons only (GTK's, Qt's, Electron's, libayatana's); an app with an old XEmbed tray icon has none to find. `vmlab doctor` warns when the Desktop session has no StatusNotifierWatcher, which means no panel shows Tray icons.
+Panels keep Tray icons and their menus out of `ui tree`: read and choose from a Tray menu with `g.tray(APP, choose=...)`, which drives it over D-Bus, the way the panel does, in both Desktop sessions, and wait for the icon with `g.wait_for(tray=APP)` (or `ready = { tray = "APP" }`), which asks the same StatusNotifierWatcher and reads nothing of the menu; without a watcher it is never met, and its result's `"detail"` says so. It finds StatusNotifierItem icons only (GTK's, Qt's, Electron's, libayatana's); an app with an old XEmbed tray icon has none to find. `vmlab doctor` warns when the Desktop session has no StatusNotifierWatcher, which means no panel shows Tray icons.
 
 ## Notifications
 

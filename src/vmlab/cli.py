@@ -269,6 +269,7 @@ def _ui_parser(sub):
     p.add_argument("--pattern", help="a Python regular expression, for --log or --exec")
     p.add_argument("--notification", metavar="PATTERN", help="a Notification whose title or body matches this Python regular expression is posted (--app: by that app)")
     p.add_argument("--since", metavar="TIME", help="for --notification: count those posted at or after this Guest time, ISO 8601 (default: the call's start)")
+    p.add_argument("--tray", metavar="APP", help="this app's Tray icon is there, as `ui tray` finds it (its menu is not opened)")
     p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
     # Last, as it takes everything after it: the command's own options stay its own.
     p.add_argument(
@@ -375,7 +376,7 @@ def _ui(project, args):
             since = since or ui.HostTime(time.time())
         condition = ui.condition(
             text=args.text, role=args.role, app=app, gone=args.gone, process=args.process, file=args.file,
-            log=args.log, pattern=args.pattern, exec=args.exec, notification=args.notification, since=since,
+            log=args.log, pattern=args.pattern, exec=args.exec, notification=args.notification, since=since, tray=args.tray,
         )  # fmt: skip
         result = contract.wait_for(condition, timeout=args.timeout)
     elif c == "notifications":

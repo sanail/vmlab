@@ -307,17 +307,18 @@ class Guest:
         return (self._notification_id if app is None else app), since
 
     def wait_for(self, text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None,
-                 notification=None, since=None, timeout=None):  # fmt: skip
+                 notification=None, since=None, tray=None, timeout=None):  # fmt: skip
         """Wait until one condition holds: an element appears, a process runs, a file exists, a log
         file has a line matching pattern, the command exec (an argv) exits 0 (with pattern: its
-        stdout matches), or a Notification matching the pattern notification is posted (app and
-        since as for notifications). gone=True waits for the condition to stop holding instead.
+        stdout matches), a Notification matching the pattern notification is posted (app and
+        since as for notifications), or the app tray's Tray icon is there (as g.tray finds it; its
+        menu is not opened). gone=True waits for the condition to stop holding instead.
         Returns {"met": bool, ...}; never raises for an unmet condition. timeout defaults to the Lab's step_timeout."""
         if notification is not None:
             app, since = self._notification_args(app, since)
         condition = ui.condition(
             text=text, role=role, app=app, gone=gone, process=process, file=file, log=log, pattern=pattern, exec=exec,
-            notification=notification, since=since, named=str,
+            notification=notification, since=since, tray=tray, named=str,
         )  # fmt: skip
         return self._ui_call(lambda contract: contract.wait_for(condition, timeout=timeout))
 

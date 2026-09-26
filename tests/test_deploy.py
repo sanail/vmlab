@@ -249,6 +249,31 @@ class ReadyTest(VmlabTestCase):
         self.project.scenario("a.py", PASS)
         self.assertExit(self.project.vmlab("run"), 0)
 
+    def tray_app(self, launch):
+        """A Lab whose scripted tree gains MyApp's Tray icon in its launch recipe, launch % the tree with it."""
+        tray = {"role": "desktop", "children": [{"role": "application", "name": "MyApp", "children": [
+            {"role": "trayicon", "children": [{"role": "menuitem", "name": "Quit"}]},
+        ]}]}  # fmt: skip
+        (self.project.dir / "tree.json").write_text(json.dumps({"role": "desktop", "children": []}))
+        (self.project.dir / "tray.json").write_text(json.dumps(tray))
+        app = '[labs.mac.app]\nlaunch = "%s"\n' % (launch % (self.project.dir / "tray.json", self.project.dir / "tree.json"))
+        return '[labs.mac.fake]\nui_tree = "tree.json"\n' + app
+
+    def test_a_tray_icon_is_waited_for_after_the_launch(self):
+        self.config('ready = { tray = "MyApp" }\n', app=self.tray_app("(sleep 1.5; cp '%s' '%s') >/dev/null 2>&1 &"))
+        self.project.scenario("a.py", """
+def scenario(g):
+    g.check("the Tray menu reads without a timeout", g.tray("MyApp")["items"][0]["name"] == "Quit")
+""")
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_a_tray_icon_that_never_appears_is_a_run_error(self):
+        self.config('ready = { tray = "MyApp" }\nready_timeout = 1\n', app=self.tray_app("true # %s %s"))
+        self.project.scenario("a.py", PASS)
+        error = self.run_error()
+        self.assertIn("labs.mac.app.ready", error)
+        self.assertIn('"tray": "MyApp"', error)
+
     def test_g_launch_waits_for_ready(self):
         self.config()
         self.project.scenario("a.py", "LAUNCH = False\n" + """
@@ -354,6 +379,13 @@ class ReadyConfigTest(VmlabTestCase):
         self.assertConfigError('ready = { file = "~/x", pattern = "y" }\n', "labs.mac.app.ready.pattern: goes with log or exec")
         self.assertConfigError('ready = { process = "MyApp", app = "MyApp" }\n', "labs.mac.app.ready.app: goes with text or role")
         self.assertNotIn("--", self.last_error)
+
+    def test_tray(self):
+        self.assertConfigError('ready = { tray = "" }\n', "labs.mac.app.ready.tray", "non-empty string")
+        self.assertConfigError('ready = { tray = "A", process = "B" }\n', "labs.mac.app.ready", "several conditions", "process", "tray")
+        self.assertConfigError('ready = { tray = "A", app = "A" }\n', "labs.mac.app.ready.app: goes with text or role")
+        self.assertConfigError('ready = { tray = "A", pattern = "x" }\n', "labs.mac.app.ready.pattern: goes with log or exec")
+        self.assertConfigError("ready = {}\n", "tray")  # the conditions it may hold
 
     def test_ready_timeout(self):
         self.assertConfigError('ready = { file = "~/x" }\nready_timeout = 0\n', "labs.mac.app.ready_timeout", "> 0")

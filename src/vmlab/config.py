@@ -21,7 +21,7 @@ LAB_KEYS = ("provider", "os", "arch", "memory_gb", "boot_timeout", "step_timeout
 # ...plus one options table named after each Provider
 APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
 # [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
-READY_CONDITIONS = ("text", "role", "process", "file", "log", "exec")  # text and role make one: an element
+READY_CONDITIONS = ("text", "role", "process", "file", "log", "exec", "tray")  # text and role make one: an element
 READY_KEYS = READY_CONDITIONS + ("app", "pattern", "gone")
 DEFAULT_BUILD_TIMEOUT = 1800
 DEFAULT_INSTALL_TIMEOUT = 600
@@ -258,7 +258,7 @@ def _app(path, key, table):
     return App(table)
 
 
-READY_EXAMPLE = 'e.g. ready = { process = "MyApp" }, or an element: ready = { text = "MyApp", role = "menubaritem", app = "MyApp" }'
+READY_EXAMPLE = 'e.g. ready = { process = "MyApp" }, a Tray icon: ready = { tray = "MyApp" }, or an element: ready = { text = "Welcome", app = "MyApp" }'
 
 
 def _ready(path, key, ready):
@@ -286,7 +286,7 @@ def _ready(path, key, ready):
         if k in ready and not (k == "role" and "text" in ready):
             found.append("an element (text/role)" if k in ("text", "role") else k)
     if not found:
-        raise ConfigError(path, key, "holds no condition; it needs one of: text/role (an element), process, file, log, exec", READY_EXAMPLE)
+        raise ConfigError(path, key, "holds no condition; it needs one of: text/role (an element), process, file, log, exec, tray", READY_EXAMPLE)
     if len(found) > 1:
         raise ConfigError(
             path, key, "holds several conditions (%s); it takes one" % ", ".join(found), "keep the one that says the app is ready; a Scenario waits for the rest with g.wait_for"

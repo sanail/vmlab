@@ -17,7 +17,7 @@
 //   focus       {"app": name, "window": title substring?, "timeout": seconds}
 //   stage-text  {"text": s, "app": name, "then": {"key", "modifiers"}?, "timeout": seconds}
 //   close-staged {"file": path stage-text returned, "app": name, "timeout": seconds}
-//   tray        {"app": name, "choose": [label per menu level], "timeout": seconds}
+//   tray        {"app": name, "choose": [label per menu level], "timeout": seconds, "icon_only": bool?}
 //   notifications  {}: every Notification in the Notification Center's store, and the Guest's "now"
 //
 // Traps (README: "macOS Guests with Tart"):
@@ -527,6 +527,7 @@ func tray(_ params: [String: Any]) {
         }
     }
     guard let status = icon else { return emit(["icon": false]) }
+    if params["icon_only"] as? Bool == true { return emit(["icon": true]) }  // whether it is there, nothing more
     let top = trayMenu(status) ?? []
     let items = top.map { $0.node }
     var level: [TrayItem]? = top

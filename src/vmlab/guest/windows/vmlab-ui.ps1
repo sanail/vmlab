@@ -232,6 +232,11 @@ public static class Helper {
         return p.TryGetValue(key, out v) && v != null ? Convert.ToDouble(v) : fallback;
     }
 
+    static bool Flag(Dictionary<string, object> p, string key) {
+        object v;
+        return p.TryGetValue(key, out v) && v is bool && (bool)v;
+    }
+
     static List<string> Strings(Dictionary<string, object> p, string key) {
         List<string> list = new List<string>();
         object v;
@@ -834,13 +839,15 @@ public static class Helper {
     /// Read an app's Tray menu, submenus included, and choose p["choose"] (a label per menu level)
     /// from it: the menu opens on a right click on the Tray icon, as a user opens it, and an item is
     /// chosen by its default action. Whatever is still open afterwards is closed with Escape.
+    /// p["icon_only"]: answer whether the Tray icon is there, nothing more: finding it only promotes
+    /// a hidden one to the taskbar, without input, so the foreground window stays as it was.
     static Dictionary<string, object> Tray(Dictionary<string, object> p) {
         string wanted = Str(p, "app");
         if (string.IsNullOrEmpty(wanted)) throw new Fail("tray needs an app");
         List<string> path = Strings(p, "choose");
         DateTime deadline = Deadline(p);
         object[] icon = TrayIcon(Process.GetProcessesByName(wanted));
-        if (icon == null) return Obj("icon", false);
+        if (icon == null || Flag(p, "icon_only")) return Obj("icon", icon != null);
         int pid = (int)icon[0];
         Native.RECT r = (Native.RECT)icon[1];
         Native.SetCursorPos((r.Left + r.Right) / 2, (r.Top + r.Bottom) / 2);

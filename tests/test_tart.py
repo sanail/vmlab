@@ -90,7 +90,7 @@ class TartTestCase(VmlabTestCase):
         record = {
             "provider": "tart", "os": "macos", "arch": "arm64", "vm": "vmlab-base-%s" % name,
             "image": "ghcr.io/cirruslabs/%s-base:latest" % name, "user": "admin",
-            "provisioned": 11, "provisioned_id": provisioned_id,
+            "provisioned": 12, "provisioned_id": provisioned_id,
         }  # fmt: skip
         self.project.home.mkdir(exist_ok=True)
         path = self.project.home / "bases.json"
@@ -198,17 +198,17 @@ class TartDoctorTest(TartTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+mac: Base guest macos-tahoe: provisioned \(v11\)")
+        self.assertRegex(r.out, r"ok\s+mac: Base guest macos-tahoe: provisioned \(v12\)")
         self.assertRegex(r.out, r"info\s+mac: Clone: none yet")
 
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
         self.project.config(TART_LAB)
-        self.ready_base(provisioned=10)
+        self.ready_base(provisioned=11)
 
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"warn\s+mac: Base guest macos-tahoe: provisioned by an older vmlab \(v10; this one provisions v11\)")
+        self.assertRegex(r.out, r"warn\s+mac: Base guest macos-tahoe: provisioned by an older vmlab \(v11; this one provisions v12\)")
         self.assertIn("vmlab base create macos-tahoe", r.out)
 
     def test_a_base_guest_whose_provisioning_did_not_finish_fails(self):

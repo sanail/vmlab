@@ -9,7 +9,8 @@ editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fa
     ui_tree = "path/to/tree.json"   # scripted UI tree, relative to the config file; an
                                     # application node's "trayicon" node is its Tray icon,
                                     # whose "menuitem" children (with "enabled", "checked" and
-                                    # their own children) are its Tray menu
+                                    # their own children) are its Tray menu; the root's
+                                    # "tray_detail" (a reason) shows no Tray icons at all
     notifications = "notifications.json"  # Notifications the Guest's OS recorded, relative to the
                                     # config file: a list of {"app", "title", "body", "time"}, time
                                     # in ISO 8601 (the Fake's Guest clock is the Host's); read on
@@ -232,10 +233,13 @@ class FakeProvider(Provider):
                 self._save_ui_state(state)
             return {"text": state.get("clipboard")}
         if command == "tray":
-            apps = [a for a in self._scripted_tree().get("children", []) if a.get("name", "").lower() == params["app"].lower()]
+            tree = self._scripted_tree()
+            if tree.get("tray_detail"):
+                return {"icon": False, "detail": tree["tray_detail"]}
+            apps = [a for a in tree.get("children", []) if a.get("name", "").lower() == params["app"].lower()]
             icon = next(filter(None, (_tray_icon(a) for a in apps)), None)
-            if icon is None:
-                return {"icon": False}
+            if icon is None or params.get("icon_only"):
+                return {"icon": icon is not None}
             items, level, chosen = _tray_items(icon), icon, []
             for label in params["choose"]:
                 if level is not icon and "children" not in level:  # a menuitem with children, even none, has a submenu
