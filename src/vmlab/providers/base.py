@@ -14,6 +14,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from vmlab.progress import QUIET
+
 
 BOOT_POLL_SECONDS = 0.2
 # How bad a doctor finding is (vmlab.doctor). Only FAIL makes doctor fail.
@@ -90,6 +92,7 @@ class Provider:
         self.project = project
         self.lab = lab
         self.on_exec = None  # called with every ExecResult, so reports can note Channels and fallbacks
+        self.progress = QUIET  # the Lab's step lines (vmlab.progress), which `deploy` and `run` print
         self._ui_helper = None
         self._guest_os = None
 
@@ -141,7 +144,8 @@ class Provider:
         raise NotImplementedError
 
     def start(self):
-        """Power the Guest on; return without waiting for it to boot."""
+        """Power the Guest on; return without waiting for it to boot. Making the Guest first (a clone
+        of its Base guest) is the step self.progress.step("cloning"), powering it on the step "booting"."""
         raise NotImplementedError
 
     def stop(self):
@@ -268,14 +272,19 @@ class Provider:
         if not self.is_running():
             self.start()
         deadline = time.time() + self.lab.boot_timeout
-        while not self.is_reachable():
-            if time.time() >= deadline:
-                raise GuestError(
-                    "Guest %s was not reachable within %ss of starting" % (self.lab.name, self.lab.boot_timeout),
-                    "raise labs.%s.boot_timeout if it is just slow; otherwise check `vmlab doctor %s`"
-                    % (self.lab.name, self.lab.name),
-                )
-            time.sleep(BOOT_POLL_SECONDS)
+        if self.is_reachable():
+            return
+        with self.progress.step("waiting for Channels"):
+            while True:
+                if time.time() >= deadline:
+                    raise GuestError(
+                        "Guest %s was not reachable within %ss of starting" % (self.lab.name, self.lab.boot_timeout),
+                        "raise labs.%s.boot_timeout if it is just slow; otherwise check `vmlab doctor %s`"
+                        % (self.lab.name, self.lab.name),
+                    )
+                time.sleep(BOOT_POLL_SECONDS)
+                if self.is_reachable():
+                    return
 
     def down(self):
         """Stop the Guest if it is running. Idempotent."""

@@ -80,9 +80,10 @@ class FakeProvider(Provider):
         return self._running_marker.exists()
 
     def start(self):
-        booted_at = time.time() + self.lab.options.get("boot_seconds", 0)
-        self._running_marker.write_text(repr(booted_at))
-        self._record("up")
+        with self.progress.step("booting"):
+            booted_at = time.time() + self.lab.options.get("boot_seconds", 0)
+            self._running_marker.write_text(repr(booted_at))
+            self._record("up")
 
     def stop(self):
         self._running_marker.unlink()

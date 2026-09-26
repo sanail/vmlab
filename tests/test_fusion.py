@@ -476,6 +476,13 @@ class FusionCloneTest(FusionTestCase):
         self.assertTrue(vm["running"])
         self.assertTrue(path.startswith(str(self.project.home.resolve())), "clones live in vmlab's home, not the project")
 
+    def test_deploy_prints_the_clone_the_boot_and_the_wait_for_channels(self):
+        r = self.vmlab("deploy")  # never reachable here: the wait for Channels fails
+
+        self.assertExit(r, 1)
+        lines = [line.split(" done in ")[0] for line in r.out.splitlines() if line.startswith("linux: ")]
+        self.assertEqual(lines, ["linux: cloning", "linux: cloning", "linux: booting", "linux: booting", "linux: waiting for Channels"])
+
     def test_the_clone_is_reused_while_the_base_guest_is_unchanged(self):
         self.vmlab("up")
         self.vmlab("down")

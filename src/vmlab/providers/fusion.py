@@ -1025,27 +1025,31 @@ class FusionProvider(Provider):
             or clone.get("session", DEFAULTS["session"]) != self.session
             or CLEAN_SNAPSHOT not in self.vm.snapshots()  # its session switch did not finish
         ):
-            self.vm.delete(self.lab.boot_timeout)
+            with self.progress.step("deleting the old clone"):
+                self.vm.delete(self.lab.boot_timeout)
         if not self.vm.exists() and self.vm.vmx.parent.exists():
-            self.vm.delete(self.lab.boot_timeout)  # a copy or clone that did not finish: start over
+            with self.progress.step("deleting the old clone"):
+                self.vm.delete(self.lab.boot_timeout)  # a copy or clone that did not finish: start over
         if not self.vm.exists():
             base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
             if base_vm.is_running():
                 raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, stop_hint(self.base_name))
-            if self.windows:
-                base_vm.clone_copy(self.vm)
-                self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
-            else:
-                base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
-            made_from = bases.provisioning(record)
-            self._write_clone_record(made_from)
-            if self.session not in (None, DEFAULTS["session"]):
-                self._switch_session()
-            self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
+            with self.progress.step("cloning"):
+                if self.windows:
+                    base_vm.clone_copy(self.vm)
+                    self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
+                else:
+                    base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
+                made_from = bases.provisioning(record)
+                self._write_clone_record(made_from)
+                if self.session not in (None, DEFAULTS["session"]):
+                    self._switch_session()
+                self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
         self._configure()
         self._booting = True
-        self.vm.start(self.lab.boot_timeout)
+        with self.progress.step("booting"):
+            self.vm.start(self.lab.boot_timeout)
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {

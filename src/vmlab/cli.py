@@ -19,6 +19,7 @@ from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
+QUIET_HELP = "print no step lines (each step as it starts, and its time), only the results"
 
 
 def main(argv=None):
@@ -53,9 +54,11 @@ def main(argv=None):
     p.add_argument("--keep", action="store_true", help="leave Guests vmlab started running")
     p.add_argument("--fresh", action="store_true", help="restore Clean state before every Scenario")
     p.add_argument("--parallel", action="store_true", help="run Labs concurrently as free Host memory allows")
+    p.add_argument("--quiet", action="store_true", help=QUIET_HELP)
 
     p = sub.add_parser("deploy", help="build if stale, install and launch the app; Guests stay running (default: all Labs)")
     p.add_argument("labs", nargs="*", metavar="LAB")
+    p.add_argument("--quiet", action="store_true", help=QUIET_HELP)
 
     for name, help_text in (("up", "start Guests"), ("down", "stop Guests")):
         p = sub.add_parser(name, help=help_text + " (default: all Labs)")
@@ -116,7 +119,7 @@ def main(argv=None):
         if args.command == "run":
             return _run(project, args)
         if args.command == "deploy":
-            runner.deploy(project, args.labs, out=print, stop_command=_prog() + " down")
+            runner.deploy(project, args.labs, out=_flushed, stop_command=_prog() + " down", steps_out=_steps(args))
             return EXIT_OK
         if args.command in ("up", "down"):
             return _up_down(project, args.command, args.labs)
@@ -151,10 +154,22 @@ def _exec_dashes(argv):
 
 def _run(project, args):
     reports = runner.run(
-        project, args.labs, args.scenarios, out=print, keep=args.keep, fresh=args.fresh, parallel=args.parallel, stop_command=_prog() + " down"
-    )
+        project, args.labs, args.scenarios, out=_flushed, keep=args.keep, fresh=args.fresh, parallel=args.parallel,
+        stop_command=_prog() + " down", steps_out=_steps(args),
+    )  # fmt: skip
     # a skipped Lab (arch not covered on this Host) warned and wrote its reports; it fails nothing
     return EXIT_OK if all(r["status"] in ("passed", "skipped") for r in reports) else EXIT_FAILED
+
+
+def _flushed(line):
+    """print, flushed at once: `run` and `deploy` take minutes, and their reader (often an agent,
+    with no TTY) must see each line as it happens."""
+    print(line, flush=True)
+
+
+def _steps(args):
+    """Where `run` and `deploy` print their step lines: stdout, or nowhere with --quiet."""
+    return None if args.quiet else _flushed
 
 
 def _base(args):

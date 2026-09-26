@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from vmlab import hostproc, ui
+from vmlab.progress import QUIET
 from vmlab.providers.base import GuestError, GuestTimeout
 
 GUEST_ARTIFACTS = "~/vmlab/artifacts"
@@ -32,7 +33,7 @@ class DeployError(GuestError):
     """The Build artifact could not be built, found, installed or launched."""
 
 
-def build_if_stale(project, lab, log_path=None):
+def build_if_stale(project, lab, log_path=None, progress=QUIET):
     """Return {"artifact": Host path, "built": bool}, or None when the Lab has no artifact."""
     app = lab.app
     if not app.artifact:
@@ -47,6 +48,19 @@ def build_if_stale(project, lab, log_path=None):
             "build it, or set %s.build to a command that does" % key,
         )
 
+    with progress.step("building", log_path and "(log: %s)" % log_path):
+        _build(project, lab, log_path)
+    artifact = _resolve(project.root, app.artifact)
+    if not artifact:
+        raise DeployError(
+            "Build artifact %s not found after the build hook ran" % app.artifact,
+            "make %s.build produce it, or correct %s.artifact" % (key, key),
+        )
+    return {"artifact": str(artifact), "built": True}
+
+
+def _build(project, lab, log_path):
+    app, key = lab.app, "labs.%s.app" % lab.name
     env = dict(os.environ, VMLAB_LAB=lab.name, VMLAB_OS=lab.os, VMLAB_ARCH=lab.arch)
     try:
         code, out, err = hostproc.run(["/bin/sh", "-c", app.build], app.build_timeout, cwd=str(project.root), env=env)
@@ -62,32 +76,28 @@ def build_if_stale(project, lab, log_path=None):
             "build hook %s.build exited %s:\n%s" % (key, code, _tail(out + err)),
             "fix the build, or run it by hand in %s: %s" % (project.root, app.build),
         )
-    artifact = _resolve(project.root, app.artifact)
-    if not artifact:
-        raise DeployError(
-            "Build artifact %s not found after the build hook ran" % app.artifact,
-            "make %s.build produce it, or correct %s.artifact" % (key, key),
-        )
-    return {"artifact": str(artifact), "built": True}
 
 
-def install(provider, lab, host_artifact):
+def install(provider, lab, host_artifact, progress=QUIET):
     """Deliver the artifact into the Guest and run the install recipe. Returns its Guest path."""
-    provider.remove_paths([GUEST_ARTIFACTS], timeout=lab.step_timeout)
-    unique = "%s-%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid())
-    guest_artifact = provider.copy_in(Path(host_artifact), "%s/%s" % (GUEST_ARTIFACTS, unique))
+    with progress.step("delivering"):
+        provider.remove_paths([GUEST_ARTIFACTS], timeout=lab.step_timeout)
+        unique = "%s-%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid())
+        guest_artifact = provider.copy_in(Path(host_artifact), "%s/%s" % (GUEST_ARTIFACTS, unique))
     if lab.app.install:
-        _recipe(provider, lab, "install", guest_artifact, lab.app.install_timeout)
+        with progress.step("installing"):
+            _recipe(provider, lab, "install", guest_artifact, lab.app.install_timeout)
     return guest_artifact
 
 
-def prepare_run(provider, lab, guest_artifact, launch_app=True):
+def prepare_run(provider, lab, guest_artifact, launch_app=True, progress=QUIET):
     """Before a Run: quit the app, reset its state once it has gone, and launch it."""
     if lab.app.quit:
-        quit(provider, lab, guest_artifact, check=False)
+        with progress.step("quitting"):
+            quit(provider, lab, guest_artifact, check=False)
     provider.remove_paths(lab.app.state, timeout=lab.step_timeout)
     if launch_app:
-        launch(provider, lab, guest_artifact)
+        launch(provider, lab, guest_artifact, progress=progress)
 
 
 def quit(provider, lab, guest_artifact, env=None, call_timeout=None, check=True):
@@ -105,16 +115,18 @@ def quit(provider, lab, guest_artifact, env=None, call_timeout=None, check=True)
         _wait_gone(provider, lab, call_timeout)
 
 
-def launch(provider, lab, guest_artifact, env=None, call_timeout=None):
+def launch(provider, lab, guest_artifact, env=None, call_timeout=None, progress=QUIET):
     """Run the launch recipe, then wait until the app is ready.
 
     call_timeout(doing) bounds each Guest call of the wait (see vmlab.ui.UI); default: step_timeout.
     """
     if not lab.app.launch:
         raise DeployError("Lab %s has no launch recipe" % lab.name, "set labs.%s.app.launch" % lab.name)
-    _recipe(provider, lab, "launch", guest_artifact, lab.step_timeout, extra_env=env)
+    with progress.step("launching"):
+        _recipe(provider, lab, "launch", guest_artifact, lab.step_timeout, extra_env=env)
     if lab.app.ready is not None:
-        _wait_ready(provider, lab, call_timeout or (lambda doing: lab.step_timeout))
+        with progress.step("waiting for ready", json.dumps(lab.app.ready.describe())):
+            _wait_ready(provider, lab, call_timeout or (lambda doing: lab.step_timeout))
 
 
 def _wait_ready(provider, lab, call_timeout):

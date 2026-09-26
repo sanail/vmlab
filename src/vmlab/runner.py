@@ -27,6 +27,7 @@ from vmlab.config import ConfigError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run, quit
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
+from vmlab.progress import Progress
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 from vmlab.scenario import STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, run_scenario
@@ -66,20 +67,30 @@ def discover(project, names):
     return chosen, ad_hoc
 
 
-def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parallel=False, stop_command="vmlab down"):
-    """Run the chosen Scenarios on the chosen Labs. Returns the list of reports."""
+def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parallel=False, stop_command="vmlab down", steps_out=None):
+    """Run the chosen Scenarios on the chosen Labs. Returns the list of reports.
+
+    steps_out, a print-like callable, gets each Lab's step lines (vmlab.progress); None: none."""
     labs = project.select_labs(lab_names)
     scenarios, ad_hoc = discover(project, scenario_names)
-    # Builds run first, one Lab at a time: Labs sharing an artifact build it once.
-    runs = [_LabRun(project, lab) for lab in labs]
-    for lab_run in runs:
-        lab_run.build()
-
     lock = threading.Lock()
 
-    def locked_out(line):
-        with lock:
-            out(line)
+    def locked(write):
+        """write, one line at a time across Labs; None stays None."""
+        if write is None:
+            return None
+
+        def locked_write(line):
+            with lock:
+                write(line)
+
+        return locked_write
+
+    locked_out = locked(out)
+    # Builds run first, one Lab at a time: Labs sharing an artifact build it once.
+    runs = [_LabRun(project, lab, Progress(locked(steps_out), lab.name)) for lab in labs]
+    for lab_run in runs:
+        lab_run.build()
 
     interrupt = threading.Event()
 
@@ -172,10 +183,11 @@ def _say_what_was_left(runs, out, stop_command):
     kept_running(left, out, stop_command)
 
 
-def deploy(project, lab_names, out, stop_command="vmlab down"):
+def deploy(project, lab_names, out, stop_command="vmlab down", steps_out=None):
     """Build if stale, start, install, reset and launch the app on each Lab; leave the Guests running.
 
-    It stops at the first Lab that fails, still naming the Guests it left running."""
+    It stops at the first Lab that fails, still naming the Guests it left running. steps_out, a
+    print-like callable, gets each Lab's step lines (vmlab.progress); None: none."""
     started_guests = StartedGuests()
     kept = []  # (Lab name, its provider) whose Guest vmlab started
     try:
@@ -184,8 +196,10 @@ def deploy(project, lab_names, out, stop_command="vmlab down"):
             if warning:
                 out("warning: %s: %s (skipped)" % (lab.name, warning))
                 continue
+            steps = Progress(steps_out, lab.name)
             provider = provider_for(project, lab)
-            built = build_if_stale(project, lab)
+            provider.progress = steps
+            built = build_if_stale(project, lab, progress=steps)
             lock = guest_lock(provider)
             try:
                 if not provider.is_running():
@@ -193,8 +207,8 @@ def deploy(project, lab_names, out, stop_command="vmlab down"):
                 if guest_key(provider) in started_guests:
                     kept.append((lab.name, provider))
                 provider.up()
-                guest_artifact = install(provider, lab, built["artifact"]) if built else None
-                prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch))
+                guest_artifact = install(provider, lab, built["artifact"], progress=steps) if built else None
+                prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch), progress=steps)
             finally:
                 lock.release()
             out("%s: deployed %s%s" % (lab.name, guest_artifact or "(no artifact)", " (rebuilt)" if built and built["built"] else ""))
@@ -239,9 +253,10 @@ def guest_lock(provider):
 class _LabRun:
     """One Lab's part of an invocation: its run folder, build and Scenarios."""
 
-    def __init__(self, project, lab):
+    def __init__(self, project, lab, progress):
         self.project = project
         self.lab = lab
+        self.progress = progress
         self.started = datetime.now(timezone.utc)
         self.t0 = time.time()
         self.run_dir = _new_run_dir(project, lab, self.started)
@@ -259,7 +274,7 @@ class _LabRun:
         if self.skipped:
             return
         try:
-            self.built = build_if_stale(self.project, self.lab, log_path=self.run_dir / "build.log")
+            self.built = build_if_stale(self.project, self.lab, log_path=self.run_dir / "build.log", progress=self.progress)
         except GuestError as exc:
             self.error = str(exc)
 
@@ -275,6 +290,7 @@ class _LabRun:
     def _run(self, scenarios, out, keep, ad_hoc, fresh, interrupt):
         lab = self.lab
         provider = provider_for(self.project, lab)
+        provider.progress = self.progress
         started_guests = StartedGuests()
         key = guest_key(provider)
         results = []
@@ -333,14 +349,15 @@ class _LabRun:
         state = {"clean": False, "guest_artifact": None}
 
         def restore():
-            provider.restore()
+            with self.progress.step("restoring Clean state"):
+                provider.restore()
             state["clean"] = True
-            state["guest_artifact"] = install(provider, lab, artifact) if artifact else None
+            state["guest_artifact"] = install(provider, lab, artifact, progress=self.progress) if artifact else None
 
         if not ad_hoc or fresh:
             restore()
         elif artifact:
-            state["guest_artifact"] = install(provider, lab, artifact)
+            state["guest_artifact"] = install(provider, lab, artifact, progress=self.progress)
 
         def prepare(scenario_fresh, launch_app):
             if (scenario_fresh or fresh) and not state["clean"]:
@@ -358,6 +375,7 @@ class _LabRun:
         for path, shots_dir in zip(scenarios, _shots_dirs([p.stem for p in scenarios])):
             if interrupt.is_set():
                 raise Interrupted()
+            self.progress.say("scenario %s" % path.stem)
             guest = Guest(lab, provider, self.run_dir, shots_dir, launch_app, quit_app, interrupt)
             provider.on_exec = guest.channel_use.record
 

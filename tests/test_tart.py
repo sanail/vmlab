@@ -303,6 +303,29 @@ class TartCloneTest(TartTestCase):
         self.vmlab("up")
         self.assertEqual(self.clone_calls(), ["delete", "clone"])
 
+    def test_deploy_prints_the_clone_the_boot_and_the_wait_that_fails(self):
+        self.project.config(TART_LAB)
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])
+        self.base_record()
+
+        r = self.vmlab("deploy")  # the fake tart never boots a VM: the wait for Channels fails
+
+        self.assertExit(r, 1)
+        lines = [line for line in r.out.splitlines() if line.startswith("mac: ")]
+        self.assertEqual([line.split(" done in ")[0] for line in lines], ["mac: cloning", "mac: cloning", "mac: booting", "mac: booting", "mac: waiting for Channels"])
+        self.assertRegex(r.out, r"mac: cloning done in \d+s\n")
+
+    def test_deploy_prints_no_cloning_for_an_existing_clone(self):
+        self.project.config(TART_LAB)
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])
+        self.base_record()
+        self.vmlab("up")
+
+        r = self.vmlab("deploy")
+
+        self.assertNotIn("cloning", r.out)
+        self.assertIn("mac: booting\n", r.out)
+
 
 class CleanTest(TartTestCase):
     """`vmlab clean`: leftovers of Labs that are gone, deleted only when confirmed."""

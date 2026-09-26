@@ -360,14 +360,16 @@ class TartProvider(Provider):
                 raise GuestError(
                     "Base guest %s is running; it must be stopped to be cloned" % self.base_name, "tart stop %s" % base_vm
                 )
-            tart_ok(["clone", base_vm, self.guest_id], self.lab.boot_timeout)
-            tart_ok(["set", self.guest_id, "--random-mac"], CALL_TIMEOUT)  # clones of one Base guest run side by side
+            with self.progress.step("cloning"):
+                tart_ok(["clone", base_vm, self.guest_id], self.lab.boot_timeout)
+                tart_ok(["set", self.guest_id, "--random-mac"], CALL_TIMEOUT)  # clones of one Base guest run side by side
             made_from = bases.provisioning(record)
         # Written at every start, so clones made by an older vmlab get a record too.
         _write_clone_record(self.guest_id, {"project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from})
         memory_mb = int(self.lab.memory_gb * 1024)
         tart_ok(["set", self.guest_id, "--cpu", self.options["cpu"], "--memory", memory_mb, "--display", self.options["display"]], CALL_TIMEOUT)
-        self.vm.start()
+        with self.progress.step("booting"):
+            self.vm.start()
 
     def stop(self):
         self._close_channels()

@@ -15,7 +15,7 @@ Subclass `vmlab.providers.base.Provider` in `src/vmlab/providers/<name>.py`. Sta
 | `HYPERVISOR` (class attribute) and `hypervisor()` (classmethod) | The hypervisor's name, and `(found, detail, fix)`: is it installed and usable on this Host? Needs no Lab: `doctor`'s Host section lists every registered Provider's. |
 | `detect()` | `(ok, detail, fix)` for this Lab's hypervisor, usually `hypervisor()`. `doctor` shows it first. Only the hypervisor: Base guests belong in `diagnose()`. |
 | `is_running()` | Is this Lab's Guest powered on? Must be cheap; the Runner calls it often. |
-| `start()` | Power the Guest on and return **without** waiting for boot. |
+| `start()` | Power the Guest on and return **without** waiting for boot. `deploy` and `run` print its steps (`vmlab.progress`): wrap making the Guest's clone, when it makes one, in `self.progress.step("cloning")`, and powering it on in `self.progress.step("booting")`. |
 | `stop()` | Power it off. The base `down()` calls it only when the Guest is running. |
 | `is_reachable()` | Has it booted far enough for its Channels to work (e.g. it has an IP and SSH answers)? The base `up()` polls it until the Lab's `boot_timeout`. |
 | `channels()` | The Guest's Channels, preferred first (see below). The base `exec()` falls back through them. |
@@ -27,7 +27,7 @@ What depends on the Guest OS (its shell, its paths, how it reads and removes fil
 
 These are built on the methods above; override them only when the Guest needs something else:
 
-- `up()`, `down()` and `exec()` (Channel fallback).
+- `up()`, `down()` and `exec()` (Channel fallback). `up()` prints its wait for the Channels as the step `waiting for Channels`, through `self.progress`, which the runner sets as it sets `on_exec`.
 - `shell_argv(command)`: `sh -c`, or PowerShell on Windows.
 - `remove_paths(paths, timeout)`: app state reset.
 - `spawner()`: how `g.spawn` starts, checks and stops background processes (`vmlab.providers.spawning`): `PosixSpawner` (process groups, logs in `/tmp`), or `WindowsSpawner` (Job Objects, logs in `%TEMP%`) for Windows Labs. Both ride on `exec`; the Fake Provider's `guestos.FakeGuestOS` puts logs where `read_file` looks.

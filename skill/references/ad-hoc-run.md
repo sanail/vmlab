@@ -12,7 +12,7 @@ Then `vmlab doctor LAB` for each. Done when every chosen Lab has no FAIL; a FAIL
 
 ## 2. Deploy
 
-`vmlab deploy LAB` builds the Build artifact when it is stale, installs it, launches the app and waits for the Lab's `app.ready` condition (if it has one), and leaves the Guest running. Its output names what it built and where. A build or install failure is the answer to report if it is the user's code; a wrong recipe in `[labs.LAB.app]` is setup.
+`vmlab deploy LAB` builds the Build artifact when it is stale, installs it, launches the app and waits for the Lab's `app.ready` condition (if it has one), and leaves the Guest running. It takes minutes and prints each step as it starts (`LAB: booting`) and its time when it ends (`LAB: booting done in 41s`): the last step with no `done` line is the one still running, or the one that failed. Its last lines name what it deployed and where. A build or install failure is the answer to report if it is the user's code; a wrong recipe in `[labs.LAB.app]` is setup.
 
 The user asked for a completely fresh Guest: note it for step 4 (`--fresh`). Exploration can run on the current Guest.
 

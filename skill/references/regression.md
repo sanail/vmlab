@@ -51,6 +51,6 @@ Tell the user, per Lab: the Scenario file, both measured Runs (exit codes, the C
 ## Running the suite
 
 - `.vmlab/run` runs every saved Scenario on every Lab, from anywhere in the project; `.vmlab/run NAME ... --lab LAB` narrows it. It passes its arguments to `vmlab run`. A project made by an older vmlab gets it from `vmlab init`, which keeps everything else.
-- The suite restores Clean state once per Lab at its start, and stops the Guests vmlab started. `--keep` leaves them running for inspection; `--fresh` restores before every Scenario; `--parallel` runs Labs concurrently as free Host memory allows.
+- The suite restores Clean state once per Lab at its start, and stops the Guests vmlab started. `--keep` leaves them running for inspection; `--fresh` restores before every Scenario; `--parallel` runs Labs concurrently as free Host memory allows. It prints each Lab's steps as they start and end (`LAB: restoring Clean state`, `LAB: ... done in 41s`) and `LAB: scenario NAME` as each Scenario starts; `--quiet` leaves only the results.
 - Exit code: 0 all passed (or skipped), 1 a Check failed or a Run errored, 2 a usage or config error. Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`, `summary.md` and `screenshots/<scenario>/NN-<name>.png`, one folder per Scenario (a second Scenario of the same name in one Suite run gets `<scenario>-2`).
 - Every `vmlab run` installs the Build artifact afresh, rebuilding it first when anything in its `inputs` is newer.

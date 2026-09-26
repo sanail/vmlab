@@ -326,6 +326,31 @@ An app is launched once it is ready, not when `launch` returns: `ready` takes on
 
 `vmlab deploy [LAB...]` does the same without Scenarios and leaves the Guests running, for exploring by hand. It deploys the Labs one after another and stops at the first that fails (a build, install or recipe error, or an unmet `ready`): the Labs after it are not deployed, so fix that one and deploy again, or name the others. The Guests it started for the Labs before it (and for the failed one, if its Guest came up) stay running, and it names them with the command that stops them.
 
+**Step lines.** `deploy` and `run` take minutes, so both print each step on stdout as it starts, prefixed with its Lab, and its time when it ends: a hung step is the last one with no `done` line, and the error follows a failed one.
+
+```
+mac: building (log: .vmlab/runs/20260926T140717Z-mac/build.log)
+mac: building done in 12s
+mac: cloning
+mac: cloning done in 3s
+mac: booting
+mac: booting done in 1s
+mac: waiting for Channels
+mac: waiting for Channels done in 41s
+mac: delivering
+mac: delivering done in 2s
+mac: installing
+mac: installing done in 5s
+mac: quitting
+mac: quitting done in 1s
+mac: launching
+mac: launching done in 0s
+mac: waiting for ready {"process": "MyApp"}
+mac: waiting for ready done in 2m05s
+```
+
+Only the steps that happen print: no building for a fresh Build artifact (and no log line outside `run`), no quitting without a `quit` recipe, no cloning for an existing clone (a Tart restore of Clean state clones afresh; a Fusion clone made from an earlier provisioning is first deleted, `deleting the old clone`), no booting nor waiting for Channels for a running Guest. `run` also prints `restoring Clean state` and one `scenario NAME` line as each Scenario starts (its result is in the Lab's summary); launching before a Run and a Scenario's own steps print nothing. The lines print without a TTY and are flushed at once; under `--parallel` every line is whole and carries its Lab. `--quiet` on `run` and `deploy` prints none of them, only the results.
+
 ## Lifecycle
 
 - A **Regression suite** (`vmlab run` or `.vmlab/run`, with saved Scenario names or none for all) restores Clean state once per Lab at its start, and before each Scenario that declares `FRESH = True`.
@@ -355,9 +380,9 @@ An emulated Lab runs in a Guest of the Host's architecture and its reports say s
 vmlab init | vmlab self-update [--from PYZ]
 vmlab base create NAME [--image IMAGE] [--yes] [--reprovision] | vmlab base list
 vmlab clean [--yes] [--bases]            # delete orphaned clones, stray files, earlier provisionings' snapshots and (with --bases) unused Base guests
-vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel]
+vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel] [--quiet]
                                          # exit 0 all passed (or skipped), 1 a Check failed or a Run errored, 2 usage/config error
-vmlab deploy [LAB...]                    # build if stale, install, launch; Guests stay running
+vmlab deploy [LAB...] [--quiet]          # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
 vmlab status [--json]
 vmlab doctor [LAB...] [--json] [--bench [--calls N]]
