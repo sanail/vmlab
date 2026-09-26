@@ -1040,9 +1040,13 @@ class UI:
                 pressed_at.append(time.time())
             return None
 
-        selected = self.wait_for(deadline, select)
-        if selected is None:
-            selected = read()
+        if text:
+            selected = self.wait_for(deadline, select)
+            if selected is None:
+                selected = read()
+        else:  # an empty document: select-all as elsewhere, but no selection to wait for
+            self.press(*SELECT_ALL)
+            selected = ""
         self.refresh()
         frontmost = self.frontmost()  # what the trigger lands on, recorded before it is pressed
         pressed = None

@@ -11,6 +11,7 @@ import os
 import shutil
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -240,11 +241,11 @@ class StageTextTest(unittest.TestCase):
             getattr(self.ui(editor), command)(params)
         return helper.json.loads(out.getvalue())
 
-    def stage(self, loads, misses=False, saves=0, writes=lambda text: text + "\n"):
+    def stage(self, loads, misses=False, saves=0, writes=lambda text: text + "\n", text="second tag"):
         self.staging = os.path.realpath(tempfile.mkdtemp(prefix="vmlab-staging-"))
         self.addCleanup(shutil.rmtree, self.staging, ignore_errors=True)
         editor = Editor(load_helper(), loads, misses, saves, writes)
-        result = self.call(editor, "stage_text", {"text": "second tag", "app": "gnome-text-editor", "timeout": 1 if misses else 5})
+        result = self.call(editor, "stage_text", {"text": text, "app": "gnome-text-editor", "timeout": 1 if misses else 5})
         return result, editor
 
     def test_its_text_is_selected_when_the_document_opens_at_once(self):
@@ -255,6 +256,12 @@ class StageTextTest(unittest.TestCase):
         result, editor = self.stage(loads=5)
         self.assertEqual(result["selected"], "second tag", result)
         self.assertGreater(editor.keys.count(("a", ["ctrl"])), 1, editor.keys)
+
+    def test_an_empty_document_has_nothing_to_select_and_says_so_at_once(self):
+        started = time.time()
+        result, editor = self.stage(loads=0, text="")
+        self.assertEqual(result["selected"], "", result)
+        self.assertLess(time.time() - started, 2, "it waited for a selection an empty document cannot have")
 
     def test_the_selection_is_read_from_the_view_in_front_not_a_background_tab(self):
         result, editor = self.stage(loads=0, misses=True)
