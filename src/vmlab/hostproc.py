@@ -40,17 +40,3 @@ def run(argv, timeout, cwd=None, env=None, stdin=None):
         raise
     return proc.returncode, out, err
 
-
-def keep_awake():
-    """Keep the Host from sleeping until this process exits: a Host that sleeps pauses its
-    Guests mid-boot and mid-Run. -i holds off idle sleep, but not the sleep that ends a dark
-    wake (woken for maintenance, display off); -s holds off any sleep while on AC power.
-    Nothing on a Host without caffeinate."""
-    try:
-        subprocess.Popen(
-            [os.environ.get("VMLAB_CAFFEINATE") or "caffeinate", "-i", "-s", "-w", str(os.getpid())],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,  # Ctrl-C is vmlab's; caffeinate ends with it through -w
-        )  # fmt: skip
-    except OSError:
-        pass

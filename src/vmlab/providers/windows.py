@@ -23,11 +23,10 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
-import time
 import uuid
 from pathlib import Path
 
-from vmlab import hostproc
+from vmlab import hostpower, hostproc
 from vmlab.providers.base import ChannelError, ExecResult, GuestError, GuestTimeout, ps_path, ps_quote
 from vmlab.providers.ssh import SshChannel
 
@@ -244,10 +243,10 @@ def copy_in(provider, src, guest_dir, timeout=None):
     in memory, vmrun in a file it copies in first), and a Build artifact may be large. The copy
     and the unpacking share timeout (default: the Lab's app.install_timeout)."""
     timeout = provider.lab.app.install_timeout if timeout is None else timeout
-    deadline = time.monotonic() + timeout
+    deadline = hostpower.awake_time() + timeout
 
     def remaining():
-        left = deadline - time.monotonic()
+        left = deadline - hostpower.awake_time()
         if left <= 0:
             raise GuestTimeout("copying %s into Guest %s did not finish within %ss" % (src, provider.lab.name, timeout))
         return left

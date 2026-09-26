@@ -31,7 +31,7 @@ import tempfile
 import time
 import uuid
 
-from vmlab import bases, hostproc, uihelpers
+from vmlab import bases, hostpower, hostproc, uihelpers
 from vmlab.config import ConfigError
 from vmlab.home import vmlab_home
 from vmlab.providers.base import FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
@@ -590,7 +590,7 @@ def create_base(name, image, confirm, reprovision, out):
 
 
 def _wait(vm, channel, probe, timeout, what, forget_ip=False):
-    deadline = time.monotonic() + timeout
+    deadline = hostpower.awake_time() + timeout
     while True:
         vm.check_alive()
         if forget_ip:
@@ -600,7 +600,7 @@ def _wait(vm, channel, probe, timeout, what, forget_ip=False):
                 return
         except GuestError:
             pass
-        if time.monotonic() >= deadline:
+        if hostpower.awake_time() >= deadline:
             raise GuestError("timed out after %ss waiting for %s in %s" % (timeout, what, vm.name), "look at %s" % vm.log_path)
         time.sleep(1)
 

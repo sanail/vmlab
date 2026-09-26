@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vmlab import __version__, arch, report
+from vmlab import __version__, arch, hostpower, report
 from vmlab.config import ConfigError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run, quit
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
@@ -182,9 +182,9 @@ def _run_parallel(runs, work, out, interrupt):
     except KeyboardInterrupt:
         interrupt.set()
         out("Interrupted: ending the Suite run on every Lab, for up to %ds (Ctrl-C again exits at once)" % INTERRUPT_WAIT_S)
-        deadline = time.monotonic() + INTERRUPT_WAIT_S
+        deadline = hostpower.awake_time() + INTERRUPT_WAIT_S
         with done:  # a thread is not alive before start() nor once it has ended
-            while any(t.is_alive() for t in threads) and time.monotonic() < deadline:
+            while any(t.is_alive() for t in threads) and hostpower.awake_time() < deadline:
                 done.wait(0.2)
         raise
     if errors:

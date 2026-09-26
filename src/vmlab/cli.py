@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from vmlab import __version__, arch, bases, config, doctor, hostproc, runner, ui, vendoring
+from vmlab import __version__, arch, bases, config, doctor, hostpower, runner, ui, vendoring
 from vmlab.config import ConfigError, UsageError
 from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
@@ -98,7 +98,7 @@ def main(argv=None):
         return EXIT_OK
 
     if args.command not in ("init", "self-update"):  # every command that may start or wait on a Guest
-        hostproc.keep_awake()
+        hostpower.keep_awake()
     try:
         if args.command == "init":
             vendoring.init(os.getcwd(), out=print)

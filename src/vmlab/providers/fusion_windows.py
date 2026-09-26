@@ -29,7 +29,7 @@ import time
 import uuid
 from pathlib import Path
 
-from vmlab import bases, hostproc, uihelpers
+from vmlab import bases, hostpower, hostproc, uihelpers
 from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
@@ -326,7 +326,7 @@ def _provision(wizard, name, vm):
     windowed = not record.get("elevated")  # started in a window for the UAC click (or left in one by an earlier run)
 
     def signed_in():
-        deadline = time.monotonic() + BASE_BOOT_TIMEOUT
+        deadline = hostpower.awake_time() + BASE_BOOT_TIMEOUT
         no_tools_since = None
         while True:
             try:
@@ -343,13 +343,13 @@ def _provision(wizard, name, vm):
                     registry.put(name, record)
                     continue
                 if "tools are not running" in exc.message.lower():
-                    no_tools_since = no_tools_since or time.monotonic()
-                    if time.monotonic() - no_tools_since > NO_TOOLS_GRACE:  # Windows has long booted by now
+                    no_tools_since = no_tools_since or hostpower.awake_time()
+                    if hostpower.awake_time() - no_tools_since > NO_TOOLS_GRACE:  # Windows has long booted by now
                         return ("VMware Tools do not run in the Guest. In its Fusion window: Virtual Machine > Install VMware Tools;"
                                 " in Windows, open the DVD drive in File Explorer, run setup (Typical), and restart when it asks")
                 else:
                     no_tools_since = None
-                if time.monotonic() >= deadline:
+                if hostpower.awake_time() >= deadline:
                     return exc.message
             time.sleep(2)
 
@@ -458,9 +458,9 @@ def _start_with_window(wizard, vm):
     _open_in_fusion(vm)
 
     def running():
-        deadline = time.monotonic() + (WINDOW_START_WAIT if wizard.prompt.interactive else 0)  # nobody to wait for otherwise
+        deadline = hostpower.awake_time() + (WINDOW_START_WAIT if wizard.prompt.interactive else 0)  # nobody to wait for otherwise
         while not vm.is_running():
-            if time.monotonic() >= deadline:
+            if hostpower.awake_time() >= deadline:
                 return "%s is not running yet" % vm.name
             time.sleep(2)
         return None
@@ -480,7 +480,7 @@ def _open_in_fusion(vm):
 
 def _desktop_session(vm, channel):
     """(session id, code page, display language) of calls over channel, once it answers after a boot."""
-    deadline = time.monotonic() + BASE_BOOT_TIMEOUT
+    deadline = hostpower.awake_time() + BASE_BOOT_TIMEOUT
     while True:
         vm.forget_ip()
         try:
@@ -491,7 +491,7 @@ def _desktop_session(vm, channel):
             problem = result.stderr.strip()
         except GuestError as exc:
             problem = exc.message
-        if time.monotonic() >= deadline:
+        if hostpower.awake_time() >= deadline:
             raise GuestError("Channel %s did not reach %s within %ss after a reboot: %s" % (channel.name, vm.name, BASE_BOOT_TIMEOUT, problem),
                              "look at its screen (open -a 'VMware Fusion' '%s'); re-run `vmlab base create`" % vm.vmx)  # fmt: skip
         time.sleep(2)

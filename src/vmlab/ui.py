@@ -22,6 +22,7 @@ import re
 import time
 from datetime import datetime, timedelta, timezone
 
+from vmlab import hostpower
 from vmlab.config import UsageError, is_argv
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path, ps_quote, sh_expand_tilde
 
@@ -699,12 +700,12 @@ class UI:
         query.require("click")
         if timeout is None:
             return self._click(query, index)
-        deadline = time.monotonic() + timeout
+        deadline = hostpower.awake_time() + timeout
         while True:
             try:
                 return self._click(query, index)
             except NotClickable as exc:
-                now = time.monotonic()
+                now = hostpower.awake_time()
                 if now >= deadline:
                     raise GuestError("could not click %s within %gs: %s" % (query, timeout, exc.message), exc.fix)
                 time.sleep(min(POLL_SECONDS, deadline - now))
@@ -738,12 +739,12 @@ class UI:
         if not app:
             raise UsageError("tray needs the app whose Tray icon to use")
         path = tray_labels(choose)
-        deadline = time.monotonic() + (timeout or 0)
+        deadline = hostpower.awake_time() + (timeout or 0)
         while True:
             result = self._call_with_deadline("tray", {"app": app, "choose": path})
             if result.get("icon"):
                 break
-            now = time.monotonic()
+            now = hostpower.awake_time()
             if now >= deadline:
                 within = " within %gs" % timeout if timeout else ""
                 detail = ": %s" % result["detail"] if result.get("detail") else ""
@@ -859,7 +860,7 @@ class UI:
         so far as .unmet.
         """
         timeout = self.provider.lab.step_timeout if timeout is None else timeout
-        started = time.monotonic()
+        started = hostpower.awake_time()
         state = {"extra": dict(condition.unanswered), "error": None}
         try:
             return self._wait(condition, started, started + timeout, state)
@@ -868,7 +869,7 @@ class UI:
             raise
 
     def _waited(self, condition, started, met, extra, error):
-        result = dict({"met": bool(met), "waited_s": round(time.monotonic() - started, 3), "condition": condition.describe()}, **extra)
+        result = dict({"met": bool(met), "waited_s": round(hostpower.awake_time() - started, 3), "condition": condition.describe()}, **extra)
         if error:
             result["error"] = error  # why the last poll got no answer
         return result
@@ -880,7 +881,7 @@ class UI:
             # is never "not met" without one look, even over a Channel slower than the wait.
             poll_timeout = self.call_timeout("wait-for")
             if not first:
-                poll_timeout = min(poll_timeout, max(1, deadline - time.monotonic() + 1))
+                poll_timeout = min(poll_timeout, max(1, deadline - hostpower.awake_time() + 1))
             first = False
             try:
                 met, state["extra"] = condition.poll(self, poll_timeout)
@@ -893,7 +894,7 @@ class UI:
                     raise
                 met, state["error"] = False, exc.message
                 state["extra"] = dict(state["extra"], **getattr(exc, "extra", {}))
-            now = time.monotonic()
+            now = hostpower.awake_time()
             if met or now >= deadline:
                 return self._waited(condition, started, met, **state)
             time.sleep(min(POLL_SECONDS, deadline - now))

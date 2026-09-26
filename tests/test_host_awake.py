@@ -1,11 +1,25 @@
-"""vmlab keeps the Host awake while it works: a Host that sleeps pauses its Guests mid-boot and mid-Run."""
+"""vmlab keeps the Host awake while it works: a Host that sleeps pauses its Guests mid-boot and mid-Run.
+
+A macOS Host is driven through the zipapp; Linux and Windows Hosts load vmlab.hostpower directly,
+with platform.system() answering for them.
+"""
 
 import json
+import os
 import stat
+import sys
+import tempfile
 import textwrap
 import time
+import unittest
+from pathlib import Path
+from unittest import mock
 
 from harness import FAKE_LAB, VmlabTestCase
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from vmlab import hostpower  # noqa: E402
 
 # A stand-in for caffeinate: records its arguments, then exits.
 FAKE_CAFFEINATE = textwrap.dedent(
@@ -53,3 +67,39 @@ class HostAwakeTest(VmlabTestCase):
     def test_a_host_without_caffeinate_runs_anyway(self):
         r = self.project.vmlab("up", env={"VMLAB_CAFFEINATE": "/nonexistent/caffeinate"})
         self.assertExit(r, 0)
+
+
+class OtherHostsTest(unittest.TestCase):
+    def test_a_linux_host_is_held_by_systemd_inhibit_until_vmlab_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stub, log = Path(tmp) / "systemd-inhibit", Path(tmp) / "log.jsonl"
+            stub.write_text(FAKE_CAFFEINATE)
+            stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+            env = {"VMLAB_SYSTEMD_INHIBIT": str(stub), "FAKE_CAFFEINATE_LOG": str(log)}
+            with mock.patch("platform.system", return_value="Linux"), mock.patch.dict(os.environ, env):
+                hostpower.keep_awake()
+            deadline = time.time() + 10
+            while not log.exists() and time.time() < deadline:
+                time.sleep(0.05)
+            [argv] = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(argv[:4], ["--what=idle:sleep", "--who=vmlab", "--why=Guests are running", "--mode=block"])
+        self.assertEqual(argv[4:], ["tail", "--pid=%d" % os.getpid(), "-f", "/dev/null"])
+
+    def test_a_linux_host_without_systemd_runs_anyway(self):
+        with mock.patch("platform.system", return_value="Linux"), mock.patch.dict(os.environ, {"VMLAB_SYSTEMD_INHIBIT": "/nonexistent/systemd-inhibit"}):
+            hostpower.keep_awake()
+
+    def test_a_windows_host_is_held_by_the_execution_state_of_vmlabs_thread(self):
+        kernel32 = mock.Mock()
+        with mock.patch("platform.system", return_value="Windows"), mock.patch.object(hostpower, "_kernel32", return_value=kernel32):
+            hostpower.keep_awake()
+        kernel32.SetThreadExecutionState.assert_called_once_with(0x80000000 | 0x00000001)  # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+
+    def test_a_windows_hosts_awake_time_leaves_out_its_sleep(self):
+        def unbiased(ref):  # QueryUnbiasedInterruptTime: 100 ns units, not counting sleep
+            ref._obj.value = 12_345 * 10_000_000
+            return 1
+
+        kernel32 = mock.Mock(QueryUnbiasedInterruptTime=unbiased)
+        with mock.patch("platform.system", return_value="Windows"), mock.patch.object(hostpower, "_kernel32", return_value=kernel32):
+            self.assertEqual(hostpower.awake_time(), 12_345)

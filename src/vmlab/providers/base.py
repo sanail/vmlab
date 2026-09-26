@@ -15,6 +15,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
+from vmlab import hostpower
 from vmlab.progress import QUIET
 
 
@@ -220,9 +221,9 @@ class Provider:
         """Copy the Host file local into the Guest over the first Channel that can carry it, all
         within timeout seconds. A Channel that times out has spent them: GuestTimeout, no fallback."""
         failures = []
-        deadline = time.monotonic() + timeout
+        deadline = hostpower.awake_time() + timeout
         for channel in self.channels():
-            remaining = deadline - time.monotonic()
+            remaining = deadline - hostpower.awake_time()
             if remaining <= 0:
                 raise GuestTimeout("copying %s into Guest %s did not finish within %ss" % (local, self.lab.name, timeout))
             try:
@@ -286,14 +287,13 @@ class Provider:
         """Start the Guest if needed and wait until it is reachable. Idempotent."""
         if not self.is_running():
             self.start()
-        # boot_timeout counts the Host's awake time (mach_absolute_time on macOS): while the Host
-        # sleeps, its Guests do too, and a Guest does not boot slowly because the Host slept.
-        deadline = time.monotonic() + self.lab.boot_timeout
+        # boot_timeout counts the Host's awake time: while the Host sleeps, its Guests do too.
+        deadline = hostpower.awake_time() + self.lab.boot_timeout
         if self.is_reachable():
             return
         with self.progress.step("waiting for Channels"):
             while True:
-                if time.monotonic() >= deadline:
+                if hostpower.awake_time() >= deadline:
                     raise self._boot_timeout()
                 time.sleep(BOOT_POLL_SECONDS)
                 if self.is_reachable():

@@ -27,7 +27,7 @@ import threading
 import time
 import traceback
 
-from vmlab import arch, ui
+from vmlab import arch, hostpower, ui
 from vmlab.config import ConfigError, UsageError
 from vmlab.providers import spawning
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
@@ -93,12 +93,12 @@ class Guest:
 
     def _start_clock(self, limit):
         self._limit = limit
-        self._deadline = time.monotonic() + limit
+        self._deadline = hostpower.awake_time() + limit
 
     def _remaining(self, doing):
         if self._interrupt is not None and self._interrupt.is_set():
             raise Interrupted()
-        remaining = self._deadline - time.monotonic()
+        remaining = self._deadline - hostpower.awake_time()
         if remaining <= 0:
             raise ScenarioTimeout("Scenario exceeded its %ss timeout (before %s)" % (self._limit, doing))
         return remaining
@@ -340,7 +340,7 @@ class Guest:
         try:
             return fn(lambda what: min(self._step_timeout, self._remaining(what)))
         except GuestTimeout as exc:
-            if not isinstance(exc, ScenarioTimeout) and time.monotonic() >= self._deadline:
+            if not isinstance(exc, ScenarioTimeout) and hostpower.awake_time() >= self._deadline:
                 raise ScenarioTimeout("Scenario exceeded its %ss timeout (during %s)" % (self._limit, doing))
             raise
 
