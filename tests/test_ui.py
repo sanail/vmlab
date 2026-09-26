@@ -429,10 +429,10 @@ class TrayTest(UiTestCase):
         super().setUp()
         self.write_tray_tree()
 
-    def write_tray_tree(self, icon=True):
+    def write_tray_tree(self, icon=TRAY_ICON):
         tree = json.loads(json.dumps(TREE))
         if icon:
-            tree["children"][0]["children"].append(TRAY_ICON)
+            tree["children"][0]["children"].append(icon)
         (self.project.dir / "tree.json").write_text(json.dumps(tree))
 
     def tray(self, *args):
@@ -485,14 +485,36 @@ class TrayTest(UiTestCase):
         self.assertEqual(code, 1)
         self.assertIn('"Quit" has no submenu', err)
 
+    def test_choosing_a_submenus_parent_fails_naming_its_items(self):
+        code, result, err = self.tray("--app", "MyApp", "--choose", "Settings")
+        self.assertEqual((code, result["items"], result["chosen"]), (1, TRAY_ITEMS, None))
+        self.assertIn('MyApp\'s Tray menu item "Settings" opens a submenu; choose one of its items: Advanced, Dark mode', err)
+        self.assertIn(result["error"], err)
+        self.assertEqual(self.choices(), [])
+
+    def test_choosing_a_deeper_or_empty_submenus_parent_says_where_and_what_it_holds(self):
+        icon = json.loads(json.dumps(TRAY_ICON))
+        icon["children"][2]["children"].append({"role": "menuitem", "name": "Network", "children": [
+            {"role": "menuitem", "name": "Proxy", "children": [{"role": "menuitem", "name": "Auto"}, {"role": "menuitem", "name": "Manual"}]},
+        ]})  # fmt: skip
+        icon["children"].append({"role": "menuitem", "name": "Recent", "children": []})
+        self.write_tray_tree(icon)
+        code, _, err = self.tray("--app", "MyApp", "--choose", "Settings", "--choose", "Network", "--choose", "Proxy")
+        self.assertEqual(code, 1)
+        self.assertIn('MyApp\'s Tray menu item "Proxy" under Settings > Network opens a submenu; choose one of its items: Auto, Manual', err)
+        code, _, err = self.tray("--app", "MyApp", "--choose", "Recent")
+        self.assertEqual(code, 1)
+        self.assertIn('MyApp\'s Tray menu item "Recent" opens a submenu; choose one of its items: none', err)
+        self.assertEqual(self.choices(), [])
+
     def test_a_timeout_waits_for_the_tray_icon_to_appear(self):
-        self.write_tray_tree(icon=False)
+        self.write_tray_tree(icon=None)
         self.later(1, self.write_tray_tree)
         code, result, _ = self.tray("--app", "MyApp", "--choose", "Open", "--timeout", "10")
         self.assertEqual((code, result["chosen"]), (0, ["Open"]))
 
     def test_a_timeout_that_runs_out_says_so(self):
-        self.write_tray_tree(icon=False)
+        self.write_tray_tree(icon=None)
         started = time.time()
         code, _, err = self.tray("--app", "MyApp", "--timeout", "1")
         self.assertGreaterEqual(time.time() - started, 1)

@@ -295,6 +295,8 @@ class Tray:
             if n + 1 < len(path) and not found[2]:
                 return emit({"icon": True, "items": items, "chosen": None, "failed": {"at": chosen + [path[n + 1]], "reason": "leaf"}})
             if n + 1 == len(path):
+                if found[2]:  # clicking it would choose nothing
+                    return emit({"icon": True, "items": items, "chosen": None, "failed": {"at": chosen, "reason": "submenu"}})
                 args = self.GLib.Variant("(isvu)", (found[1], "clicked", self.GLib.Variant("i", 0), 0))
                 self.call(dest, menu, self.MENU, "Event", args)
             level = found[3]

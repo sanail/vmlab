@@ -305,6 +305,11 @@ def tray_items(items):
     return out
 
 
+def tray_names(level):
+    """A Tray menu level's item names for a message: "unknown" where they were not listed, "none" for no items."""
+    return "unknown" if level is None else ", ".join(i["name"] for i in level) or "none"
+
+
 def tray_level(items, path):
     """The items of the menu that path (labels) opens, or None where they were not listed."""
     for name in path:
@@ -697,7 +702,8 @@ class UI:
 
         {"items": [{"name", "enabled", "checked", "children"}], "chosen": labels or None}.
         With timeout (seconds), wait for the Tray icon to appear. TrayError, carrying the
-        items, when there is no Tray icon, no item of a label or a disabled one.
+        items, when there is no Tray icon, no item of a label, a disabled one, or one that
+        opens a submenu (choose one of its items instead).
         """
         if not app:
             raise UsageError("tray needs the app whose Tray icon to use")
@@ -726,9 +732,11 @@ class UI:
                 message = "%s's Tray menu item \"%s\"%s is disabled" % (app, label, under)
             elif failed["reason"] == "leaf":
                 message = "%s's Tray menu item \"%s\" has no submenu to choose \"%s\" from" % (app, at[-2], label)
+            elif failed["reason"] == "submenu":
+                names = tray_names(tray_level(items, at))
+                message = "%s's Tray menu item \"%s\"%s opens a submenu; choose one of its items: %s" % (app, label, under, names)
             else:
-                level = tray_level(items, at[:-1])
-                names = "unknown" if level is None else ", ".join(i["name"] for i in level) or "none"
+                names = tray_names(tray_level(items, at[:-1]))
                 message = "%s's Tray menu has no item \"%s\"%s; its items: %s" % (app, label, under, names)
             raise TrayError(message, "labels match exactly, one per menu level; look at `vmlab ui tray --app %s`" % app, items)
         return {"items": items, "chosen": path or None}

@@ -3,10 +3,11 @@
     python3 tray_fixture_linux.py RECORD
 
 Its Tray menu: Open, a separator, Settings (a submenu: Advanced, and Dark mode,
-checked), Pinned, checked, and Update, disabled. Choosing an item appends its label (with its
-mnemonic) to the file RECORD. python3 and its Gio bindings only: the Guest
-installs nothing. Run it under a name of its own (a link to python3) so it is
-the app by that name.
+checked), Pinned, checked, Update, disabled, Help (a submenu: About, and Links, a
+submenu: Website), and Archive, disabled (a submenu: Old). Choosing an item, a
+submenu's parent too, appends its label (with its mnemonic) to the file RECORD.
+python3 and its Gio bindings only: the Guest installs nothing. Run it under a name
+of its own (a link to python3) so it is the app by that name.
 """
 
 import os
@@ -69,7 +70,7 @@ MENU_XML = """
 
 # id: (properties, child ids)
 MENU = {
-    0: ({"children-display": GLib.Variant("s", "submenu")}, [1, 2, 3, 7, 6]),
+    0: ({"children-display": GLib.Variant("s", "submenu")}, [1, 2, 3, 7, 6, 8, 12]),
     1: ({"label": GLib.Variant("s", "_Open")}, []),
     2: ({"type": GLib.Variant("s", "separator")}, []),
     3: ({"label": GLib.Variant("s", "_Settings"), "children-display": GLib.Variant("s", "submenu")}, [4, 5]),
@@ -77,6 +78,12 @@ MENU = {
     5: ({"label": GLib.Variant("s", "_Dark mode"), "toggle-type": GLib.Variant("s", "checkmark"), "toggle-state": GLib.Variant("i", 1)}, []),
     6: ({"label": GLib.Variant("s", "_Update"), "enabled": GLib.Variant("b", False)}, []),
     7: ({"label": GLib.Variant("s", "_Pinned"), "toggle-type": GLib.Variant("s", "checkmark"), "toggle-state": GLib.Variant("i", 1)}, []),
+    8: ({"label": GLib.Variant("s", "_Help"), "children-display": GLib.Variant("s", "submenu")}, [9, 10]),
+    9: ({"label": GLib.Variant("s", "_About")}, []),
+    10: ({"label": GLib.Variant("s", "_Links"), "children-display": GLib.Variant("s", "submenu")}, [11]),
+    11: ({"label": GLib.Variant("s", "_Website")}, []),
+    12: ({"label": GLib.Variant("s", "_Archive"), "enabled": GLib.Variant("b", False), "children-display": GLib.Variant("s", "submenu")}, [13]),
+    13: ({"label": GLib.Variant("s", "_Old")}, []),
 }
 
 

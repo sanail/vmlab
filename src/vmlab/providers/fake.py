@@ -238,13 +238,15 @@ class FakeProvider(Provider):
                 return {"icon": False}
             items, level, chosen = _tray_items(icon), icon, []
             for label in params["choose"]:
-                if level is not icon and not level.get("children"):
+                if level is not icon and "children" not in level:  # a menuitem with children, even none, has a submenu
                     return {"icon": True, "items": items, "chosen": None, "failed": {"at": chosen + [label], "reason": "leaf"}}
                 shown = [n for n in level.get("children", []) if n.get("role") == "menuitem"]
                 level = next((n for n in shown if n.get("name") == label), None)
                 chosen.append(label)
                 if level is None or not level.get("enabled", True):
                     return {"icon": True, "items": items, "chosen": None, "failed": {"at": chosen, "reason": "disabled" if level else "missing"}}
+            if chosen and "children" in level:
+                return {"icon": True, "items": items, "chosen": None, "failed": {"at": chosen, "reason": "submenu"}}
             if chosen:
                 self._record("tray", app=params["app"], chosen=chosen)
             return {"icon": True, "items": items, "chosen": chosen or None, "failed": None}

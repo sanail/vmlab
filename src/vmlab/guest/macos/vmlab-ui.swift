@@ -541,6 +541,9 @@ func tray(_ params: [String: Any]) {
             return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": reason]])
         }
         if i == path.count - 1 {
+            if item.submenu != nil {  // pressing it would choose nothing
+                return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": "submenu"]])
+            }
             let pressed = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
             if pressed != .success { fail("pressing \(label) in the Tray menu failed (AXError \(pressed.rawValue))") }
         }

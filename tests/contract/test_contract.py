@@ -224,6 +224,10 @@ def recorded(g, record):
     # The labels the fixture recorded, without mnemonics.
     return [re.sub("[_&\\ufeff]", "", line).strip() for line in g.get(record).splitlines() if line.strip()]
 
+def names(level):
+    # A menu level's items as (name, its submenu's names), all the way down.
+    return None if level is None else [(i["name"], names(i["children"])) for i in level]
+
 def refused(g, choose):
     try:
         g.tray(NAME, choose=choose)
@@ -234,12 +238,13 @@ def scenario(g):
     record = start(g)
     listed = g.tray(NAME, timeout=60)
     items = {i["name"]: i for i in listed["items"]}
-    g.check("the Tray menu's items, in order, without the separator", list(items) == ["Open", "Settings", "Pinned", "Update"], detail=listed)
+    g.check("the Tray menu's items, in order, without the separator", list(items) == ["Open", "Settings", "Pinned", "Update", "Help", "Archive"], detail=listed)
     g.check("checked items", items["Pinned"]["checked"] and not items["Open"]["checked"], detail=listed)
     g.check("a disabled item", not items["Update"]["enabled"] and items["Open"]["enabled"], detail=listed)
     submenu = items["Settings"]["children"]
-    g.check("the submenu's items, or null where listing them needs a click",
-            submenu is None or [(i["name"], i["checked"]) for i in submenu] == [("Advanced", False), ("Dark mode", True)], detail=submenu)
+    g.check("the submenu's items", submenu is not None and [(i["name"], i["checked"]) for i in submenu] == [("Advanced", False), ("Dark mode", True)], detail=submenu)
+    g.check("a submenu's submenu's items", names(items["Help"]["children"]) == [("About", []), ("Links", [("Website", [])])], detail=items["Help"])
+    g.check("a disabled item's submenu's items", not items["Archive"]["enabled"] and names(items["Archive"]["children"]) == [("Old", [])], detail=items["Archive"])
     g.check("reading chooses nothing", listed["chosen"] is None and recorded(g, record) == [], detail=[listed, recorded(g, record)])
     if g.os == "windows":
         g.exec(cmd(g, "", HIDE % NAME))  # among the hidden icons, as a new app's icon is at first
@@ -247,11 +252,18 @@ def scenario(g):
     g.check("a submenu's item is chosen", chosen["chosen"] == ["Settings", "Advanced"], detail=chosen)
     seen = g.wait_for(log=record, pattern="Advanced", timeout=20)
     g.check("and the app got it", seen["met"] and recorded(g, record) == ["Advanced"], detail=recorded(g, record))
+    deeper = g.tray(NAME, choose=["Help", "Links", "Website"])
+    seen = g.wait_for(log=record, pattern="Website", timeout=20)
+    g.check("an item two submenus down is chosen", seen["met"] and deeper["chosen"] == ["Help", "Links", "Website"], detail=[deeper, recorded(g, record)])
     missing = refused(g, ["Settings", "Nope"])
     g.check("a missing label fails, naming the level's items", missing and "Advanced" in missing and "Dark mode" in missing, detail=missing)
+    parent = refused(g, "Settings")
+    g.check("choosing a submenu's parent fails, naming its items", parent and "opens a submenu" in parent and "Advanced, Dark mode" in parent, detail=parent)
+    parent = refused(g, ["Help", "Links"])
+    g.check("and one in a submenu, saying where", parent and '"Links" under Help opens a submenu' in parent and "items: Website" in parent, detail=parent)
     disabled = refused(g, "Update")
     g.check("a disabled item fails", disabled and "disabled" in disabled, detail=disabled)
-    g.check("nothing else was chosen", recorded(g, record) == ["Advanced"], detail=recorded(g, record))
+    g.check("nothing else was chosen", recorded(g, record) == ["Advanced", "Website"], detail=recorded(g, record))
 '''
 
 

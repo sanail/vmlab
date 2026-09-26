@@ -241,8 +241,8 @@ class Guest:
     def tray(self, app, choose=None, timeout=None):
         """Read app's Tray menu: {"items": [{"name", "enabled", "checked", "children"}], "chosen"}.
         choose, a label or a list of labels (one per submenu level), chooses that item. Raises when
-        the app has no Tray icon, no item has a label, or the item is disabled; with timeout
-        (seconds), first waits for the Tray icon to appear (on the Scenario's clock)."""
+        the app has no Tray icon, no item has a label, the item is disabled, or it opens a submenu;
+        with timeout (seconds), first waits for the Tray icon to appear (on the Scenario's clock)."""
         return self._ui_call(lambda contract: contract.tray(app, choose=choose, timeout=timeout))
 
     def press(self, chord):

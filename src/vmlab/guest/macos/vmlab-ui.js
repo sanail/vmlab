@@ -335,7 +335,10 @@ function tray(params) {
     chosen.push(path[n]);
     const item = level.find((i) => i.node.name === path[n]);
     if (!item || !item.node.enabled) return { icon: true, items: items, chosen: null, failed: { at: chosen, reason: item ? "disabled" : "missing" } };
-    if (n === path.length - 1) item.element.click();
+    if (n === path.length - 1) {
+      if (item.submenu) return { icon: true, items: items, chosen: null, failed: { at: chosen, reason: "submenu" } }; // clicking it would choose nothing
+      item.element.click();
+    }
     level = item.submenu;
   }
   return { icon: true, items: items, chosen: path.length ? path : null, failed: null };

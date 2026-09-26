@@ -693,7 +693,9 @@ public static class Helper {
         public IAccessible Host;
         public object Child;
         public Dictionary<string, object> Node;
-        public List<TrayItem> Submenu;  // null: none, or not listed without opening it
+        public List<TrayItem> Submenu;  // null: none, or not listed yet
+        public bool ListedWhenOpen;     // its submenu is a menu window of its own, listed only while it is open
+        public IntPtr Window;           // that window, once opened
     }
 
     /// Every window of pid, hidden and message-only ones included: a Tray icon belongs to one of them.
@@ -762,6 +764,11 @@ public static class Helper {
         return Native.AccessibleObjectFromWindow(hwnd, OBJID_CLIENT, ref iid, out found) == 0 ? found as IAccessible : null;
     }
 
+    /// The items' nodes, in the contract's shape.
+    static List<object> Nodes(List<TrayItem> items) {
+        return items.ConvertAll(delegate(TrayItem i) { return (object)i.Node; });
+    }
+
     static List<TrayItem> MenuItems(IAccessible parent) {
         List<TrayItem> items = new List<TrayItem>();
         if (parent == null) return items;
@@ -788,19 +795,45 @@ public static class Helper {
             item.Host = host;
             item.Child = child;
             List<TrayItem> sub = own != null ? MenuItems(own) : new List<TrayItem>();
-            item.Submenu = sub.Count > 0 ? sub : ((state & STATE_HASPOPUP) != 0 ? null : new List<TrayItem>());
-            bool hasSubmenu = sub.Count > 0 || (state & STATE_HASPOPUP) != 0;
+            item.ListedWhenOpen = sub.Count == 0 && (state & STATE_HASPOPUP) != 0;
+            item.Submenu = sub.Count > 0 ? sub : null;
             item.Node = Obj("name", name, "enabled", (state & STATE_UNAVAILABLE) == 0, "checked", (state & STATE_CHECKED) != 0,
-                "children", item.Submenu == null ? null : item.Submenu.ConvertAll(delegate(TrayItem i) { return (object)i.Node; }));
-            if (!hasSubmenu) item.Submenu = null;
+                "children", item.ListedWhenOpen ? null : Nodes(sub));
             items.Add(item);
         }
         return items;
     }
 
-    /// Read an app's Tray menu and choose p["choose"] (a label per menu level) from it: the menu
-    /// opens on a right click on the Tray icon, as a user opens it, and an item is chosen by its
-    /// default action. Whatever is still open afterwards is closed with Escape.
+    /// Opens item's submenu window, as pointing at the item does, unless it is open: a WinForms
+    /// submenu lists its items only while it is open. Lists them into item.Submenu.
+    static void OpenSubmenu(TrayItem item, int pid, DateTime deadline, string wanted) {
+        if (item.Window != IntPtr.Zero && Native.IsWindowVisible(item.Window)) return;
+        List<IntPtr> before = MenuWindows(pid);
+        item.Host.accDoDefaultAction(item.Child);
+        List<IntPtr> added = WaitFor<List<IntPtr>>(deadline, delegate() {
+            List<IntPtr> m = MenuWindows(pid).FindAll(delegate(IntPtr w) { return !before.Contains(w); });
+            return m.Count > 0 ? m : null;
+        });
+        if (added == null) throw new Fail(item.Node["name"] + " in " + wanted + "'s Tray menu did not open its submenu");
+        item.Window = added[0];
+        item.Submenu = MenuItems(Accessible(added[0]));
+    }
+
+    /// Lists every submenu under level, opening each one that lists its items only while it is open
+    /// (a disabled item's too: WinForms opens it all the same).
+    static void ListSubmenus(List<TrayItem> level, int pid, DateTime deadline, string wanted) {
+        foreach (TrayItem item in level) {
+            if (item.ListedWhenOpen) {
+                OpenSubmenu(item, pid, deadline, wanted);
+                item.Node["children"] = Nodes(item.Submenu);
+            }
+            if (item.Submenu != null) ListSubmenus(item.Submenu, pid, deadline, wanted);
+        }
+    }
+
+    /// Read an app's Tray menu, submenus included, and choose p["choose"] (a label per menu level)
+    /// from it: the menu opens on a right click on the Tray icon, as a user opens it, and an item is
+    /// chosen by its default action. Whatever is still open afterwards is closed with Escape.
     static Dictionary<string, object> Tray(Dictionary<string, object> p) {
         string wanted = Str(p, "app");
         if (string.IsNullOrEmpty(wanted)) throw new Fail("tray needs an app");
@@ -819,7 +852,8 @@ public static class Helper {
         if (opened == null) throw new Fail(wanted + "'s Tray menu did not open on a right click on its Tray icon");
         try {
             List<TrayItem> top = MenuItems(Accessible(opened[0]));
-            List<object> items = top.ConvertAll(delegate(TrayItem i) { return (object)i.Node; });
+            ListSubmenus(top, pid, deadline, wanted);
+            List<object> items = Nodes(top);
             List<TrayItem> level = top;
             List<string> chosen = new List<string>();
             for (int n = 0; n < path.Count; n++) {
@@ -830,19 +864,15 @@ public static class Helper {
                 TrayItem item = level.Find(delegate(TrayItem i) { return (string)i.Node["name"] == label; });
                 if (item == null || !(bool)item.Node["enabled"])
                     return Obj("icon", true, "items", items, "chosen", null, "failed", Obj("at", chosen, "reason", item == null ? "missing" : "disabled"));
-                if (n + 1 < path.Count && item.Submenu == null && item.Node["children"] == null) {
-                    // A submenu listed only once it is open: open it, and read what opened.
-                    List<IntPtr> before = MenuWindows(pid);
+                if (n + 1 == path.Count) {
+                    if (item.Submenu != null || item.ListedWhenOpen)  // its default action would only open the submenu
+                        return Obj("icon", true, "items", items, "chosen", null, "failed", Obj("at", chosen, "reason", "submenu"));
                     item.Host.accDoDefaultAction(item.Child);
-                    List<IntPtr> added = WaitFor<List<IntPtr>>(deadline, delegate() {
-                        List<IntPtr> m = MenuWindows(pid).FindAll(delegate(IntPtr w) { return !before.Contains(w); });
-                        return m.Count > 0 ? m : null;
-                    });
-                    if (added == null) throw new Fail(label + " in " + wanted + "'s Tray menu did not open its submenu");
-                    item.Submenu = MenuItems(Accessible(added[0]));
-                    item.Node["children"] = item.Submenu.ConvertAll(delegate(TrayItem i) { return (object)i.Node; });
+                } else if (item.ListedWhenOpen) {
+                    // Opened while reading, but opening a sibling's submenu may have closed it since:
+                    // open it again, and choose from what is on screen.
+                    OpenSubmenu(item, pid, deadline, wanted);
                 }
-                if (n + 1 == path.Count) item.Host.accDoDefaultAction(item.Child);
                 level = item.Submenu;
             }
             return Obj("icon", true, "items", items, "chosen", path.Count > 0 ? path : null, "failed", null);
