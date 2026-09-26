@@ -59,22 +59,21 @@ def main(argv=None):
     p.add_argument("--quiet", action="store_true", help=QUIET_HELP)
 
     p = sub.add_parser("deploy", help="build if stale, install and launch the app; Guests stay running (default: all Labs)")
-    p.add_argument("labs", nargs="*", metavar="LAB")
+    _labs_arguments(p)
     p.add_argument("--quiet", action="store_true", help=QUIET_HELP)
 
     for name, help_text in (("up", "start Guests"), ("down", "stop Guests")):
         p = sub.add_parser(name, help=help_text + " (default: all Labs)")
-        p.add_argument("labs", nargs="*", metavar="LAB")
+        _labs_arguments(p)
 
     p = sub.add_parser("doctor", help="check the Host, Providers, Base guests, Guests, Channels and UI helpers (default: all Labs)")
-    p.add_argument("labs", nargs="*", metavar="LAB")
+    _labs_arguments(p)
     p.add_argument("--json", action="store_true", help="print JSON")
     p.add_argument("--bench", action="store_true", help="also time each Channel of running Guests")
     p.add_argument("--calls", type=int, default=doctor.BENCH_CALLS, metavar="N", help="calls per Channel for --bench (default: %(default)s)")
 
-    p = sub.add_parser("exec", help="run one command in a running Guest; its output and exit code are vmlab's")
-    p.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
-    p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
+    p = sub.add_parser("exec", help="run one command in a running Guest: exec [LAB] -- COMMAND; its output and exit code are vmlab's")
+    _exec_options(p)
     p.add_argument("argv", nargs=argparse.REMAINDER, metavar="-- COMMAND ...")
 
     p = sub.add_parser("put", help="write a file into a running Guest from piped stdin (or --from); prints its absolute Guest path")
@@ -87,10 +86,13 @@ def main(argv=None):
 
     _ui_parser(sub)
 
-    p = sub.add_parser("status", help="show whether each Lab's Guest is running")
+    p = sub.add_parser("status", help="show whether each Lab's Guest is running (default: all Labs)")
+    _labs_arguments(p)
     p.add_argument("--json", action="store_true", help="print JSON")
 
     args = parser.parse_args(_exec_dashes(sys.argv[1:] if argv is None else list(argv)))
+    if getattr(args, "lab_options", None):
+        args.labs = list(dict.fromkeys(args.labs + args.lab_options))  # a Lab named twice is acted on once
     if args.command == "version":
         print("vmlab %s" % __version__)
         return EXIT_OK
@@ -126,7 +128,7 @@ def main(argv=None):
         if args.command in ("up", "down"):
             return _up_down(project, args.command, args.labs)
         if args.command == "status":
-            return _status(project, args.json)
+            return _status(project, args.labs, args.json)
         if args.command == "ui":
             return _ui(project, args)
         if args.command == "exec":
@@ -142,6 +144,12 @@ def main(argv=None):
         print("vmlab: error: %s" % exc, file=sys.stderr)
         return EXIT_FAILED
     return EXIT_OK
+
+
+def _labs_arguments(p):
+    """Labs to act on (default: all), bare or as --lab, the way every other command names its Lab."""
+    p.add_argument("labs", nargs="*", metavar="LAB")
+    p.add_argument("--lab", action="append", dest="lab_options", default=[], metavar="LAB", help="a Lab (repeatable), as bare LAB")
 
 
 def _exec_dashes(argv):
@@ -335,13 +343,31 @@ def _running_guest(project, lab_name):
     return lab, provider
 
 
+def _exec_options(p):
+    p.add_argument("--lab", help="the Lab whose Guest to use (needed when the project has several)")
+    p.add_argument("--timeout", type=float, help="seconds (default: the Lab's step_timeout)")
+
+
 def _exec(project, args):
-    argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
+    argv, lab_name = args.argv, args.lab
+    if argv[:1] and argv[0] in project.labs and "--" in argv[1:]:
+        # `exec LAB [OPTIONS] -- COMMAND`: argparse took all of it as the command
+        at = argv.index("--")
+        options = argparse.ArgumentParser(prog=_prog() + " exec " + argv[0])
+        _exec_options(options)
+        given = options.parse_args(argv[1:at])
+        for other in (lab_name, given.lab):
+            if other not in (None, argv[0]):
+                raise UsageError("two Labs given, %s and %s; name one" % (other, argv[0]))
+        lab_name, argv = argv[0], argv[at:]
+        if given.timeout is not None:
+            args.timeout = given.timeout
+    argv = argv[1:] if argv[:1] == ["--"] else argv
     if not argv:
         raise UsageError("no command given; e.g. vmlab exec -- cat ~/app.log")
     if args.timeout is not None and args.timeout <= 0:
         raise UsageError("--timeout must be more than 0 seconds")
-    lab, provider = _running_guest(project, args.lab)
+    lab, provider = _running_guest(project, lab_name)
     result = provider.exec(argv, timeout=lab.step_timeout if args.timeout is None else args.timeout)
     sys.stdout.write(result.stdout)
     sys.stderr.write(result.stderr)
@@ -448,9 +474,9 @@ def _doctor(project, labs, as_json, bench_calls):
     return EXIT_FAILED if doctor.failed(findings) else EXIT_OK
 
 
-def _status(project, as_json):
+def _status(project, names, as_json):
     rows = []
-    for lab in project.labs.values():
+    for lab in project.select_labs(names):
         provider = provider_for(project, lab)
         rows.append(
             {

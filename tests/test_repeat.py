@@ -68,8 +68,8 @@ class RepeatTest(VmlabTestCase):
         for i, run_dir in enumerate(run_dirs, 1):
             self.assertIn("PASSED mac (repetition %d of 3): 1 Scenario(s)" % i, r.out)
             self.assertRegex(r.out, r"report: \S*/%s\n" % re.escape(run_dir.name))
-        self.assertIn("mac/flaky: the palette opens: passed 3 of 3", r.out)
-        self.assertIn("mac/flaky: the palette closes: passed 3 of 3", r.out)
+        self.assertIn("mac: all 2 Check(s) passed 3 of 3\n", r.out)
+        self.assertNotIn("mac/flaky: the palette", r.out, "a Check that always passed has no line of its own")
         self.assertEqual(self.status(), {"mac": False})
 
     def test_a_check_failing_in_one_repetition_passed_the_others(self):
@@ -82,8 +82,9 @@ class RepeatTest(VmlabTestCase):
         self.assertEqual([self.project.report(d)["status"] for d in self.project.run_dirs()], ["passed", "failed", "passed"])
         self.assertIn("FAILED mac (repetition 2 of 3)", r.out)
         self.assertIn("FAIL mac/flaky: the palette closes: repetition 2", r.out)
-        self.assertIn("mac/flaky: the palette opens: passed 3 of 3", r.out)
         self.assertIn("mac/flaky: the palette closes: passed 2 of 3", r.out)
+        self.assertNotIn("mac/flaky: the palette opens", r.out)
+        self.assertIn("mac: 1 other Check(s) passed 3 of 3\n", r.out)
 
     def test_skipped_checks_are_counted_apart_and_errored_scenarios_per_scenario(self):
         self.project.config(FAKE_LAB)
@@ -107,8 +108,29 @@ class RepeatTest(VmlabTestCase):
 
         self.assertExit(r, 1)
         self.assertIn("mac/sometimes_breaks: errored 1 of 3", r.out)
-        self.assertIn("mac/sometimes_breaks: before the helper: passed 3 of 3", r.out)
         self.assertIn("mac/sometimes_breaks: after the helper: passed 1 of 1, skipped 1", r.out)
+        self.assertIn("mac: 1 other Check(s) passed 3 of 3\n", r.out)
+
+    def test_a_check_its_scenario_did_not_reach_every_time_is_not_listed_as_a_success(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("breaks_once.py", """
+            from pathlib import Path
+
+            def scenario(g):
+                count = Path(%r) / "breaks_once"
+                n = int(count.read_text()) + 1 if count.exists() else 1
+                count.write_text(str(n))
+                if n == 2:
+                    raise RuntimeError("the helper crashed")
+                g.check("the palette opens", True)
+        """ % str(self.counts))
+
+        r = self.project.vmlab("run", "--repeat", "3")
+
+        self.assertExit(r, 1)
+        self.assertIn("mac/breaks_once: errored 1 of 3", r.out)
+        self.assertNotIn("the palette opens", r.out)
+        self.assertIn("mac: all 1 Check(s) passed whenever their Scenario reached them\n", r.out)
 
     def test_until_fail_stops_at_the_first_failure_and_keeps_the_guest(self):
         self.project.config(FAKE_LAB)
@@ -187,7 +209,7 @@ class RepeatTest(VmlabTestCase):
         r = self.project.vmlab("run", "twice", "--repeat", "2", "--fresh")
 
         self.assertExit(r, 0)
-        self.assertIn("mac/twice: the palette opens: passed 2 of 2\n", r.out)
+        self.assertIn("mac: all 1 Check(s) passed 2 of 2\n", r.out)
 
     def test_repeat_one_prints_and_reports_as_a_single_run(self):
         self.project.config(BUILT)
@@ -238,7 +260,7 @@ class RepeatTest(VmlabTestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("KeyboardInterrupt", err)
         self.assertIn("mac: 1 of 1 repetition(s) passed\n", out)
-        self.assertIn("mac/hangs_second: ran: passed 1 of 1\n", out)
+        self.assertIn("mac: all 1 Check(s) passed 1 of 1\n", out)
         self.assertIn("Guests stopped: mac\n", out)
 
     def test_usage_errors(self):

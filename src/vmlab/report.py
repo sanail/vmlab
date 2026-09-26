@@ -50,9 +50,10 @@ def totals(report):
 
 def tally(reports):
     """The console's lines after --repeat: per Lab how many of its N repetitions passed and errored,
-    per Scenario in how many it errored, and per Check in how many it passed out of those that
-    measured it; Skipped Checks are counted apart. A Check recorded twice in one repetition counts
-    once there, failed if either failed. Labs this Host does not cover are left out."""
+    per Scenario in how many it errored, and per Check that failed or was skipped in any, in how
+    many it passed out of those that measured it, Skipped Checks counted apart; then one line for
+    the Checks that passed every time they were measured. A Check recorded twice in one repetition counts once there,
+    failed if either failed. Labs this Host does not cover are left out."""
     labs = {}  # Lab -> its reports, in order
     for data in reports:
         if data["status"] != "skipped":
@@ -76,12 +77,22 @@ def tally(reports):
                     outcomes[key] = max(outcomes.get(key, SKIP), outcome(c), key=(SKIP, PASS, FAIL).index)
             for (name, check), result in outcomes.items():
                 scenarios[name][1].setdefault(check, Counter())[result] += 1
+        always_passed, shown, unreached = 0, 0, False  # unreached: an always-passing Check some repetition did not get to
         for name, (scenario, checks) in scenarios.items():
             if scenario["errored"]:
                 lines.append("%s/%s: errored %d of %d" % (lab, name, scenario["errored"], n))
             for check, counts in checks.items():
+                if not counts[FAIL] and not counts[SKIP]:
+                    always_passed += 1
+                    unreached = unreached or counts[PASS] < n
+                    continue
+                shown += 1
                 skipped = ", skipped %d" % counts[SKIP] if counts[SKIP] else ""
                 lines.append("%s/%s: %s: passed %d of %d%s" % (lab, name, check, counts[PASS], counts[PASS] + counts[FAIL], skipped))
+        if always_passed:
+            checks = "%d other Check(s)" % always_passed if shown else "all %d Check(s)" % always_passed
+            how = "whenever their Scenario reached them" if unreached else "%d of %d" % (n, n)
+            lines.append("%s: %s passed %s" % (lab, checks, how))
     return lines
 
 

@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from vmlab import arch, bases, runner
-from vmlab.config import host_arch
+from vmlab.config import PROCESS_EXAMPLE, host_arch
 from vmlab.home import GuestLock, vmlab_home
 from vmlab.memory import free_memory_gb
 from vmlab.providers import PROVIDERS, fusion, provider_for
@@ -126,6 +126,7 @@ def _diagnose_lab(provider, lab, bench_calls):
         add("Architecture", WARN, coverage["detail"], arch.fix(lab))
         return findings
     add("Architecture", OK, coverage["detail"])
+    _check_quit(lab, add)
     present, detail, fix = provider.detect()
     add("Provider %s" % lab.provider, OK if present else FAIL, detail, fix)
     if not present:
@@ -184,6 +185,20 @@ def _diagnose_lab(provider, lab, bench_calls):
     if bench_calls:
         _bench(provider, lab, bench_calls, add)
     return findings
+
+
+def _check_quit(lab, add):
+    """A quit recipe waits for the app's process to go only when the Lab names it."""
+    if not lab.app.quit:
+        return
+    process = lab.app.quit_process
+    if process:
+        add("App quit", OK, "waits for %s to go" % process)
+    else:
+        add("App quit", WARN,
+            "the quit recipe waits for nothing: no process names the app, so g.quit() and the quit before every Run "
+            "return while an app that saves on its way out may still be writing",
+            "name it in [labs.%s.app], %s" % (lab.name, PROCESS_EXAMPLE))  # fmt: skip
 
 
 def _check_memory(lab, add):

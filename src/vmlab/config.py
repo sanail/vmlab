@@ -270,11 +270,12 @@ def _app(path, key, table):
     app = App(table)
     if "quit_timeout" in table:
         if app.quit_process is None:
-            raise ConfigError(path, key + ".process", "missing (needed by %s.quit_timeout)" % key, 'e.g. process = "MyApp": the process every quit waits for to go')
+            raise ConfigError(path, key + ".process", "missing (needed by %s.quit_timeout)" % key, PROCESS_EXAMPLE)
         _positive_number(path, table, key, "quit_timeout", 30)
     return app
 
 
+PROCESS_EXAMPLE = 'e.g. process = "MyApp": the process every quit waits for to go, as wait_for(process=) takes it'
 READY_EXAMPLE = 'e.g. ready = { process = "MyApp" }, a Tray icon: ready = { tray = "MyApp" }, or an element: ready = { text = "Welcome", app = "MyApp" }'
 
 

@@ -359,7 +359,7 @@ Only the steps that happen print: no building for a fresh Build artifact (and no
 - `--fresh` restores before every Scenario; `--keep` leaves Guests running.
 - Before every Run, the Lab's `app.state` paths are removed.
 - Labs run one after another. `--parallel` runs them concurrently, starting a Lab only while its `memory_gb` fits in free Host memory (free + inactive pages; override with `VMLAB_FREE_MEMORY_GB`) and queueing the rest. A Guest that is already running needs no memory, and a Lab larger than all free memory runs alone. Each Lab keeps its own Run folder and reports.
-- `--repeat N` runs the whole selection N times per Lab: the Build artifact is built once, each Guest starts and stops once, and each repetition restores Clean state (not an Ad-hoc run), installs and writes its own Run folder. A line per repetition (`PASSED mac (repetition 2 of 3): ...`), then a tally per Lab, Scenario and Check: `mac: 2 of 3 repetition(s) passed`, `mac: errored e of n` for Runs that errored before their Scenarios (a failed restore), `mac/NAME: errored e of n`, `mac/NAME: CHECK: passed k of n` over the repetitions that measured it (`, skipped s` apart). `--until-fail` (with `--repeat`) stops every Lab after its repetition in which any Lab failed or errored, runs no later Lab, and keeps the Guests still up running as `--keep` does (Labs run one after another have stopped theirs once done: `--parallel` keeps every Lab's). Exit 1 if any repetition failed.
+- `--repeat N` runs the whole selection N times per Lab: the Build artifact is built once, each Guest starts and stops once, and each repetition restores Clean state (not an Ad-hoc run), installs and writes its own Run folder. A line per repetition (`PASSED mac (repetition 2 of 3): ...`), then a tally per Lab, Scenario and Check: `mac: 2 of 3 repetition(s) passed`, `mac: errored e of n` for Runs that errored before their Scenarios (a failed restore), `mac/NAME: errored e of n`, `mac/NAME: CHECK: passed k of n` over the repetitions that measured it (`, skipped s` apart) for each Check that did not pass in all of them, and one line for those that did: `mac: all 12 Check(s) passed 3 of 3` (`11 other Check(s)`; `passed whenever their Scenario reached them` after an error). `--until-fail` (with `--repeat`) stops every Lab after its repetition in which any Lab failed or errored, runs no later Lab, and keeps the Guests still up running as `--keep` does (Labs run one after another have stopped theirs once done: `--parallel` keeps every Lab's). Exit 1 if any repetition failed.
 - Ctrl-C ends the invocation with no reports (with `--repeat`, the tally covers the repetitions that ended), on every Lab, `--parallel` too: what the running Scenarios staged and spawned is closed and stopped, the Guests are stopped or kept as above, and vmlab prints what it stopped and which Guests it left running with the stop command. Under `--parallel` it waits up to 60 s for the Labs: a Lab stops before its next Scenario or at its Scenario's next call into the Guest (`g.check` is none), and one still starting its Guest or app finishes that first. A second Ctrl-C exits at once and names the Labs that had not ended.
 - vmlab stops only Guests it started (recorded in `$VMLAB_HOME/started.json`), including ones an earlier Ad-hoc or `--keep` run left running. A Guest started outside vmlab, or with `vmlab up`, is never stopped by `vmlab run`.
 
@@ -386,16 +386,18 @@ vmlab run [SCENARIO|FILE...] [--lab LAB]... [--keep] [--fresh] [--parallel] [--r
                                          # exit 0 all passed (or skipped), 1 a Check failed or a Run errored, 2 usage/config error
 vmlab deploy [LAB...] [--quiet]          # build if stale, install, launch; Guests stay running
 vmlab up [LAB...] | vmlab down [LAB...]  # default: all Labs
-vmlab status [--json]
+vmlab status [LAB...] [--json]
 vmlab doctor [LAB...] [--json] [--bench [--calls N]]
                                          # Host, arch coverage, Provider, Base guest, clone, Guest, per-Channel, screenshot and
                                          # UI helper checks with fixes; exit 1 on FAIL. --bench times each Channel of running Guests.
                                          # Outside a project: the Host only (which OSes it can test, which hypervisors it has)
 vmlab ui tree|find|click|press|type|focus|clipboard|stage-text|close-staged|tray|notifications|wait-for|screenshot [--lab LAB] ...  # JSON; see "UI contract"
-vmlab exec [--lab LAB] [--timeout S] -- COMMAND ...   # one command in a running Guest; its output and exit code
+vmlab exec [LAB | --lab LAB] [--timeout S] -- COMMAND ...  # one command in a running Guest; its output and exit code
 vmlab put GUEST_PATH [--from HOSTFILE] [--lab LAB]    # write a Guest file from piped stdin (or HOSTFILE); prints its Guest path
 vmlab get GUEST_PATH [--lab LAB]                      # print a Guest file to stdout, byte for byte
 vmlab version
 ```
+
+Every command that acts on Labs takes `--lab LAB`; `deploy`, `up`, `down`, `status` and `doctor` also take the Labs bare (both together add up), and `exec` takes its Lab bare before the `--`.
 
 `VMLAB_HOME` (default `~/.vmlab`) holds host state: the Base guest registry (`bases.json`), vmlab's SSH key and known_hosts (`ssh/`), `tart run` logs (`tart/`), Fusion VMs, their clone records and Guest credentials (`fusion/`), downloaded installer ISOs (`images/`), Guest locks (`locks/`), and the Fake Provider's Guests (`fake/`, with the Guest user's home at `fs/home`).

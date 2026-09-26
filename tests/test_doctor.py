@@ -147,6 +147,27 @@ class DoctorTest(VmlabTestCase):
 
         self.assertRegex(r.out, r"warn\s+mac: Memory: needs 16 GB, 4 GB free")
 
+    def test_a_quit_recipe_with_no_process_to_wait_for_is_a_warning_naming_the_key(self):
+        # ready waits for a Tray icon, not a process: nothing says when the app has gone
+        self.project.config(FAKE_LAB + '[labs.mac.app]\nquit = "pkill -x MyApp"\nlaunch = "true"\nready = { tray = "MyApp" }\n')
+
+        r = self.project.vmlab("doctor")
+
+        self.assertRegex(r.out, r"warn\s+mac: App quit: .*waits for nothing")
+        self.assertIn('process = "', r.out)
+
+    def test_a_quit_recipe_that_waits_for_the_apps_process_is_ok(self):
+        for app in ('process = "MyApp"\n', 'launch = "true"\nready = { process = "MyApp" }\n'):
+            self.project.config(FAKE_LAB + '[labs.mac.app]\nquit = "pkill -x MyApp"\n' + app)
+
+            r = self.project.vmlab("doctor")
+
+            self.assertRegex(r.out, r"ok\s+mac: App quit: waits for MyApp to go", app)
+
+    def test_a_lab_without_a_quit_recipe_has_no_quit_check(self):
+        self.project.config(FAKE_LAB)
+        self.assertNotIn("App quit", self.project.vmlab("doctor").out)
+
 
 class BenchTest(VmlabTestCase):
     def test_bench_measures_every_channel_of_a_running_guest(self):
