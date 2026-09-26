@@ -362,8 +362,29 @@ class Guest:
         reported as "visual, unverified" because it is not deterministic.
         """
         kind = VISUAL if visual else DETERMINISTIC
-        self.checks.append({"name": name, "passed": bool(passed), "detail": detail, "kind": kind})
+        self.checks.append({"name": name, "passed": bool(passed), "skipped": False, "detail": detail, "kind": kind})
         return bool(passed)
+
+    def skip(self, name, reason):
+        """Record a Skipped Check: one this Run cannot measure (it depends on an earlier Check
+        that failed, or does not apply on this Guest OS), with the reason why. It neither passes
+        nor fails the Scenario, and its "passed" in the report is None.
+        """
+        if not isinstance(reason, str) or not reason.strip():
+            raise UsageError("g.skip needs a reason: why this Run cannot measure %r, not %r" % (name, reason))
+        self.checks.append({"name": name, "passed": None, "skipped": True, "detail": reason, "kind": DETERMINISTIC})
+
+
+PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"  # a Check's outcome, as the console and summary.md mark it
+
+
+def outcome(check):
+    """A Check's (its report entry's) PASS, FAIL or SKIP: a Skipped Check neither passed nor failed."""
+    return SKIP if check["skipped"] else PASS if check["passed"] else FAIL
+
+
+def failed(check):
+    return outcome(check) == FAIL
 
 
 class Spawned:
@@ -450,10 +471,10 @@ def run_scenario(path, guest, prepare, unreported):
 
     if error:
         status = "error"
-    elif all(c["passed"] for c in guest.checks):
-        status = "passed"
-    else:
+    elif any(failed(c) for c in guest.checks):
         status = "failed"
+    else:
+        status = "passed"
     staged, spawned = guest._end_run(with_output=status != "passed")
     return {
         "name": path.stem,
@@ -482,8 +503,9 @@ def _execute(path, guest, prepare):
             guest._start_clock(limit)
             module.scenario(guest)
             guest._remaining("the end of the Scenario")
-        if not guest.checks:
-            raise ScenarioError("recorded no Checks; a Scenario must call g.check() at least once")
+        if all(c["skipped"] for c in guest.checks):
+            recorded = "every Check it recorded is skipped" if guest.checks else "it recorded no Checks"
+            raise ScenarioError("measured no Check (%s); a Scenario must call g.check() at least once" % recorded)
     except ConfigError:
         raise
     except ScenarioError as exc:

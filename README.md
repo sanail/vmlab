@@ -273,6 +273,7 @@ def scenario(g):
     g.wait_for(log=mock.log, pattern="Serving HTTP")  # mock.log: its stdout+stderr; mock.output(), .running(), .stop(), .pid
     g.screenshot("after echo")             # saved in the Run folder as evidence
     g.check("icon looks right", True, visual=True)  # a judgement from a screenshot: reported "visual, unverified"
+    g.skip("tray icon shows", "no tray on this Guest OS")  # a Skipped Check: reason required; neither passes nor fails
     # g.lab, g.os, g.arch (the Build artifact's) and g.guest_arch (the Guest's: the Host's)
 ```
 

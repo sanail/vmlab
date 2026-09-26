@@ -49,6 +49,7 @@ Read the Run folder: `summary.md`, `report.json`, and look at every screenshot y
 
 - the verdict of each Check, with the evidence behind it (the element, the log line, the file);
 - visual Checks marked "visual, unverified", with the screenshot they rest on;
+- Skipped Checks as unmeasured, with their reason, never as passed;
 - paths to the screenshots (`screenshots/<scenario>/NN-<name>.png` in the Run folder, as `report.json` lists them), the Run folder and the Scenario file;
 - anything the Run reported about Channels falling back or Labs skipped.
 

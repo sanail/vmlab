@@ -100,7 +100,93 @@ class RunTest(VmlabTestCase):
 
         self.assertExit(r, 1)
         self.assertEqual(self.project.report()["status"], "error")
-        self.assertIn("no Checks", r.out)
+        self.assertIn("measured no Check", r.out)
+
+    def test_skipped_check_is_reported_apart_and_does_not_fail_the_run(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("dependent.py", """
+            def scenario(g):
+                g.check("the palette opens", True)
+                g.skip("the palette closes on Esc", "Esc is not a hotkey on this Guest OS")
+        """)
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 0)
+        self.assertIn("SKIP mac/dependent: the palette closes on Esc: Esc is not a hotkey on this Guest OS", r.out)
+        self.assertRegex(r.out, r"PASSED mac: 1 Scenario\(s\), 2 Check\(s\) \(0 visual\), 0 failed, 1 skipped, 0 error\(s\)")
+        run_dir = self.project.only_run_dir()
+        report = self.project.report(run_dir)
+        self.assertEqual(report["status"], "passed")
+        [scenario] = report["scenarios"]
+        self.assertEqual(scenario["status"], "passed")
+        self.assertEqual(
+            [(c["name"], c["passed"], c["skipped"], c["detail"]) for c in scenario["checks"]],
+            [
+                ("the palette opens", True, False, None),
+                ("the palette closes on Esc", None, True, "Esc is not a hotkey on this Guest OS"),
+            ],
+        )
+        self.assertEqual(
+            (report["totals"]["checks"], report["totals"]["failed_checks"], report["totals"]["skipped_checks"]), (2, 0, 1)
+        )
+
+        suite = ET.parse(str(run_dir / "junit.xml")).getroot()
+        self.assertEqual((suite.get("tests"), suite.get("failures"), suite.get("skipped")), ("2", "0", "1"))
+        case = suite.find("testcase[@name='the palette closes on Esc']")
+        self.assertEqual(case.find("skipped").get("message"), "Esc is not a hotkey on this Guest OS")
+        self.assertIsNone(case.find("failure"))
+
+        summary = (run_dir / "summary.md").read_text()
+        self.assertIn("- SKIP the palette closes on Esc: Esc is not a hotkey on this Guest OS", summary)
+        self.assertIn("0 failed, 1 skipped", summary)
+
+    def test_failed_check_next_to_a_skipped_check_fails_the_run(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("dependent.py", """
+            def scenario(g):
+                if not g.check("the palette opens", False):
+                    g.skip("the palette closes on Esc", "the palette did not open")
+        """)
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        report = self.project.report()
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual((report["totals"]["failed_checks"], report["totals"]["skipped_checks"]), (1, 1))
+        suite = ET.parse(str(self.project.only_run_dir() / "junit.xml")).getroot()
+        self.assertEqual((suite.get("failures"), suite.get("skipped")), ("1", "1"))
+
+    def test_scenario_whose_checks_are_all_skipped_is_an_error(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("unmeasured.py", """
+            def scenario(g):
+                g.skip("the fix holds", "the unfixed build is gone")
+        """)
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        report = self.project.report()
+        self.assertEqual(report["status"], "error")
+        self.assertIn("measured no Check", report["scenarios"][0]["error"])
+        self.assertIn("measured no Check", r.out)
+
+    def test_skip_without_a_reason_is_a_usage_error(self):
+        self.project.config(FAKE_LAB)
+        for n, call in enumerate(['g.skip("the fix holds", "")', 'g.skip("the fix holds", "  ")', 'g.skip("the fix holds", None)']):
+            with self.subTest(call=call):
+                self.project.scenario("noreason%d.py" % n, """
+                    def scenario(g):
+                        g.check("reached", True)
+                        %s
+                """ % call)
+
+                r = self.project.vmlab("run", "noreason%d" % n)
+
+                self.assertExit(r, 1)
+                self.assertIn("noreason%d.py:4: g.skip needs a reason" % n, r.out)
 
     def test_each_run_gets_its_own_folder_per_lab(self):
         self.project.config(FAKE_LAB + """

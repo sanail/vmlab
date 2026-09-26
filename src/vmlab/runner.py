@@ -30,7 +30,7 @@ from vmlab.memory import free_memory_gb
 from vmlab.progress import Progress
 from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
-from vmlab.scenario import STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, run_scenario
+from vmlab.scenario import FAIL, SKIP, STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, outcome, run_scenario
 
 INTERRUPT_WAIT_S = 60  # how long Ctrl-C in a parallel Run waits for the Labs to end theirs
 
@@ -427,7 +427,9 @@ def _print_summary(data, out):
         if s["status"] == "error":
             out("ERROR %s/%s: %s" % (data["lab"], s["name"], s["error"]))
         for c in s["checks"]:
-            if not c["passed"]:
+            if outcome(c) == SKIP:
+                out("SKIP %s/%s: %s: %s" % (data["lab"], s["name"], c["name"], c["detail"]))
+            elif outcome(c) == FAIL:
                 evidence = ", ".join(s["screenshots"]) or "none"
                 out(
                     "FAIL %s/%s: %s%s (screenshots: %s)"
@@ -435,7 +437,7 @@ def _print_summary(data, out):
                 )
     t = data["totals"]
     out(
-        "%s %s: %d Scenario(s), %d Check(s) (%d visual), %d failed, %d error(s); report: %s"
+        "%s %s: %d Scenario(s), %d Check(s) (%d visual), %d failed, %d skipped, %d error(s); report: %s"
         % (
             data["status"].upper(),
             data["lab"],
@@ -443,6 +445,7 @@ def _print_summary(data, out):
             t["checks"],
             t["visual_checks"],
             t["failed_checks"],
+            t["skipped_checks"],
             t["errors"],
             data["run_dir"],
         )
