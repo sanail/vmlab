@@ -590,7 +590,7 @@ def create_base(name, image, confirm, reprovision, out):
 
 
 def _wait(vm, channel, probe, timeout, what, forget_ip=False):
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     while True:
         vm.check_alive()
         if forget_ip:
@@ -600,7 +600,7 @@ def _wait(vm, channel, probe, timeout, what, forget_ip=False):
                 return
         except GuestError:
             pass
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             raise GuestError("timed out after %ss waiting for %s in %s" % (timeout, what, vm.name), "look at %s" % vm.log_path)
         time.sleep(1)
 

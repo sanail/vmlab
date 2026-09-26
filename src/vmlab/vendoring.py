@@ -42,7 +42,7 @@ TEMPLATE = """\
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 # memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs that don't fit
-# boot_timeout = 300       # seconds from power-on until the Guest must be reachable
+# boot_timeout = 300       # seconds from power-on until the Guest must be reachable (the Host's sleep does not count)
 # step_timeout = 60        # default seconds per Guest call
 # scenario_timeout = 600   # default seconds per Scenario
 #

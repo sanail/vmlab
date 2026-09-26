@@ -46,6 +46,8 @@ OPTIONS = ("ui_tree", "notifications", "channels", "broken_channels", "hung_chan
 
 
 class FakeProvider(Provider):
+    HOST_SCREENSHOTS = True
+
     def __init__(self, project, lab):
         from vmlab import guestos
 

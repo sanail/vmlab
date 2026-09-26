@@ -61,7 +61,7 @@ from vmlab import bases, hostproc
 from vmlab.config import ConfigError, host_arch
 from vmlab.home import vmlab_home
 from vmlab.providers import windows
-from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, BootState, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
 from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"], "session": "wayland"}
@@ -689,7 +689,7 @@ class VmrunChannel(Channel):
         return self.vm.auth + ["-gu", creds["user"], "-gp", creds["password"]]
 
     def exec(self, argv, timeout, env, stdin=None):
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         timed_out = GuestTimeout("%s timed out after %ss on Channel vmrun and was killed" % (list(argv), timeout))
         auth = self._auth()
         call = "/tmp/vmlab-call-%s" % uuid.uuid4().hex
@@ -726,12 +726,12 @@ class VmrunChannel(Channel):
 
     def send_file(self, local, guest_path, timeout):
         auth = self._auth()
-        self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local, guest_path], time.time() + timeout, auth,
+        self._vmrun(["copyFileFromHostToGuest", self.vm.vmx, local, guest_path], time.monotonic() + timeout, auth,
                     GuestTimeout("copying %s into %s did not finish within %ss and was killed" % (local, self.vm.name, timeout)))  # fmt: skip
 
     def _vmrun(self, args, deadline, auth, timed_out):
         """One vmrun step of a call that must end by deadline; timed_out is what to raise if it does not."""
-        remaining = deadline - time.time()
+        remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise timed_out
         try:
@@ -757,7 +757,7 @@ class WindowsVmrunChannel(VmrunChannel):
         self._call_dir = False
 
     def exec(self, argv, timeout, env, stdin=None):
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         timed_out = GuestTimeout("%s timed out after %ss on Channel vmrun and was killed" % (list(argv), timeout))
         auth = self._auth()
         call = windows.new_call()
@@ -795,6 +795,7 @@ def defaults(os_name):
 
 
 class FusionProvider(Provider):
+    HOST_SCREENSHOTS = True
     SUPPORTED_OS = ("linux", "windows")
     HYPERVISOR = "VMware Fusion"
 
@@ -1083,14 +1084,11 @@ class FusionProvider(Provider):
         self._configure()
         self.vm.start(self.lab.boot_timeout)
         try:
-            deadline = time.time() + self.lab.boot_timeout
+            deadline = time.monotonic() + self.lab.boot_timeout  # the Host's awake time, as up()'s
             while not self.is_reachable():
-                if time.time() >= deadline:
-                    raise GuestError(
-                        "the new clone of Lab %s did not reach its desktop within %ss, so it was not switched to the %s session"
-                        % (self.lab.name, self.lab.boot_timeout, name),
-                        "raise labs.%s.boot_timeout if it is just slow; `vmlab up %s` tries again" % (self.lab.name, self.lab.name),
-                    )
+                if time.monotonic() >= deadline:
+                    late = self._boot_timeout()
+                    raise GuestError("the new clone of Lab %s was not switched to the %s session: %s" % (self.lab.name, name, late.message), late.fix)
                 time.sleep(BOOT_POLL_SECONDS)
             result = self.exec(["/bin/sh", "-c", SWITCH_SESSION, "sh", SESSIONS[self.session], self.session], CALL_TIMEOUT)
             if not result.ok:
@@ -1139,6 +1137,23 @@ class FusionProvider(Provider):
                 self._seen_session = result.stdout.strip()
                 return True
         return False
+
+    def boot_state(self):
+        """VMware Tools start with the OS: while they do not answer, the boot never got that far."""
+        try:
+            code, tools = vmrun(["checkToolsState", self.vm.vmx], CALL_TIMEOUT, self.vm.auth)
+        except GuestError:
+            return None
+        if code:
+            return None
+        if tools.strip() != "running":
+            return BootState(False, "VMware Tools never answered")
+        try:
+            code, ip = vmrun(["readVariable", self.vm.vmx, "guestVar", "ip"], CALL_TIMEOUT, self.vm.auth)
+        except GuestError:
+            code, ip = 1, ""
+        ip = ip.strip() if code == 0 else ""
+        return BootState(True, "VMware Tools answer, " + ("IP %s" % ip if ip else "no IP address yet"))
 
     def _probes(self, channel, probe):
         """The probe's result over channel when it worked, else None."""
@@ -1366,13 +1381,13 @@ def _install(name, vm, iso, out):
 
     out("installing Ubuntu into %s, unattended (about 15 minutes; progress: %s)" % (vm.name, serial))
     vm.start()
-    deadline, started, state, minute = time.time() + INSTALL_TIMEOUT, time.time(), None, 0
+    deadline, started, state, minute = time.monotonic() + INSTALL_TIMEOUT, time.monotonic(), None, 0
     while vm.is_running():
         now = _install_state(serial)
-        if now != state or int((time.time() - started) // 300) > minute:
-            state, minute = now, int((time.time() - started) // 300)
-            out("  %d min: installer %s" % ((time.time() - started) // 60, (state or "starting").lower()))
-        if time.time() >= deadline:
+        if now != state or int((time.monotonic() - started) // 300) > minute:
+            state, minute = now, int((time.monotonic() - started) // 300)
+            out("  %d min: installer %s" % ((time.monotonic() - started) // 60, (state or "starting").lower()))
+        if time.monotonic() >= deadline:
             shot = folder / "install-timeout.png"
             try:
                 vm.screenshot(shot, CALL_TIMEOUT)
@@ -1470,7 +1485,7 @@ def _provision(name, vm, out):
 
 def _ui_helper_detail(ssh, name):
     """What the UI helper reports once the desktop, and in it vmlab's Shell extension, answers it."""
-    deadline = time.time() + BASE_BOOT_TIMEOUT
+    deadline = time.monotonic() + BASE_BOOT_TIMEOUT
     while True:
         with tempfile.TemporaryFile() as stdin:
             stdin.write(pkgutil.get_data("vmlab", "guest/linux/vmlab-ui.py"))
@@ -1479,13 +1494,13 @@ def _ui_helper_detail(ssh, name):
         if result.ok:
             info = json.loads(result.stdout)
             return "%s session; input through %s" % (info["session"], info["input"])
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             raise GuestError("the UI helper cannot drive the desktop of %s: %s" % (name, result.stderr.strip()), "re-run `vmlab base create %s --reprovision`" % name)
         time.sleep(2)
 
 
 def _wait(vm, channel, probe, timeout, what):
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     while True:
         vm.forget_ip()
         try:
@@ -1493,7 +1508,7 @@ def _wait(vm, channel, probe, timeout, what):
                 return
         except GuestError:
             pass
-        if time.time() >= deadline:
+        if time.monotonic() >= deadline:
             raise GuestError("timed out after %ss waiting for %s in %s" % (timeout, what, vm.name), "look at its screen: vmrun start '%s' gui" % vm.vmx)
         time.sleep(2)
 

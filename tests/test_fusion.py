@@ -102,6 +102,10 @@ FAKE_VMRUN = textwrap.dedent(
         save()
     elif command == "getGuestIPAddress":
         fail("The VMware Tools are not running in the virtual machine: " + args[1])
+    elif command == "checkToolsState":
+        print(vm.get("tools", "unknown") if vm and vm["running"] else "unknown")
+    elif command == "readVariable" and args[2:] == ["guestVar", "ip"]:
+        print(vm.get("ip", "") if vm and vm["running"] else "")
     else:
         fail("fake vmrun: unsupported %r" % args)
     """
@@ -482,6 +486,25 @@ class FusionCloneTest(FusionTestCase):
         self.assertExit(r, 1)
         lines = [line.split(" done in ")[0] for line in r.out.splitlines() if line.startswith("linux: ")]
         self.assertEqual(lines, ["linux: cloning", "linux: cloning", "linux: booting", "linux: booting", "linux: waiting for Channels"])
+
+    def test_a_guest_that_never_reached_its_os_is_not_called_slow(self):
+        r = self.vmlab("up")  # VMware Tools never answer: the OS did not come up
+
+        self.assertExit(r, 1)
+        self.assertIn("Guest linux did not reach its OS within 1s of starting: VMware Tools never answered", r.err)
+        self.assertIn("vmlab ui screenshot --lab linux", r.err)
+        self.assertNotIn("boot_timeout", r.err)
+
+    def test_a_guest_whose_os_is_up_but_channels_are_not_may_just_be_slow(self):
+        self.vmlab("up")
+        [clone] = self.clones()
+        self.set_state(clone, tools="running", ip="192.168.64.9")
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("Guest linux's OS is up (VMware Tools answer, IP 192.168.64.9), but its Channels did not answer within 1s", r.err)
+        self.assertIn("raise labs.linux.boot_timeout if it is just slow", r.err)
 
     def test_the_clone_is_reused_while_the_base_guest_is_unchanged(self):
         self.vmlab("up")

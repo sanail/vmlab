@@ -12,6 +12,7 @@ import re
 import tarfile
 import tempfile
 import time
+from collections import namedtuple
 from pathlib import Path
 
 from vmlab.progress import QUIET
@@ -37,6 +38,13 @@ class ChannelError(GuestError):
 
 class GuestTimeout(GuestError):
     """A call did not finish in time and was killed."""
+
+
+class BootTimeout(GuestError):
+    """The Guest was not reachable within its Lab's boot_timeout after starting."""
+
+
+BootState = namedtuple("BootState", "reached_os evidence")  # how far a boot got: evidence says what shows it
 
 
 class ExecResult:
@@ -87,6 +95,7 @@ class Provider:
     NOT_IMPLEMENTED = None  # set by stubs: the fix shown when a Lab selects this Provider
     HYPERVISOR = None  # its hypervisor's name, for doctor's list of what this Host has
     SUPPORTED_OS = None  # the Lab OSes this Provider can run, or None for all
+    HOST_SCREENSHOTS = False  # screenshot() works from the Host, also while the Guest is not reachable
 
     def __init__(self, project, lab):
         self.project = project
@@ -164,6 +173,11 @@ class Provider:
         afterwards. A stopped Guest boots once, into its Clean state."""
         raise NotImplementedError
 
+    def boot_state(self):
+        """How far a Guest that is not reachable got in its boot: a BootState, or None when the
+        Provider cannot tell. Asked once its boot_timeout is over; bounded like every hypervisor call."""
+        return None
+
     def copy_in(self, src, guest_dir, timeout=None):
         """Copy the Host file or folder src into guest_dir (created; ~ is the Guest user's home),
         within timeout seconds (default: the Lab's app.install_timeout).
@@ -206,9 +220,9 @@ class Provider:
         """Copy the Host file local into the Guest over the first Channel that can carry it, all
         within timeout seconds. A Channel that times out has spent them: GuestTimeout, no fallback."""
         failures = []
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         for channel in self.channels():
-            remaining = deadline - time.time()
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise GuestTimeout("copying %s into Guest %s did not finish within %ss" % (local, self.lab.name, timeout))
             try:
@@ -272,20 +286,32 @@ class Provider:
         """Start the Guest if needed and wait until it is reachable. Idempotent."""
         if not self.is_running():
             self.start()
-        deadline = time.time() + self.lab.boot_timeout
+        # boot_timeout counts the Host's awake time (mach_absolute_time on macOS): while the Host
+        # sleeps, its Guests do too, and a Guest does not boot slowly because the Host slept.
+        deadline = time.monotonic() + self.lab.boot_timeout
         if self.is_reachable():
             return
         with self.progress.step("waiting for Channels"):
             while True:
-                if time.time() >= deadline:
-                    raise GuestError(
-                        "Guest %s was not reachable within %ss of starting" % (self.lab.name, self.lab.boot_timeout),
-                        "raise labs.%s.boot_timeout if it is just slow; otherwise check `vmlab doctor %s`"
-                        % (self.lab.name, self.lab.name),
-                    )
+                if time.monotonic() >= deadline:
+                    raise self._boot_timeout()
                 time.sleep(BOOT_POLL_SECONDS)
                 if self.is_reachable():
                     return
+
+    def _boot_timeout(self):
+        """The error for a Guest not reachable in time: a slow boot only when its OS came up."""
+        name, limit = self.lab.name, self.lab.boot_timeout
+        state = self.boot_state()
+        if state and not state.reached_os:
+            return BootTimeout(
+                "Guest %s did not reach its OS within %ss of starting: %s" % (name, limit, state.evidence),
+                "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again" % (name, name, name),
+            )
+        slow = "raise labs.%s.boot_timeout if it is just slow; otherwise check `vmlab doctor %s`" % (name, name)
+        if state:
+            return BootTimeout("Guest %s's OS is up (%s), but its Channels did not answer within %ss of starting" % (name, state.evidence, limit), slow)
+        return BootTimeout("Guest %s was not reachable within %ss of starting" % (name, limit), slow)
 
     def down(self):
         """Stop the Guest if it is running. Idempotent."""

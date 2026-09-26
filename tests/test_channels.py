@@ -162,6 +162,21 @@ class BootTest(VmlabTestCase):
         self.assertIn("not reachable", (self.project.only_run_dir() / "summary.md").read_text())
         self.assertEqual(self.status(), {"mac": False})
 
+    def test_a_run_whose_guest_does_not_come_up_keeps_a_screenshot_of_its_console(self):
+        self.project.config(FAKE_LAB.replace('arch = "arm64"', 'arch = "arm64"\nboot_timeout = 1') + """
+            [labs.mac.fake]
+            boot_seconds = 30
+        """)
+        self.project.scenario("echo.py", ECHO % ("ssh", "ssh"))
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        shot = self.project.only_run_dir() / "screenshots" / "boot-timeout.png"
+        self.assertEqual(shot.read_bytes()[:4], b"\x89PNG")
+        self.assertIn("its screen then: screenshots/boot-timeout.png", self.project.report()["error"])
+        self.assertIn("screenshots/boot-timeout.png", r.out)
+
     def test_vmlab_up_reports_a_guest_that_does_not_come_up(self):
         self.project.config(FAKE_LAB.replace('arch = "arm64"', 'arch = "arm64"\nboot_timeout = 1') + """
             [labs.mac.fake]

@@ -244,10 +244,10 @@ def copy_in(provider, src, guest_dir, timeout=None):
     in memory, vmrun in a file it copies in first), and a Build artifact may be large. The copy
     and the unpacking share timeout (default: the Lab's app.install_timeout)."""
     timeout = provider.lab.app.install_timeout if timeout is None else timeout
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
 
     def remaining():
-        left = deadline - time.time()
+        left = deadline - time.monotonic()
         if left <= 0:
             raise GuestTimeout("copying %s into Guest %s did not finish within %ss" % (src, provider.lab.name, timeout))
         return left

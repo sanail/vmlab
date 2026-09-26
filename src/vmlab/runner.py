@@ -32,7 +32,7 @@ from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.progress import Progress, duration
 from vmlab.providers import provider_for
-from vmlab.providers.base import GuestError
+from vmlab.providers.base import BootTimeout, GuestError
 from vmlab.scenario import FAIL, SKIP, STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, outcome, run_scenario
 
 INTERRUPT_WAIT_S = 60  # how long Ctrl-C in a parallel Run waits for the Labs to end theirs
@@ -182,9 +182,9 @@ def _run_parallel(runs, work, out, interrupt):
     except KeyboardInterrupt:
         interrupt.set()
         out("Interrupted: ending the Suite run on every Lab, for up to %ds (Ctrl-C again exits at once)" % INTERRUPT_WAIT_S)
-        deadline = time.time() + INTERRUPT_WAIT_S
+        deadline = time.monotonic() + INTERRUPT_WAIT_S
         with done:  # a thread is not alive before start() nor once it has ended
-            while any(t.is_alive() for t in threads) and time.time() < deadline:
+            while any(t.is_alive() for t in threads) and time.monotonic() < deadline:
                 done.wait(0.2)
         raise
     if errors:
@@ -354,7 +354,7 @@ class _LabRun:
                     try:
                         results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt)
                     except GuestError as exc:
-                        self.error = str(exc)
+                        self.error = self._lab_error(provider, exc)
                     self._stop_repeating_if_failed(results, stop_repeating)
                     if repetition == repeat or stop_repeating and stop_repeating.is_set():
                         break
@@ -363,7 +363,7 @@ class _LabRun:
                     self._new_repetition()
                     lab_calls, repetition = ChannelUse(), repetition + 1
             except GuestError as exc:
-                self.error = str(exc)
+                self.error = self._lab_error(provider, exc)
             finally:
                 keep = keep or bool(stop_repeating and stop_repeating.is_set())
                 if ours and not keep:
@@ -374,6 +374,18 @@ class _LabRun:
         self._stop_repeating_if_failed(results, stop_repeating)  # e.g. the build failed: no later Lab runs
         self._report(lab_calls, results, out, repetition, repeat)
         return ours and keep and provider.is_running()
+
+    def _lab_error(self, provider, exc):
+        """The Suite run's error; a Guest that did not come up leaves a screenshot of its screen."""
+        if not isinstance(exc, BootTimeout) or not provider.HOST_SCREENSHOTS:
+            return str(exc)
+        shot = "screenshots/boot-timeout.png"
+        try:
+            (self.run_dir / shot).parent.mkdir(parents=True, exist_ok=True)
+            provider.screenshot(self.run_dir / shot)
+        except GuestError as shot_exc:
+            return "%s\n  no screenshot of its screen: %s" % (exc, shot_exc.message)
+        return "%s\n  its screen then: %s" % (exc, shot)
 
     def _stop_repeating_if_failed(self, results, stop_repeating):
         if stop_repeating and self._status(results) not in ("passed", "skipped"):
