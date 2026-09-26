@@ -49,8 +49,12 @@ An ordered sequence of steps performed against the application in a **Guest**, c
 _Avoid_: test case, script, flow
 
 **Check**:
-A single assertion inside a **Scenario** that yields pass or fail.
+A single assertion inside a **Scenario** that yields pass or fail, or is skipped when this **Run** cannot measure it.
 _Avoid_: assertion, expectation
+
+**Skipped Check**:
+A **Check** the **Scenario** could not measure in this **Run** (it depends on an earlier **Check** that failed, or does not apply on this **Guest OS**), recorded with its reason. It neither passes nor fails the **Run**.
+_Avoid_: unmeasured Check, skipped (alone, which also names a **Lab** this **Host** does not cover)
 
 **Run**:
 One execution of one **Scenario** on one **Guest**, producing a report, screenshots and logs.
@@ -84,7 +88,7 @@ _Avoid_: test suite, smoke tests
 - A project declares one or more **Labs**; each **Lab** is realised by exactly one **Provider** as one **Guest**
 - A **Lab** clones one **Base guest**; many projects' **Labs** may clone the same **Base guest**
 - A **Lab** covers exactly one OS version and architecture; testing several versions means declaring several **Labs**
-- A **Scenario** contains one or more **Checks**
+- A **Scenario** contains one or more **Checks**, at least one of them measured (not a **Skipped Check**)
 - A **Run** executes one **Scenario** on one **Guest** against one **Build artifact**
 - An **Ad-hoc run** and a **Regression suite** use the same **Scenario** format; they differ only in whether the **Scenario** is saved
 - A **Regression suite** restores **Clean state** once at its start; a **Scenario** may demand its own restore
@@ -96,3 +100,4 @@ _Avoid_: test suite, smoke tests
 
 - "VM" was used for both the running machine and its definition — resolved: the running machine is a **Guest**, its project-level definition is a **Lab**.
 - "Run" was used both for one **Scenario**'s execution and for the whole suite's on a **Lab** (its report folder) — resolved: the first is a **Run**, the second a **Suite run**.
+- "Skipped" names two things — resolved: a **Lab** whose architecture this **Host** does not cover is a skipped **Lab**; a **Check** a **Run** could not measure is a **Skipped Check**.
