@@ -64,6 +64,10 @@ _Avoid_: session, job
 One execution of a **Regression suite** (or the part of it asked for) on one **Lab**, whose **Runs** share one report folder.
 _Avoid_: Run (for the whole suite), run folder (for one **Scenario**)
 
+**Repetition**:
+One of the N **Suite runs** `vmlab run --repeat N` makes on a **Lab**, each with its own report folder, to measure how often each **Check** passes.
+_Avoid_: iteration, attempt, retry
+
 **Staged document**:
 A document `stage_text` opened in a third-party editor, with the given text selected in it. It is a file vmlab wrote to the **Guest**'s temp folder, and it is known by that exact path, never by its name alone; closing it deletes the file.
 _Avoid_: stage (as a noun), staging file

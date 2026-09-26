@@ -54,6 +54,8 @@ def main(argv=None):
     p.add_argument("--keep", action="store_true", help="leave Guests vmlab started running")
     p.add_argument("--fresh", action="store_true", help="restore Clean state before every Scenario")
     p.add_argument("--parallel", action="store_true", help="run Labs concurrently as free Host memory allows")
+    p.add_argument("--repeat", type=int, metavar="N", help="run the selection N times on each Lab, then tell how often each Check passed")
+    p.add_argument("--until-fail", action="store_true", help="with --repeat: stop at the first failing repetition and keep the Guests running")
     p.add_argument("--quiet", action="store_true", help=QUIET_HELP)
 
     p = sub.add_parser("deploy", help="build if stale, install and launch the app; Guests stay running (default: all Labs)")
@@ -153,9 +155,13 @@ def _exec_dashes(argv):
 
 
 def _run(project, args):
+    if args.repeat is not None and args.repeat < 1:
+        raise UsageError("--repeat must be at least 1")
+    if args.until_fail and args.repeat is None:
+        raise UsageError("--until-fail goes with --repeat N, the most repetitions to run")
     reports = runner.run(
         project, args.labs, args.scenarios, out=_flushed, keep=args.keep, fresh=args.fresh, parallel=args.parallel,
-        stop_command=_prog() + " down", steps_out=_steps(args),
+        stop_command=_prog() + " down", steps_out=_steps(args), repeat=args.repeat or 1, until_fail=args.until_fail,
     )  # fmt: skip
     # a skipped Lab (arch not covered on this Host) warned and wrote its reports; it fails nothing
     return EXIT_OK if all(r["status"] in ("passed", "skipped") for r in reports) else EXIT_FAILED

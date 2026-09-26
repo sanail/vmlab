@@ -17,6 +17,6 @@ Pick the one workflow that fits and read it before acting:
 
 - **Setup**: no `.vmlab/` yet, no Lab for the OS the user wants, `vmlab doctor` shows FAIL, or the user asks to set up Guests. Read [references/setup.md](references/setup.md).
 - **Ad-hoc run**: the user describes something to check in their app now ("open X, press Y, check Z appears, take a screenshot"). Read [references/ad-hoc-run.md](references/ad-hoc-run.md).
-- **Regression**: the user wants saved Scenarios written, changed, measured or run as a suite. Read [references/regression.md](references/regression.md).
+- **Regression**: the user wants saved Scenarios written, changed, measured, run as a suite or checked for flakiness. Read [references/regression.md](references/regression.md).
 
 A workflow that hits a setup problem (a Lab missing, `doctor` failing) switches to Setup, then returns.

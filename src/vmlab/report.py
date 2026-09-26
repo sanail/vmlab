@@ -3,8 +3,9 @@
 import json
 import shlex
 import xml.etree.ElementTree as ET
+from collections import Counter
 
-from vmlab.scenario import ALREADY_GONE, BY_ITSELF, BY_SCENARIO, FAIL, OUTPUT_TAIL, SKIP, STILL_OPEN, STILL_RUNNING, VISUAL, WITH_RUN, failed, outcome
+from vmlab.scenario import ALREADY_GONE, BY_ITSELF, BY_SCENARIO, FAIL, OUTPUT_TAIL, PASS, SKIP, STILL_OPEN, STILL_RUNNING, VISUAL, WITH_RUN, failed, outcome
 
 STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
 # How a spawned process ended: its report entry's "ended".
@@ -45,6 +46,43 @@ def totals(report):
         "visual_checks": sum(c["kind"] == VISUAL for c in checks),
         "errors": sum(s["status"] == "error" for s in report["scenarios"]) + bool(report["error"]),
     }
+
+
+def tally(reports):
+    """The console's lines after --repeat: per Lab how many of its N repetitions passed and errored,
+    per Scenario in how many it errored, and per Check in how many it passed out of those that
+    measured it; Skipped Checks are counted apart. A Check recorded twice in one repetition counts
+    once there, failed if either failed. Labs this Host does not cover are left out."""
+    labs = {}  # Lab -> its reports, in order
+    for data in reports:
+        if data["status"] != "skipped":
+            labs.setdefault(data["lab"], []).append(data)
+    lines = []
+    for lab, runs in labs.items():
+        n = len(runs)
+        lines.append("%s: %d of %d repetition(s) passed" % (lab, sum(r["status"] == "passed" for r in runs), n))
+        errored = sum(bool(r["error"]) for r in runs)
+        if errored:
+            lines.append("%s: errored %d of %d" % (lab, errored, n))
+        scenarios = {}  # Scenario -> (Counter: repetitions it errored in, {Check -> Counter of outcomes, one per repetition})
+        for r in runs:
+            outcomes = {}  # (Scenario, Check) -> its outcome in this repetition
+            for name in {s["name"] for s in r["scenarios"] if s["status"] == "error"}:
+                scenarios.setdefault(name, (Counter(), {}))[0]["errored"] += 1
+            for s in r["scenarios"]:
+                scenarios.setdefault(s["name"], (Counter(), {}))
+                for c in s["checks"]:
+                    key = (s["name"], c["name"])
+                    outcomes[key] = max(outcomes.get(key, SKIP), outcome(c), key=(SKIP, PASS, FAIL).index)
+            for (name, check), result in outcomes.items():
+                scenarios[name][1].setdefault(check, Counter())[result] += 1
+        for name, (scenario, checks) in scenarios.items():
+            if scenario["errored"]:
+                lines.append("%s/%s: errored %d of %d" % (lab, name, scenario["errored"], n))
+            for check, counts in checks.items():
+                skipped = ", skipped %d" % counts[SKIP] if counts[SKIP] else ""
+                lines.append("%s/%s: %s: passed %d of %d%s" % (lab, name, check, counts[PASS], counts[PASS] + counts[FAIL], skipped))
+    return lines
 
 
 def _write_junit(path, report):

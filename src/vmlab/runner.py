@@ -1,7 +1,10 @@
 """Discover Scenarios and execute them on each Lab.
 
 Each invocation writes one timestamped folder per Lab holding the reports of every
-Scenario run there.
+Scenario run there. --repeat N runs that Suite run N times on each Lab, one folder
+each, with its Guest up throughout, and ends with how often each Check passed;
+--until-fail stops every Lab at the first repetition that did not pass and keeps
+the Guests running.
 
 Lifecycle policies: a Regression suite (saved Scenarios) restores Clean state
 once at its start and stops the Guests vmlab started; an Ad-hoc run (any
@@ -67,8 +70,11 @@ def discover(project, names):
     return chosen, ad_hoc
 
 
-def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parallel=False, stop_command="vmlab down", steps_out=None):
-    """Run the chosen Scenarios on the chosen Labs. Returns the list of reports.
+def run(
+    project, lab_names, scenario_names, out, keep=False, fresh=False, parallel=False, stop_command="vmlab down", steps_out=None,
+    repeat=1, until_fail=False,
+):  # fmt: skip
+    """Run the chosen Scenarios on the chosen Labs, repeat times each. Returns the list of reports.
 
     steps_out, a print-like callable, gets each Lab's step lines (vmlab.progress); None: none."""
     labs = project.select_labs(lab_names)
@@ -93,22 +99,39 @@ def run(project, lab_names, scenario_names, out, keep=False, fresh=False, parall
         lab_run.build()
 
     interrupt = threading.Event()
+    stop_repeating = threading.Event() if until_fail else None  # set at the first repetition that did not pass
 
     def work(lab_run):
-        return lab_run.run(scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh, interrupt=interrupt)
+        if stop_repeating and stop_repeating.is_set():
+            locked_out("%s: not run: --until-fail stopped at a failure" % lab_run.lab.name)
+            lab_run.drop_run_dir()
+            return False
+        return lab_run.run(
+            scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh, interrupt=interrupt, repeat=repeat,
+            stop_repeating=stop_repeating,
+        )  # fmt: skip
 
     try:
         outcomes = _run_parallel(runs, work, locked_out, interrupt) if parallel else [work(r) for r in runs]
     except KeyboardInterrupt:
+        _print_tally(runs, repeat, locked_out)
         _say_what_was_left(runs, locked_out, stop_command)
         raise
-    reports, kept = [], []
-    for lab_run, (data, still_ours) in zip(runs, outcomes):
-        reports.append(data)
-        if still_ours:
-            kept.append(lab_run.lab.name)
-    kept_running(kept, out, stop_command)
-    return reports
+    _print_tally(runs, repeat, out)
+    kept_running([r.lab.name for r, still_ours in zip(runs, outcomes) if still_ours], out, stop_command)
+    return _reports(runs)
+
+
+def _reports(runs):
+    """Every report the Labs have written so far, Lab by Lab; a copy, as Labs may still be adding theirs."""
+    return [data for r in runs for data in list(r.reports)]
+
+
+def _print_tally(runs, repeat, out):
+    """After --repeat N: how often each Scenario errored and each Check passed, over the repetitions each Lab finished."""
+    if repeat > 1:
+        for line in report.tally(_reports(runs)):
+            out(line)
 
 
 def _run_parallel(runs, work, out, interrupt):
@@ -251,17 +274,15 @@ def guest_lock(provider):
 
 
 class _LabRun:
-    """One Lab's part of an invocation: its run folder, build and Scenarios."""
+    """One Lab's part of an invocation: its build, and its Suite runs' folders and Scenarios."""
 
     def __init__(self, project, lab, progress):
         self.project = project
         self.lab = lab
         self.progress = progress
-        self.started = datetime.now(timezone.utc)
-        self.t0 = time.time()
-        self.run_dir = _new_run_dir(project, lab, self.started)
+        self._new_repetition()
         self.built = None
-        self.error = None
+        self.reports = []  # one per repetition that ended
         self.coverage = arch.coverage(lab)
         self.warnings = [w for w in [arch.warning(lab)] if w]
         self.skipped = bool(self.warnings)
@@ -269,6 +290,18 @@ class _LabRun:
         self.began = self.done = False
         self.ours = False  # vmlab started this Lab's Guest, or holds it from an earlier Run
         self.guest_stopped = False
+
+    def _new_repetition(self):
+        """A new Suite run: its own start time and Run folder, no error yet."""
+        self.started = datetime.now(timezone.utc)
+        self.t0 = time.time()
+        self.run_dir = _new_run_dir(self.project, self.lab, self.started)
+        self.error = None
+
+    def drop_run_dir(self):
+        """Remove the Run folder of a Lab that will not run, unless its build left a log in it."""
+        if not any(self.run_dir.iterdir()):
+            self.run_dir.rmdir()
 
     def build(self):
         if self.skipped:
@@ -278,16 +311,18 @@ class _LabRun:
         except GuestError as exc:
             self.error = str(exc)
 
-    def run(self, scenarios, out, keep, ad_hoc, fresh, interrupt):
-        """Returns (report, whether vmlab left a Guest it owns running). interrupt, once set, ends
-        the Suite run as Ctrl-C does: before the next Scenario, or at the Scenario's next Guest call."""
+    def run(self, scenarios, out, keep, ad_hoc, fresh, interrupt, repeat=1, stop_repeating=None):
+        """Run the Suite run repeat times, adding each one's report to self.reports. Returns whether
+        vmlab left a Guest it owns running. interrupt, once set, ends the Suite run as Ctrl-C does:
+        before the next Scenario, or at the Scenario's next Guest call. stop_repeating (--until-fail),
+        set by the first Lab whose repetition did not pass, ends the repetitions after the current one and keeps the Guest running."""
         self.began = True
         try:
-            return self._run(scenarios, out, keep, ad_hoc, fresh, interrupt)
+            return self._run(scenarios, out, keep, ad_hoc, fresh, interrupt, repeat, stop_repeating)
         finally:
             self.done = True
 
-    def _run(self, scenarios, out, keep, ad_hoc, fresh, interrupt):
+    def _run(self, scenarios, out, keep, ad_hoc, fresh, interrupt, repeat, stop_repeating):
         lab = self.lab
         provider = provider_for(self.project, lab)
         provider.progress = self.progress
@@ -304,21 +339,51 @@ class _LabRun:
             except GuestError as exc:
                 self.error = str(exc)
         ours = self.ours = lock is not None and (key in started_guests or not provider.is_running())
+        repetition = 1
         if lock:
             try:
                 if not provider.is_running():
                     started_guests.add(key)
                 provider.up()
-                results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt)
+                while True:
+                    if repeat > 1:
+                        self.progress.say("repetition %d of %d" % (repetition, repeat))
+                    results = []
+                    try:
+                        results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt)
+                    except GuestError as exc:
+                        self.error = str(exc)
+                    self._stop_repeating_if_failed(results, stop_repeating)
+                    if repetition == repeat or stop_repeating and stop_repeating.is_set():
+                        break
+                    # the last repetition is reported once the Guest is down, as a single Suite run is
+                    self._report(lab_calls, results, out, repetition, repeat)
+                    self._new_repetition()
+                    lab_calls, repetition = ChannelUse(), repetition + 1
             except GuestError as exc:
                 self.error = str(exc)
             finally:
+                keep = keep or bool(stop_repeating and stop_repeating.is_set())
                 if ours and not keep:
                     provider.down()
                     started_guests.discard(key)
                     self.guest_stopped = True
                 lock.release()
+        self._stop_repeating_if_failed(results, stop_repeating)  # e.g. the build failed: no later Lab runs
+        self._report(lab_calls, results, out, repetition, repeat)
+        return ours and keep and provider.is_running()
 
+    def _stop_repeating_if_failed(self, results, stop_repeating):
+        if stop_repeating and self._status(results) not in ("passed", "skipped"):
+            stop_repeating.set()
+
+    def _status(self, results):
+        return "error" if self.error else "skipped" if self.skipped else report.overall_status(results)
+
+    def _report(self, lab_calls, results, out, repetition, repeat):
+        """Write and print the report of this Suite run, repetition of repeat."""
+        lab = self.lab
+        deploy = dict(self.built, built=False) if self.built and self.reports else self.built  # built once, before the first repetition
         data = {
             "vmlab_version": __version__,
             "lab": lab.name,
@@ -328,19 +393,19 @@ class _LabRun:
             "coverage": self.coverage,
             "started_at": self.started.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_s": round(time.time() - self.t0, 3),
-            "status": "error" if self.error else "skipped" if self.skipped else report.overall_status(results),
+            "status": self._status(results),
             "error": self.error,
             "warnings": self.warnings,
             "run_dir": str(self.run_dir),
-            "deploy": self.built,
+            "deploy": deploy,
             "channels": lab_calls.channels,
             "fallbacks": lab_calls.fallbacks,
             "scenarios": results,
         }
         data["totals"] = report.totals(data)
         report.write(self.run_dir, data)
-        _print_summary(data, out)
-        return data, ours and keep and provider.is_running()
+        _print_summary(data, out, "" if repeat == 1 else " (repetition %d of %d)" % (repetition, repeat))
+        self.reports.append(data)
 
     def _scenarios(self, provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt):
         lab = self.lab
@@ -414,7 +479,7 @@ def _new_run_dir(project, lab, started):
             n += 1
 
 
-def _print_summary(data, out):
+def _print_summary(data, out, repetition=""):
     if data["error"]:
         out("ERROR %s: %s" % (data["lab"], data["error"]))
     for s in data["scenarios"]:
@@ -437,10 +502,11 @@ def _print_summary(data, out):
                 )
     t = data["totals"]
     out(
-        "%s %s: %d Scenario(s), %d Check(s) (%d visual), %d failed, %d skipped, %d error(s); report: %s"
+        "%s %s%s: %d Scenario(s), %d Check(s) (%d visual), %d failed, %d skipped, %d error(s); report: %s"
         % (
             data["status"].upper(),
             data["lab"],
+            repetition,
             t["scenarios"],
             t["checks"],
             t["visual_checks"],

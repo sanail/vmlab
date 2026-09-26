@@ -44,6 +44,20 @@ What each outcome means:
 - Red for another reason (an error, a different Check, a timeout): the Scenario breaks before it reaches the behaviour. Fix that first; this measurement says nothing yet.
 - A Check that cannot be measured (the unfixed build is gone, the bug needs Host conditions) is recorded with `g.skip(name, reason)`, the reason saying why, and reported as unmeasured, never as proven.
 
+### Measure flakiness
+
+A Check that fails once and passes on the next run is flaky until measured: run it many times on one Lab and read how often it passed.
+
+```sh
+.vmlab/run NAME --lab LAB --repeat 10
+```
+
+Each repetition is a whole Suite run (restore, install, the Scenarios, its own Run folder and reports) with the Guest up throughout and the Build artifact built once. It prints a line per repetition (`FAILED LAB (repetition 2 of 10): ...; report: FOLDER`) and ends with a tally: `LAB: 9 of 10 repetition(s) passed`, then `LAB/NAME: CHECK: passed k of n` per Check, over the repetitions that measured it (`, skipped s` counts its Skipped Checks apart), and `LAB/NAME: errored e of n` for a Scenario that errored (`LAB: errored e of n`: the Run errored before its Scenarios, e.g. restoring Clean state). Exit 1 if any repetition failed.
+
+- `passed 10 of 10` on the Lab where it failed: not reproduced; try the whole suite (`--repeat` with no NAME), since some failures need what earlier Scenarios leave.
+- `passed k of n` with k < n: the Check or the app is flaky. Read the failing repetitions' Run folders; fix the Scenario (a missing `wait_for`) or report the app's flakiness, and measure again.
+- `--until-fail` stops at the first repetition that did not pass (on every Lab) and keeps the Guests running for inspection, naming them and the stop command: `.vmlab/run NAME --lab LAB --repeat 50 --until-fail` catches a rare failure with its Guest as it was. With several Labs it runs no later Lab; a Lab that already finished has stopped its Guest, so measure one Lab at a time.
+
 ## 4. Report
 
 Tell the user, per Lab: the Scenario file, both measured Runs (exit codes, the Check's detail on the red one, both Run folders), and the command that runs the suite without you: `.vmlab/run`.
@@ -51,6 +65,6 @@ Tell the user, per Lab: the Scenario file, both measured Runs (exit codes, the C
 ## Running the suite
 
 - `.vmlab/run` runs every saved Scenario on every Lab, from anywhere in the project; `.vmlab/run NAME ... --lab LAB` narrows it. It passes its arguments to `vmlab run`. A project made by an older vmlab gets it from `vmlab init`, which keeps everything else.
-- The suite restores Clean state once per Lab at its start, and stops the Guests vmlab started. `--keep` leaves them running for inspection; `--fresh` restores before every Scenario; `--parallel` runs Labs concurrently as free Host memory allows. It prints each Lab's steps as they start and end (`LAB: restoring Clean state`, `LAB: ... done in 41s`) and `LAB: scenario NAME` as each Scenario starts; `--quiet` leaves only the results.
+- The suite restores Clean state once per Lab at its start, and stops the Guests vmlab started. `--keep` leaves them running for inspection; `--fresh` restores before every Scenario; `--parallel` runs Labs concurrently as free Host memory allows; `--repeat N [--until-fail]` runs it N times per Lab ([measure flakiness](#measure-flakiness)). It prints each Lab's steps as they start and end (`LAB: restoring Clean state`, `LAB: ... done in 41s`) and `LAB: scenario NAME` as each Scenario starts; `--quiet` leaves only the results.
 - Exit code: 0 all passed (or skipped: a Lab this Host does not cover, or Skipped Checks next to passed ones), 1 a Check failed or a Run errored, 2 a usage or config error. Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`, `summary.md` and `screenshots/<scenario>/NN-<name>.png`, one folder per Scenario (a second Scenario of the same name in one Suite run gets `<scenario>-2`).
 - Every `vmlab run` installs the Build artifact afresh, rebuilding it first when anything in its `inputs` is newer.
