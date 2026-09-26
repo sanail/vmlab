@@ -68,13 +68,14 @@ class ChannelUse:
 
 
 class Guest:
-    def __init__(self, lab, provider, run_dir, launch_app, interrupt=None):
+    def __init__(self, lab, provider, run_dir, shots_dir, launch_app, interrupt=None):
         self.lab = lab.name
         self.os = lab.os
         self.arch = lab.arch  # the Build artifact's
         self.guest_arch = arch.guest_arch()  # differs from arch when the Guest OS emulates it
         self._provider = provider
         self._run_dir = run_dir
+        self._shots_dir = shots_dir  # this Scenario's screenshots folder, relative to the run folder
         self._launch_app = launch_app
         self._notification_id = lab.app.notification_id
         self._started = time.time()  # the Run's start: Notifications from before it are left out
@@ -337,7 +338,7 @@ class Guest:
         """Save a screenshot as evidence and return its path relative to the run folder."""
         self._remaining("screenshot")
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "screenshot"
-        rel = "screenshots/%02d-%s.png" % (len(self.screenshots) + 1, slug)
+        rel = "%s/%02d-%s.png" % (self._shots_dir, len(self.screenshots) + 1, slug)
         dest = self._run_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         self._provider.screenshot(dest)

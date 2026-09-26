@@ -352,10 +352,10 @@ class _LabRun:
             launch(provider, lab, state["guest_artifact"], env, call_timeout)
 
         results = []
-        for path in scenarios:
+        for path, shots_dir in zip(scenarios, _shots_dirs([p.stem for p in scenarios])):
             if interrupt.is_set():
                 raise Interrupted()
-            guest = Guest(lab, provider, self.run_dir, launch_app, interrupt)
+            guest = Guest(lab, provider, self.run_dir, shots_dir, launch_app, interrupt)
             provider.on_exec = guest.channel_use.record
 
             def unreported(staged, spawned, name=path.stem):
@@ -364,6 +364,20 @@ class _LabRun:
 
             results.append(run_scenario(path, guest, prepare, unreported))
         return results
+
+
+def _shots_dirs(names):
+    """Each Scenario's screenshots folder in the Suite run's folder: screenshots/<name>, and
+    <name>-2, -3, ... for a later Scenario of the same name (never another Scenario's name)."""
+    folders, taken = [], set(names)
+    for i, name in enumerate(names):
+        folder, n = name, 1
+        while folder in taken and name in names[:i]:
+            n += 1
+            folder = "%s-%d" % (name, n)
+        taken.add(folder)
+        folders.append("screenshots/" + folder)
+    return folders
 
 
 def _new_run_dir(project, lab, started):

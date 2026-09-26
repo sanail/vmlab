@@ -13,7 +13,7 @@ def scenario(g):
     path = g.put("~/Documents/input.txt", "Ohm's law\n")  # str (UTF-8) or bytes; folders made; returns the absolute Guest path
     settings = g.get("~/.config/myapp/settings.json")   # str; g.get(path, binary=True) for bytes
     mock = g.spawn(["python3", "-m", "http.server", "8080"])  # detached; stopped with the Run (see below)
-    g.screenshot("after start")                 # saved in the Run folder as evidence
+    g.screenshot("after start")                 # evidence: screenshots/<scenario>/01-after-start.png in the Run folder
     g.check("the icon looks right", True, visual=True)  # a judgement from a screenshot: "visual, unverified"
     # g.lab, g.os ("macos" | "windows" | "linux"), g.arch (the Build artifact's), g.guest_arch
 ```

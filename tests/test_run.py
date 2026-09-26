@@ -142,6 +142,51 @@ class RunTest(VmlabTestCase):
         self.assertTrue((run_dir / shot).read_bytes().startswith(b"\x89PNG"))
         self.assertIn(shot, (run_dir / "summary.md").read_text())
 
+    def test_each_scenario_keeps_its_screenshots_in_its_own_folder(self):
+        self.project.config(FAKE_LAB)
+        for name in ("palette.py", "tray.py"):
+            self.project.scenario(name, """
+                def scenario(g):
+                    g.check("returns its path", g.screenshot("welcome") == "screenshots/%s/01-welcome.png")
+                    g.check("window appears", False)
+            """ % name[:-3])
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        run_dir = self.project.only_run_dir()
+        shots = {s["name"]: s["screenshots"] for s in self.project.report(run_dir)["scenarios"]}
+        self.assertEqual(
+            shots, {"palette": ["screenshots/palette/01-welcome.png"], "tray": ["screenshots/tray/01-welcome.png"]}
+        )
+        summary = (run_dir / "summary.md").read_text()
+        junit = (run_dir / "junit.xml").read_text()
+        for name, [shot] in shots.items():
+            self.assertTrue((run_dir / shot).is_file())
+            self.assertIn("- screenshot: [%s](%s)" % (shot, shot), summary)
+            self.assertIn(shot, junit)
+            self.assertIn("FAIL mac/%s: window appears (screenshots: %s)" % (name, shot), r.out)
+        self.assertNotIn("returns its path", r.out)
+
+    def test_scenarios_with_one_name_in_a_suite_run_keep_their_screenshots_apart(self):
+        self.project.config(FAKE_LAB)
+        files = [self.project.dir / "ad-hoc" / f for f in ("a/x.py", "b/x.py", "c/x-2.py")]
+        for path in files:
+            path.parent.mkdir(parents=True)
+            path.write_text("def scenario(g):\n    g.check('taken', g.screenshot('welcome'))\n")
+
+        r = self.project.vmlab("run", *files)
+
+        self.assertExit(r, 0)
+        run_dir = self.project.only_run_dir()
+        shots = [s["screenshots"] for s in self.project.report(run_dir)["scenarios"]]
+        self.assertEqual(
+            shots,
+            [["screenshots/x/01-welcome.png"], ["screenshots/x-3/01-welcome.png"], ["screenshots/x-2/01-welcome.png"]],
+        )
+        for [shot] in shots:
+            self.assertTrue((run_dir / shot).is_file())
+
     def test_scenario_sees_the_guest_os_and_the_scripted_ui_tree(self):
         self.project.config(FAKE_LAB + """
             [labs.mac.fake]

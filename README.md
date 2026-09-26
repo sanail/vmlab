@@ -64,7 +64,7 @@ To upgrade, copy the new build over the old folder, then run `python3 .vmlab/vml
   run               # runs the Regression suite: `.vmlab/run [NAME...] [--lab LAB]...`, the same as `python3 .vmlab/vmlab.pyz run ...`
   scenarios/*.py    # Scenarios
   .gitignore        # ignores runs/
-  runs/             # per invocation and Lab: <UTC timestamp>-<lab>/ with report.json, junit.xml, summary.md, screenshots/
+  runs/             # per invocation and Lab: <UTC timestamp>-<lab>/ with report.json, junit.xml, summary.md, screenshots/<scenario>/
 ```
 
 `vmlab self-update [--from PYZ]` replaces the vendored copy and prints `old -> new`. Run from a skill copy, it vendors itself; run from the vendored copy, it picks the newest `<skill>/scripts/vmlab.pyz` among the `.claude`, `.cursor`, `.agents`, `.codex`, `.opencode` and `.kilo` skill folders in the project and in `~`, and `~/.config/opencode/skills`. It refuses to downgrade.
