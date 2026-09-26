@@ -19,7 +19,7 @@ OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
 LAB_KEYS = ("provider", "os", "arch", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
-APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
+APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "process", "quit_timeout", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
 # [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
 READY_CONDITIONS = ("text", "role", "process", "file", "log", "exec", "tray")  # text and role make one: an element
 READY_KEYS = READY_CONDITIONS + ("app", "pattern", "gone")
@@ -72,12 +72,24 @@ class App:
         self.install = table.get("install")  # Guest shell commands; see vmlab.deploy for the env they get
         self.install_timeout = table.get("install_timeout", DEFAULT_INSTALL_TIMEOUT)
         self.quit = table.get("quit")
+        self.process = table.get("process")  # the app's process name, as wait_for(process=) takes it, or None
+        self.quit_timeout = table.get("quit_timeout")  # s; None: the Lab's step_timeout
         self.launch = table.get("launch")
         self.ready = table.get("ready")  # a vmlab.ui condition that holds once the launched app is ready, or None
         self.ready_timeout = table.get("ready_timeout")  # s; None: the Lab's step_timeout
         self.env = table.get("env", {})
         self.state = table.get("state", [])  # Guest paths removed before each Run
         self.notification_id = table.get("notification_id")  # the OS's id for the app as a Notification's sender, or None
+
+    @property
+    def quit_process(self):
+        """The process whose going ends a quit: process, else ready's when ready waits for a process
+        to be there; None when there is neither."""
+        from vmlab import ui  # it imports this module
+
+        if self.process:
+            return self.process
+        return self.ready.name if isinstance(self.ready, ui.ProcessCondition) else None
 
 
 class Project:
@@ -232,7 +244,7 @@ def _app(path, key, table):
         raise ConfigError(path, key, "must be a table", "write it as [%s]" % key)
     for k in sorted(set(table) - set(APP_KEYS)):
         raise ConfigError(path, "%s.%s" % (key, k), "unknown key", "remove it; allowed keys: %s" % ", ".join(APP_KEYS))
-    for field in ("artifact", "build", "install", "quit", "launch", "notification_id"):
+    for field in ("artifact", "build", "install", "quit", "process", "launch", "notification_id"):
         if field in table and not (isinstance(table[field], str) and table[field].strip()):
             raise ConfigError(path, "%s.%s" % (key, field), "must be a non-empty string", "e.g. %s = \"...\"" % field)
     for field, example in (("inputs", '["src", "package.json"]'), ("state", '["~/Library/Application Support/MyApp"]')):
@@ -255,7 +267,12 @@ def _app(path, key, table):
         if "launch" not in table:
             raise ConfigError(path, key + ".launch", "missing (needed by %s.ready)" % key, 'e.g. launch = "open -a MyApp"')
         table = dict(table, ready=_ready(path, key + ".ready", table["ready"]))
-    return App(table)
+    app = App(table)
+    if "quit_timeout" in table:
+        if app.quit_process is None:
+            raise ConfigError(path, key + ".process", "missing (needed by %s.quit_timeout)" % key, 'e.g. process = "MyApp": the process every quit waits for to go')
+        _positive_number(path, table, key, "quit_timeout", 30)
+    return app
 
 
 READY_EXAMPLE = 'e.g. ready = { process = "MyApp" }, a Tray icon: ready = { tray = "MyApp" }, or an element: ready = { text = "Welcome", app = "MyApp" }'

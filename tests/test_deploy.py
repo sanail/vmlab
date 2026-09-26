@@ -2,6 +2,9 @@
 
 import json
 import os
+import random
+import subprocess
+import textwrap
 import time
 
 from harness import FAKE_LAB, VmlabTestCase
@@ -397,3 +400,160 @@ class ReadyConfigTest(VmlabTestCase):
         r = self.project.vmlab("run")
         self.assertExit(r, 2)
         self.assertIn("labs.mac.app.launch", r.err)
+
+
+class QuitTest(VmlabTestCase):
+    """g.quit(): the Lab's quit recipe, then a wait until the app's process has gone."""
+
+    def setUp(self):
+        super().setUp()
+        # The app: sleep under a name no other process on the Host has, started by the launch recipe.
+        self.name = "vq%08x" % random.getrandbits(32)
+        self.addCleanup(subprocess.run, ["pkill", "-x", self.name])
+
+    def config(self, quit, extra="process = \"%(name)s\"\n", lab=FAKE_LAB):
+        launch = "ln -sf /bin/sleep ~/%(name)s && (~/%(name)s 60 >/dev/null 2>&1 &); echo launch-$EXTRA >> ~/deploy.log"
+        app = '[labs.mac.app]\nlaunch = "%s"\nquit = "%s"\n' % (launch, quit) + extra
+        self.project.config(lab + app % {"name": self.name})
+
+    def scenario(self, body, launch=False):
+        self.project.scenario("a.py", ("" if launch else "LAUNCH = False\n") + "NAME = %r\n" % self.name + textwrap.dedent(body))
+
+    def running(self):
+        return subprocess.run(["pgrep", "-x", self.name], capture_output=True).returncode == 0
+
+    def run_error(self):
+        r = self.project.vmlab("run")
+        self.assertExit(r, 1)
+        [scenario] = self.project.report()["scenarios"]
+        self.assertEqual(scenario["status"], "error", scenario)
+        return scenario["error"]
+
+    # Quits a second after its recipe returns, as an app that saves its settings on the way out.
+    SLOW_QUIT = "(sleep 1; pkill -x %(name)s) >/dev/null 2>&1 &"
+
+    def test_g_quit_then_g_launch_restarts_the_app(self):
+        self.config(self.SLOW_QUIT)
+        self.scenario("""
+            def scenario(g):
+                running = lambda: g.exec(["pgrep", "-x", NAME]).ok
+                g.check("running after LAUNCH", running())
+                g.quit()
+                g.check("gone once g.quit returns", not running())
+                g.launch()
+                g.check("running again after g.launch", running())
+        """, launch=True)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_the_recipe_exit_code_is_ignored_when_there_is_a_process_to_wait_for(self):
+        self.config("pkill -x %(name)s; exit 5")
+        self.scenario("""
+            def scenario(g):
+                g.quit()
+                g.check("gone", not g.exec(["pgrep", "-x", NAME]).ok)
+        """, launch=True)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_a_process_that_does_not_go_raises_naming_it_after_quit_timeout(self):
+        self.config("true", 'process = "%(name)s"\nquit_timeout = 1\n')
+        self.scenario("def scenario(g):\n    g.quit()\n    g.check('ok', True)\n", launch=True)
+        started = time.time()
+        error = self.run_error()
+        self.assertLess(time.time() - started, 30)  # quit_timeout, not step_timeout (60s)
+        for fragment in ("a.py:3", self.name, "labs.mac.app.process", "1s", "labs.mac.app.quit_timeout"):
+            self.assertIn(fragment, error)
+
+    def test_the_wait_defaults_to_the_step_timeout(self):
+        self.config("true", lab=FAKE_LAB.replace('arch = "arm64"', 'arch = "arm64"\nstep_timeout = 0.5'))
+        self.scenario("def scenario(g):\n    g.quit()\n    g.check('ok', True)\n", launch=True)
+        error = self.run_error()
+        self.assertIn("0.5s", error)
+        self.assertIn(self.name, error)
+
+    def test_ready_process_is_the_quit_process(self):
+        self.config(self.SLOW_QUIT, 'ready = { process = "%(name)s" }\n')
+        self.scenario("""
+            def scenario(g):
+                g.quit()
+                g.check("gone once g.quit returns", not g.exec(["pgrep", "-x", NAME]).ok)
+        """, launch=True)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_ready_process_that_does_not_go_names_the_ready_key(self):
+        self.config("true", 'ready = { process = "%(name)s" }\nquit_timeout = 1\n')
+        self.scenario("def scenario(g):\n    g.quit()\n", launch=True)
+        error = self.run_error()
+        self.assertIn("labs.mac.app.ready", error)
+        self.assertIn(self.name, error)
+
+    def test_without_a_quit_process_a_failing_recipe_raises(self):
+        self.config("echo cannot quit >&2; exit 3", "")
+        self.scenario("def scenario(g):\n    g.quit()\n    g.check('ok', True)\n")
+        error = self.run_error()
+        for fragment in ("labs.mac.app.quit", "exited 3", "cannot quit"):
+            self.assertIn(fragment, error)
+
+    def test_without_a_quit_process_a_zero_recipe_returns_and_gets_the_env(self):
+        self.config("echo quit-$EXTRA >> ~/deploy.log", "")
+        self.scenario("""
+            def scenario(g):
+                g.quit(env={"EXTRA": "x"})
+                log = g.exec(["sh", "-c", "cat ~/deploy.log"]).stdout.split()
+                g.check("quit with the env", log[-1] == "quit-x", detail=" ".join(log))
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_without_a_quit_recipe_g_quit_raises_with_the_fix(self):
+        self.project.config(FAKE_LAB + '[labs.mac.app]\nlaunch = "true"\n')
+        self.scenario("def scenario(g):\n    g.quit()\n    g.check('ok', True)\n")
+        error = self.run_error()
+        self.assertIn("no quit recipe", error)
+        self.assertIn("labs.mac.app.quit", error)
+
+    def test_before_a_run_the_state_is_removed_only_after_the_process_has_gone(self):
+        # The app writes its state on the way out, a second after the quit recipe returns.
+        writes = "(sleep 1; mkdir -p ~/.myapp; touch ~/.myapp/saved; pkill -x %(name)s) >/dev/null 2>&1 &"
+        self.config("pgrep -x %(name)s >/dev/null && " + writes, 'process = "%(name)s"\nstate = ["~/.myapp"]\n')
+        self.project.scenario("a_first.py", PASS)
+        self.project.scenario("b_second.py", """
+            def scenario(g):
+                g.check("no state left from the last Run", not g.exec(["test", "-e", "home/.myapp"]).ok)
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+
+    def test_before_a_run_a_process_that_does_not_go_is_a_run_error(self):
+        self.config("true", 'process = "%(name)s"\nquit_timeout = 1\n')
+        self.project.scenario("a_first.py", PASS)
+        self.project.scenario("b_second.py", PASS)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 1)
+        second = self.project.report()["scenarios"][1]
+        self.assertEqual(second["status"], "error")
+        self.assertIn(self.name, second["error"])
+
+
+class QuitConfigTest(VmlabTestCase):
+    def assertConfigError(self, app, *fragments):
+        self.project.config(FAKE_LAB + '[labs.mac.app]\nlaunch = "true"\nquit = "true"\n' + app)
+        self.project.scenario("a.py", PASS)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 2)
+        self.assertIn("fix:", r.err)
+        for fragment in fragments:
+            self.assertIn(fragment, r.err)
+
+    def test_process(self):
+        self.assertConfigError('process = ""\n', "labs.mac.app.process", "non-empty string")
+        self.assertConfigError("process = 1\n", "labs.mac.app.process", "non-empty string")
+
+    def test_quit_timeout(self):
+        self.assertConfigError('process = "MyApp"\nquit_timeout = 0\n', "labs.mac.app.quit_timeout", "> 0")
+        self.assertConfigError("quit_timeout = 5\n", "labs.mac.app.process", "missing", "quit_timeout")
+        # ready's process is a quit process only while it waits for the process to be there.
+        self.assertConfigError('ready = { process = "MyApp", gone = true }\nquit_timeout = 5\n', "labs.mac.app.process", "missing")
+        self.assertConfigError('ready = { file = "~/x" }\nquit_timeout = 5\n', "labs.mac.app.process", "missing")
+
+    def test_quit_timeout_goes_with_a_quit_process(self):
+        self.project.config(FAKE_LAB + '[labs.mac.app]\nquit = "true"\nprocess = "no-such-process-vmlab"\nquit_timeout = 5\n')
+        self.project.scenario("a.py", PASS)
+        self.assertExit(self.project.vmlab("run"), 0)

@@ -51,7 +51,9 @@ TEMPLATE = """\
 # build = "npm run build"              # Host command run in the project root when the artifact is stale
 # inputs = ["src", "package.json"]     # the artifact is stale when older than any of these
 # install = 'cp -R "$VMLAB_ARTIFACT" /Applications/'   # Guest shell; $VMLAB_ARTIFACT is the delivered copy
-# quit = "pkill -x MyApp"              # before every Run (exit code ignored)
+# quit = "pkill -x MyApp"              # before every Run (exit code ignored), and in g.quit()
+# process = "MyApp"                    # the app's process: every quit waits for it to go (default: ready's process, if any)
+# quit_timeout = 30                    # seconds to wait for it to go (default: step_timeout; needs a process)
 # launch = "open -a MyApp"             # before every Run, after the state paths are removed
 # ready = { process = "MyApp" }        # optional (needs launch): one wait_for condition that says the launched app is ready
 # ready_timeout = 30                   # seconds to wait for ready (default: step_timeout; needs ready)

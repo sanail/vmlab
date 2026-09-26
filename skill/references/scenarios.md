@@ -1,10 +1,11 @@
 # Scenario API
 
-A Scenario is a Python file defining `scenario(g)`. Before it runs, vmlab quits the app, removes the Lab's `app.state` paths and launches the app (the Lab's `[labs.LAB.app]` recipes), waiting for its `ready` condition if the Lab has one; that wait is not on the Scenario's clock.
+A Scenario is a Python file defining `scenario(g)`. Before it runs, vmlab quits the app (waiting for its process to go, if the Lab names one), removes the Lab's `app.state` paths and launches the app (the Lab's `[labs.LAB.app]` recipes), waiting for its `ready` condition if the Lab has one; that wait is not on the Scenario's clock.
 
 ```python
 FRESH = True     # optional: restore Clean state before this Scenario
 LAUNCH = False   # optional: skip the launch; call g.launch(env={...}) yourself: it waits for app.ready too, on the Scenario's clock
+                 # g.quit(env={...}) is its counterpart: the quit recipe, then a wait for the app's process to go (see below)
 TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
 
 def scenario(g):
@@ -21,6 +22,21 @@ def scenario(g):
 `g.put(guest_path, content)` writes a file into the Guest and `g.get(guest_path, binary=False)` reads one back, with no quoting or shell in between: `~` alone or before a slash is the Guest user's home (`~name` is just a name), and on Windows `%VARS%` expand (`g.put(r"%TEMP%\input.txt", data)`). Spaces and non-ASCII names need nothing special. `put` replaces the file at the path: a symlink there is replaced by the file, and what it pointed to is left alone. `get` raises when the file is not there; both count against the Scenario's timeout, each call (the whole copy) against the Lab's `step_timeout`. Files stay after the Run, so "put a file, restart the app, it reads it" works; `app.state`, `FRESH` and nonces keep leftovers out of later Runs. The CLI has the same: `vmlab put GUEST_PATH [--from HOSTFILE]` (piped stdin when no `--from`, and an empty pipe makes an empty file; prints the Guest path) and `vmlab get GUEST_PATH` (to stdout).
 
 `g.check(name, passed, detail=None, visual=False)` records a Check; a failed Check does not stop the Scenario, and a Scenario records at least one. An exception, a timeout or a call no Channel can carry fails the Run with the Scenario's file and line. So does `sys.exit()` (or `raise SystemExit`), in `scenario(g)` or at the top of the file: it errors only that Scenario's Run (`spawn.py:5: the Scenario called sys.exit(3)`), and the Suite run goes on to the next Scenario and writes its report. Ctrl-C is different: it ends the Suite run on every Lab (under `--parallel` too) with no report, after stopping what the Scenario spawned.
+
+## Restarting the app
+
+`g.quit(env=None)` runs the Lab's `app.quit` recipe (`env` adds to `app.env`, as for `g.launch`) and waits, on the Scenario's clock, until the app's process has gone: the Lab's `app.process`, or `ready`'s process when `ready = { process = "X" }`. It raises naming the process when it is still there after `app.quit_timeout` (default: the Lab's `step_timeout`); the recipe's exit code is not checked, since the wait says whether the app went. A Lab with neither names no process: `g.quit()` then raises when the recipe exits non-zero, and waits for nothing, so an app that saves its settings on the way out may still be writing them. A Lab without a `quit` recipe raises. With `g.launch()` it restarts the app, to check what persisted:
+
+```python
+def scenario(g):
+    g.tray("MyApp", choose=["Settings", "Dark mode"])
+    g.quit()                                   # the app has gone once this returns
+    g.launch()                                 # and is ready again (app.ready) once this returns
+    settings = g.get("~/.config/myapp/settings.json")
+    g.check("dark mode survives a restart", '"theme": "dark"' in settings, detail=settings)
+```
+
+Quitting through the app's own UI (its Tray menu's Quit, closing its window) is a Scenario's own steps, then `g.wait_for(process="X", gone=True)`.
 
 Code shared by several Scenarios lives in `_name.py` next to them (`.vmlab/scenarios/_helpers.py`, or in `.vmlab/runs/ad-hoc/`), imported plainly at the top of the Scenario: `import _helpers`. The Scenario's folder is on `sys.path` while it runs; don't add it yourself. Helpers are re-imported for each Scenario, so their module-level state does not carry over to the next one.
 

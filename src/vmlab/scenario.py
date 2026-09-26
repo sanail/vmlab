@@ -68,7 +68,7 @@ class ChannelUse:
 
 
 class Guest:
-    def __init__(self, lab, provider, run_dir, shots_dir, launch_app, interrupt=None):
+    def __init__(self, lab, provider, run_dir, shots_dir, launch_app, quit_app, interrupt=None):
         self.lab = lab.name
         self.os = lab.os
         self.arch = lab.arch  # the Build artifact's
@@ -77,6 +77,7 @@ class Guest:
         self._run_dir = run_dir
         self._shots_dir = shots_dir  # this Scenario's screenshots folder, relative to the run folder
         self._launch_app = launch_app
+        self._quit_app = quit_app
         self._notification_id = lab.app.notification_id
         self._started = time.time()  # the Run's start: Notifications from before it are left out
         self._step_timeout = lab.step_timeout
@@ -125,6 +126,14 @@ class Guest:
         Lab's app.ready condition, if any, on the Scenario's clock; raises when it is not met."""
         self._remaining("launch")
         self._on_clock("launch", lambda call_timeout: self._launch_app(env, call_timeout))
+
+    def quit(self, env=None):
+        """Quit the app with the Lab's quit recipe; env adds to the Lab's app.env. Waits, on the
+        Scenario's clock, until the app's process (the Lab's app.process, or ready's process) has
+        gone; raises when it has not within app.quit_timeout. With no such process, raises when
+        the recipe exits non-zero, and waits for nothing."""
+        self._remaining("quit")
+        self._on_clock("quit", lambda call_timeout: self._quit_app(env, call_timeout))
 
     def put(self, guest_path, content):
         """Write content (str, written as UTF-8, or bytes) to the Guest file guest_path, making its

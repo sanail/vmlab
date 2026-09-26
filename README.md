@@ -86,7 +86,9 @@ inputs = ["src", "src-tauri", "package.json"]    # stale = missing, or older tha
 build_timeout = 1800
 install = "rm -rf /Applications/MyApp.app && cp -R \"$VMLAB_ARTIFACT\" /Applications/"
 install_timeout = 600
-quit = "pkill -x MyApp"                          # exit code ignored
+quit = "pkill -x MyApp"                          # exit code ignored before a Run; g.quit() checks it when there is no process
+process = "MyApp"                                # optional; every quit waits for it to go (default: ready's process, if any)
+quit_timeout = 30                                # seconds (default: step_timeout); needs a process
 launch = "open -a /Applications/MyApp.app"
 ready = { process = "MyApp" }                    # optional; one wait_for condition: launched means ready; needs launch (see "Deploy")
 ready_timeout = 30                               # seconds (default: step_timeout); needs ready
@@ -259,6 +261,7 @@ A Scenario is a Python file defining `scenario(g)`:
 ```python
 FRESH = True     # optional: restore Clean state before this Scenario
 LAUNCH = False   # optional: don't launch the app before this Scenario; call g.launch(env={...}) yourself (it waits for app.ready)
+                 # g.quit(env={...}) quits it again and waits for its process to go: g.quit() then g.launch() restarts it
 TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
 
 def scenario(g):
@@ -317,7 +320,7 @@ Commands reach the Guest over its first working Channel (ADR 0003). When a Chann
 
 ## Deploy
 
-Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH`) if its Build artifact is missing or older than one of its `inputs`; Labs sharing an artifact build it once. Its output lands in the Run folder as `build.log`. The artifact is then copied into a uniquely named Guest folder under `~/vmlab/artifacts/` and `install` runs. That happens once per suite, and again after any restore. Before every Run, `quit` runs, the `state` paths are removed and `launch` runs. Guest recipes run in `sh` (PowerShell on Windows) with `env` plus `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH` and `VMLAB_ARTIFACT`, the Guest path of the delivered copy.
+Before Labs start, each Lab's build hook runs on the Host (with `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH`) if its Build artifact is missing or older than one of its `inputs`; Labs sharing an artifact build it once. Its output lands in the Run folder as `build.log`. The artifact is then copied into a uniquely named Guest folder under `~/vmlab/artifacts/` and `install` runs. That happens once per suite, and again after any restore. Before every Run, `quit` runs, vmlab waits for the app's process to go (`process`, or `ready`'s process when `ready = { process = "X" }`; up to `quit_timeout`, default the Lab's `step_timeout`), the `state` paths are removed and `launch` runs. A Scenario's `g.quit()` does the same on its clock; with no process to wait for, it raises when `quit` exits non-zero instead. `quit_timeout` without a process to wait for is a config error. Guest recipes run in `sh` (PowerShell on Windows) with `env` plus `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH` and `VMLAB_ARTIFACT`, the Guest path of the delivered copy.
 
 An app is launched once it is ready, not when `launch` returns: `ready` takes one `wait_for` condition, in its keywords (`text`/`role`/`app`, `process`, `file`, `log` + `pattern`, `exec` + `pattern`, `tray`, `gone`; see the UI contract), e.g. `ready = { tray = "MyApp" }` for a tray app's icon or `ready = { exec = ["curl", "-fsS", "http://127.0.0.1:8080/health"] }`. vmlab waits up to `ready_timeout` seconds (default: the Lab's `step_timeout`) after every launch: before a Run, off the Scenario's clock; in `g.launch()`, on it; and in `vmlab deploy`. Unmet, the Run errors (it is not a failed Check), or `deploy` exits 1, naming the condition and the last poll's answer (its first 1000 characters). When a Scenario's `TIMEOUT` runs out first in `g.launch()`, its timeout error names them too. A malformed `ready` is a config error naming its TOML key (`labs.LAB.app.ready.pattern`), for the same mistakes `wait_for` rejects; so are `ready` without `launch` and `ready_timeout` without `ready`.
 

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from vmlab import __version__, arch, report
 from vmlab.config import ConfigError
-from vmlab.deploy import build_if_stale, install, launch, prepare_run
+from vmlab.deploy import build_if_stale, install, launch, prepare_run, quit
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
 from vmlab.providers import provider_for
@@ -351,11 +351,14 @@ class _LabRun:
         def launch_app(env, call_timeout):
             launch(provider, lab, state["guest_artifact"], env, call_timeout)
 
+        def quit_app(env, call_timeout):
+            quit(provider, lab, state["guest_artifact"], env, call_timeout)
+
         results = []
         for path, shots_dir in zip(scenarios, _shots_dirs([p.stem for p in scenarios])):
             if interrupt.is_set():
                 raise Interrupted()
-            guest = Guest(lab, provider, self.run_dir, shots_dir, launch_app, interrupt)
+            guest = Guest(lab, provider, self.run_dir, shots_dir, launch_app, quit_app, interrupt)
             provider.on_exec = guest.channel_use.record
 
             def unreported(staged, spawned, name=path.stem):

@@ -8,11 +8,14 @@ A Lab's `[labs.NAME.app]` tells vmlab how to get the app under test into its Gue
 | `artifact` | Host path or glob (newest match) | copied into a fresh Guest folder; its Guest path is `$VMLAB_ARTIFACT` |
 | `install` (+ `install_timeout`) | Guest shell | once per suite, and again after every restore |
 | `quit`, then `state` removed, then `launch` | Guest shell | before every Run |
+| `quit` (+ `process`, `quit_timeout`) | Guest shell, then a wait until the app's process has gone | before every Run, and in `g.quit()` |
 | `ready` (+ `ready_timeout`) | one `wait_for` condition on the Guest | after every `launch` |
 
 The Guest shell is `sh` on macOS and Linux, and PowerShell on Windows (`$env:VMLAB_ARTIFACT`; `%VARS%` and a leading `~` work in `state`). TOML literal strings (`'...'`) hold shell quotes without escaping.
 
 `ready` (optional) says when the launched app can be driven, so no Scenario has to wait for it: one condition with `wait_for`'s keywords, e.g. `ready = { process = "MyApp" }`, a tray app's Tray icon `ready = { tray = "MyApp" }` (the app as `g.tray` takes it: on Windows its process name; on every OS, without opening its menu), a log line `ready = { log = "~/.myapp/app.log", pattern = "listening" }`, or a command `ready = { exec = ["curl", "-fsS", "http://127.0.0.1:8080/health"] }`. `ready_timeout` defaults to the Lab's `step_timeout`. Unmet, the Run errors and `vmlab deploy` exits 1, naming the condition and its last answer.
+
+`process` (optional) is the app's process name, as `wait_for(process=...)` takes it. After every `quit` recipe, vmlab waits until that process has gone, so `state` is removed only once the app stopped writing it (an app may save its settings on the way out), and `g.quit()` returns only then. Set it when `ready` is not `{ process = "X" }`: without it, `ready`'s process is the one waited for. `quit_timeout` (needs one of the two) defaults to the Lab's `step_timeout`. A process still there after it errors the Run, naming it; with a process to wait for, the quit recipe's exit code is not checked (before a Run it never is).
 
 `notification_id` (optional) is the OS's id for the app as the sender of its Notifications, which `g.notifications` and `wait_for(notification=...)` default to: on macOS its bundle id, on Windows the AppUserModelID its installer gives its Start menu shortcut (a Tauri app's: its identifier), on Linux the app name it gives the notification server (often its binary's or its product name). A Lab has one OS, so each Lab states its own. Not sure of it: send one Notification and read `vmlab ui notifications`, which lists every app's with its `"app"`.
 

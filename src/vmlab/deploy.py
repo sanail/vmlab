@@ -5,8 +5,9 @@
 - deliver + install: once per suite, and again after any restore. The artifact
   is copied to a uniquely named Guest folder (shared-folder caches never serve
   a stale copy), then the install recipe runs.
-- before every Run: quit (exit code ignored), remove the app state paths, launch,
-  then wait for the app's ready condition, if it has one.
+- before every Run: quit (exit code ignored) and wait for the app's process to go, if the Lab
+  names one, remove the app state paths, launch, then wait for the app's ready condition, if
+  it has one.
 
 Guest recipes run in the Guest's shell with the Lab's app.env plus VMLAB_LAB,
 VMLAB_OS, VMLAB_ARCH and VMLAB_ARTIFACT (the Guest path of the delivered copy).
@@ -81,12 +82,27 @@ def install(provider, lab, host_artifact):
 
 
 def prepare_run(provider, lab, guest_artifact, launch_app=True):
-    """Before a Run: quit the app, reset its state, and launch it."""
+    """Before a Run: quit the app, reset its state once it has gone, and launch it."""
     if lab.app.quit:
-        _recipe(provider, lab, "quit", guest_artifact, lab.step_timeout, check=False)
+        quit(provider, lab, guest_artifact, check=False)
     provider.remove_paths(lab.app.state, timeout=lab.step_timeout)
     if launch_app:
         launch(provider, lab, guest_artifact)
+
+
+def quit(provider, lab, guest_artifact, env=None, call_timeout=None, check=True):
+    """Run the quit recipe, then wait until the app's process has gone; with no process to wait
+    for, a failing recipe raises instead, unless check is False.
+
+    call_timeout(doing) bounds each Guest call (see vmlab.ui.UI); default: step_timeout.
+    """
+    if not lab.app.quit:
+        raise DeployError("Lab %s has no quit recipe" % lab.name, "set labs.%s.app.quit" % lab.name)
+    call_timeout = call_timeout or (lambda doing: lab.step_timeout)
+    process = lab.app.quit_process
+    _recipe(provider, lab, "quit", guest_artifact, call_timeout("quit"), check=check and process is None, extra_env=env)
+    if process:
+        _wait_gone(provider, lab, call_timeout)
 
 
 def launch(provider, lab, guest_artifact, env=None, call_timeout=None):
@@ -105,24 +121,39 @@ def _wait_ready(provider, lab, call_timeout):
     timeout = lab.app.ready_timeout or lab.step_timeout
     key = "labs.%s.app" % lab.name
     fix = "check that the launch recipe starts the app and what the condition waits for (try it with `vmlab ui wait-for`), or raise %s.ready_timeout" % key
+    _wait(provider, call_timeout, lab.app.ready, timeout, key + ".ready", "the app to be ready", "the app is not ready within %ss of its launch" % timeout, fix)
+
+
+def _wait_gone(provider, lab, call_timeout):
+    """Wait until the Lab's quit process has gone, up to quit_timeout."""
+    timeout = lab.app.quit_timeout or lab.step_timeout
+    key = "labs.%s.app" % lab.name
+    named_by = key + (".process" if lab.app.process else ".ready")
+    fix = "check that %s.quit quits the app (try it with `vmlab exec`), or raise %s.quit_timeout" % (key, key)
+    condition = ui.condition(process=lab.app.quit_process, gone=True)
+    what = "the app's process %s has not gone within %ss of its quit" % (lab.app.quit_process, timeout)
+    _wait(provider, call_timeout, condition, timeout, named_by, "the app's process to go", what, fix)
+
+
+def _wait(provider, call_timeout, condition, timeout, named_by, waiting_for, unmet_problem, fix):
     try:
-        result = ui.UI(provider, call_timeout).wait_for(lab.app.ready, timeout=timeout)
+        result = ui.UI(provider, call_timeout).wait_for(condition, timeout=timeout)
     except GuestTimeout as exc:
         if getattr(exc, "unmet", None) is None:
             raise
-        # The caller's clock (a Scenario's, in g.launch) ran out before ready_timeout: the same
-        # error ends it, saying what it was waiting for.
-        raise type(exc)("%s, waiting for the app to be ready: %s" % (exc.message, _unmet(key, exc.unmet)))
+        # The caller's clock (a Scenario's, in g.launch or g.quit) ran out before the Lab's
+        # timeout: the same error ends it, saying what it was waiting for.
+        raise type(exc)("%s, waiting for %s: %s" % (exc.message, waiting_for, _unmet(named_by, exc.unmet)))
     if not result["met"]:
-        raise DeployError("the app is not ready within %ss of its launch: %s" % (timeout, _unmet(key, result)), fix)
+        raise DeployError("%s: %s" % (unmet_problem, _unmet(named_by, result)), fix)
 
 
-def _unmet(key, result):
-    """'labs.<lab>.app.ready {condition} not met; last answer: {...}', the answer cut to ANSWER_CHARS."""
+def _unmet(named_by, result):
+    """'{named_by} {condition} not met; last answer: {...}', the answer cut to ANSWER_CHARS."""
     answer = json.dumps({k: v for k, v in result.items() if k not in ("met", "waited_s", "condition")})
     if len(answer) > ANSWER_CHARS:
         answer = answer[:ANSWER_CHARS] + "..."
-    return "%s.ready %s not met; last answer: %s" % (key, json.dumps(result["condition"]), answer)
+    return "%s %s not met; last answer: %s" % (named_by, json.dumps(result["condition"]), answer)
 
 
 def _recipe(provider, lab, step, guest_artifact, timeout, check=True, extra_env=None):

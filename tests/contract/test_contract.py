@@ -695,6 +695,52 @@ def scenario(g):
     remove_programs(g, "vs" + TAG + "b")
 """ % tag))
 
+    def test_06f_g_quit_and_g_launch_restart_the_app(self):
+        # The app: a process with a name of its own (as in test_06b), launched in the background; its
+        # quit recipe ends it two seconds later, as an app saving its settings on the way out would
+        # (by its pids, so a quit before the launch ends nothing launched after it).
+        # ready's process is the one g.quit waits for.
+        tag = uuid.uuid4().hex[:8]
+        name, log = "vq" + tag, "contract-restart-%s.log" % tag
+        if self.target.os == "windows":
+            launch = (
+                "Add-Content (Join-Path $HOME %s) launch; $p = Join-Path $env:TEMP '%s.exe'; "
+                "Copy-Item -Force C:\\Windows\\System32\\PING.EXE $p; Start-Process -WindowStyle Hidden $p -ArgumentList '-n','300','127.0.0.1'" % (log, name)
+            )
+            quit = (
+                "Add-Content (Join-Path $HOME %s) \"quit-$env:CONTRACT_QUIT\"; $ids = (Get-Process -Name %s -ErrorAction SilentlyContinue).Id; "
+                "if ($ids) { Start-Process -WindowStyle Hidden powershell -ArgumentList '-NoProfile','-Command',\"Start-Sleep 2; Stop-Process -Force -Id $($ids -join ',')\" }" % (log, name)
+            )
+        else:
+            # macOS kills a copy of a system binary: a link to sleep; Linux's sleep goes by the name it is called with: a script.
+            launch = (
+                'echo launch >> ~/%s; p="${TMPDIR:-/tmp}/%s"; if [ "$(uname)" = Darwin ]; then ln -sf /bin/sleep "$p"; '
+                'else printf "#!/bin/sh\\nsleep 300\\n" > "$p" && chmod +x "$p"; fi; nohup "$p" 300 >/dev/null 2>&1 </dev/null &' % (log, name)
+            )
+            quit = 'echo "quit-$CONTRACT_QUIT" >> ~/%s; pids=$(pgrep -x %s); [ -z "$pids" ] || nohup sh -c "sleep 2; kill $pids" >/dev/null 2>&1 </dev/null &' % (log, name)
+        config = self.target.root / ".vmlab" / "vmlab.toml"
+        before = config.read_text(encoding="utf-8")
+        app = "launch = %s\nquit = %s\nready = { process = %s }\n" % (json.dumps(launch), json.dumps(quit), json.dumps(name))
+        config.write_text(before + app, encoding="utf-8")  # the Lab's [app] table is the file's last
+        try:
+            self.assertPassed(*self.target.scenario("restart.py", COMMANDS + """
+NAME, LOG = %r, %r
+
+def scenario(g):
+    running = lambda: g.wait_for(process=NAME, timeout=1)["met"]
+    g.check("launched before the Run", running())
+    g.quit(env={"CONTRACT_QUIT": "x"})
+    g.check("gone once g.quit returns", not running())
+    g.launch()
+    g.check("running again once g.launch returns", running())
+    runs = g.get("~/" + LOG).split()
+    g.check("the recipes ran in order, quit with its env", runs[-3:] == ["launch", "quit-x", "launch"], detail=runs)
+    g.quit()
+    g.exec(cmd(g, 'rm -f ~/%%s "${TMPDIR:-/tmp}/%%s"' %% (LOG, NAME), "Remove-Item -Force (Join-Path $HOME %%s), (Join-Path $env:TEMP %%s.exe)" %% (LOG, NAME)))
+""" % (name, log)))
+        finally:
+            config.write_text(before, encoding="utf-8")
+
     def remove_argv(self, guest_path):
         if self.target.os == "windows":
             return ["powershell", "-NoProfile", "-Command", "Remove-Item -Force -LiteralPath '%s'" % guest_path]
