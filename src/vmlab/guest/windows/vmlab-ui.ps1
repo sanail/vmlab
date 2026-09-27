@@ -176,7 +176,10 @@ public static class Helper {
         return 1;
     }
 
+    static readonly string[] inputCommands = { "click", "press", "type", "focus", "stage-text", "close-staged", "tray" };
+
     static object Dispatch(string command, Dictionary<string, object> p) {
+        if (Array.IndexOf(inputCommands, command) >= 0) MoveBannersAside();
         switch (command) {
             case "version": return Version();
             case "tree": return Tree(p);
@@ -322,10 +325,58 @@ public static class Helper {
 
     static string Frontmost() {
         IntPtr hwnd = Native.GetForegroundWindow();
-        if (hwnd == IntPtr.Zero) return "";
+        return hwnd == IntPtr.Zero ? "" : AppName(WindowPid(hwnd));
+    }
+
+    /// A Notification's banner takes the foreground when the window in front of it closes, and in a Guest
+    /// nobody touches it stays up for good: keys go to it, clicks under it land on it, and no window can
+    /// take the foreground from it (SetForegroundWindow refuses, whatever the helper does first). Before any
+    /// input, the helper presses each banner's own "Move this notification to Notification Center" button,
+    /// which keeps the Notification recorded. Only a banner's: Notification Center, the same process and
+    /// window class, has buttons with the same id that clear Notifications.
+    static void MoveBannersAside() {
+        PropertyCondition banner = new PropertyCondition(AutomationElement.AutomationIdProperty, "NormalToastView");
+        PropertyCondition dismissId = new PropertyCondition(AutomationElement.AutomationIdProperty, "DismissButton");
+        for (int round = 0; round < 5; round++) {
+            AutomationElement dismiss = null;
+            try {
+                foreach (IntPtr hwnd in ShellWindows()) {
+                    AutomationElement window = AutomationElement.FromHandle(hwnd);
+                    AutomationElement toast = window.FindFirst(TreeScope.Descendants, banner);
+                    dismiss = toast == null ? null : toast.FindFirst(TreeScope.Descendants, dismissId);
+                    if (dismiss != null) break;
+                }
+                if (dismiss == null) return;
+                ((InvokePattern)dismiss.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            } catch (ElementNotAvailableException) {
+                return;
+            } catch (InvalidOperationException) {
+                return;
+            }
+            WaitFor<string>(DateTime.UtcNow.AddSeconds(2), delegate() {
+                try { return dismiss.Current.IsOffscreen ? "gone" : null; } catch (ElementNotAvailableException) { return "gone"; }
+            });
+        }
+    }
+
+    /// The shell's windows on screen: banners, Notification Center, flyouts. Not through EnumWindows,
+    /// which leaves out windows in the shell's own z-order bands (a banner not in front among them).
+    static List<IntPtr> ShellWindows() {
+        List<IntPtr> found = new List<IntPtr>();
+        IntPtr hwnd = IntPtr.Zero;
+        while ((hwnd = Native.FindWindowEx(IntPtr.Zero, hwnd, "Windows.UI.Core.CoreWindow", null)) != IntPtr.Zero) {
+            int cloaked;
+            if (!Native.IsWindowVisible(hwnd) || !IsApp(WindowPid(hwnd), "ShellExperienceHost")) continue;
+            if (Native.DwmGetWindowAttribute(hwnd, 14, out cloaked, 4) == 0 && cloaked != 0) continue;  // DWMWA_CLOAKED
+            found.Add(hwnd);
+        }
+        return found;
+    }
+
+    static int WindowPid(IntPtr hwnd) {
         int pid;
         Native.GetWindowThreadProcessId(hwnd, out pid);
-        return AppName(pid);
+        return pid;
     }
 
     /// Make hwnd the foreground window, or fail. Only the foreground's own input queue may hand it over,

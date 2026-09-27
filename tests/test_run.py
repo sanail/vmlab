@@ -89,6 +89,46 @@ class RunTest(VmlabTestCase):
         suite = ET.parse(str(self.project.only_run_dir() / "junit.xml")).getroot()
         self.assertEqual(suite.get("errors"), "1")
 
+    def test_a_scenario_that_errors_keeps_the_screen_as_it_left_it(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("broken.py", """
+            def scenario(g):
+                g.screenshot("before")
+                g.check("reached", True)
+                raise RuntimeError("helper crashed")
+        """)
+
+        self.assertExit(self.project.vmlab("run"), 1)
+
+        run_dir = self.project.only_run_dir()
+        shots = self.project.report(run_dir)["scenarios"][0]["screenshots"]
+        self.assertEqual(shots, ["screenshots/broken/01-before.png", "screenshots/broken/02-error.png"])
+        self.assertTrue((run_dir / shots[1]).read_bytes().startswith(b"\x89PNG"))
+
+    def test_the_first_failed_check_keeps_the_screen_of_that_moment(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("red.py", """
+            def scenario(g):
+                g.check("green", True)
+                g.check("red", False)
+                g.check("red again", False)
+        """)
+
+        self.assertExit(self.project.vmlab("run"), 1)
+
+        self.assertEqual(self.project.report()["scenarios"][0]["screenshots"], ["screenshots/red/01-failed.png"])
+
+    def test_a_scenario_that_passes_takes_no_screenshot_of_its_own(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("green.py", """
+            def scenario(g):
+                g.check("green", True)
+        """)
+
+        self.assertExit(self.project.vmlab("run"), 0)
+
+        self.assertEqual(self.project.report()["scenarios"][0]["screenshots"], [])
+
     def test_scenario_without_checks_is_an_error(self):
         self.project.config(FAKE_LAB)
         self.project.scenario("empty.py", """
@@ -242,16 +282,18 @@ class RunTest(VmlabTestCase):
         self.assertExit(r, 1)
         run_dir = self.project.only_run_dir()
         shots = {s["name"]: s["screenshots"] for s in self.project.report(run_dir)["scenarios"]}
-        self.assertEqual(
-            shots, {"palette": ["screenshots/palette/01-welcome.png"], "tray": ["screenshots/tray/01-welcome.png"]}
-        )
+        self.assertEqual(shots, {
+            "palette": ["screenshots/palette/01-welcome.png", "screenshots/palette/02-failed.png"],
+            "tray": ["screenshots/tray/01-welcome.png", "screenshots/tray/02-failed.png"],
+        })  # fmt: skip
         summary = (run_dir / "summary.md").read_text()
         junit = (run_dir / "junit.xml").read_text()
-        for name, [shot] in shots.items():
-            self.assertTrue((run_dir / shot).is_file())
-            self.assertIn("- screenshot: [%s](%s)" % (shot, shot), summary)
-            self.assertIn(shot, junit)
-            self.assertIn("FAIL mac/%s: window appears (screenshots: %s)" % (name, shot), r.out)
+        for name, both in shots.items():
+            for shot in both:
+                self.assertTrue((run_dir / shot).is_file())
+                self.assertIn("- screenshot: [%s](%s)" % (shot, shot), summary)
+                self.assertIn(shot, junit)
+            self.assertIn("FAIL mac/%s: window appears (screenshots: %s)" % (name, ", ".join(both)), r.out)
         self.assertNotIn("returns its path", r.out)
 
     def test_scenarios_with_one_name_in_a_suite_run_keep_their_screenshots_apart(self):

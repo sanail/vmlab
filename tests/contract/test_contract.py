@@ -308,23 +308,25 @@ def scenario(g):
 NOTIFY = r'''
 POWERSHELL_AUMID = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"
 APPS = {"macos": "com.apple.ScriptEditor2", "windows": POWERSHELL_AUMID, "linux": "vmlab-contract"}
-TOAST = """param($Delay, $Title, $Body)
+# Windows 11 records PowerShell's Notifications but shows no banner for them; File Explorer's it shows.
+BANNER_APPS = {"windows": "Microsoft.Windows.Explorer"}
+TOAST = """param($Delay, $Title, $Body, $Aumid)
 Start-Sleep -Seconds $Delay
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
 $xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>' + $Title + '</text><text>' + $Body + '</text></binding></visual></toast>')
-[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('%s').Show([Windows.UI.Notifications.ToastNotification]::new($xml))
-""" % POWERSHELL_AUMID
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($Aumid).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+"""
 OSASCRIPT = ["osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"]
 GDBUS = ["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications",
          "--method", "org.freedesktop.Notifications.Notify", "vmlab-contract", "0", ""]
 
-def sender(g, title, body, delay=0):
-    # The argv that sends a Notification after delay seconds.
+def sender(g, title, body, delay=0, app=POWERSHELL_AUMID):
+    # The argv that sends a Notification after delay seconds (on Windows, as app).
     if g.os == "windows":
         script = g.put("%TEMP%\\vmlab-toast.ps1", TOAST)
-        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, str(delay), title, body]
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, str(delay), title, body, app]
     send = OSASCRIPT + [title, body] if g.os == "macos" else GDBUS + [title, body, "[]", "{}", "5000"]
     return ["sh", "-c", 'sleep "$1"; shift; exec "$@"', "sh", str(delay)] + send
 
@@ -342,6 +344,19 @@ def scenario(g):
     at = datetime.fromisoformat(found["time"].replace("Z", "+00:00")).timestamp() if found else 0
     g.check("its time is on the Guest's clock", abs(at - guest_now(g)) < 60, detail=[found, guest_now(g)])
     g.check("app narrows the list", g.notifications(app="com.example.none", text=nonce) == {"notifications": []})
+    # A banner takes the foreground when the window in front of it closes, and Windows keeps it up while the Guest
+    # sits idle: stage_text must still reach its editor, and the Notification stay recorded.
+    banner = BANNER_APPS.get(g.os, app)
+    first = g.stage_text("before a banner " + nonce)
+    g.exec(sender(g, "vmlab contract", "banner " + nonce, app=banner))
+    shown = g.wait_for(notification="banner " + nonce, app=banner, timeout=60)
+    g.check("the fixture sends a Notification with a banner", shown["met"], detail=shown)
+    g.close_staged(first)
+    staged = g.stage_text("after a banner " + nonce)
+    g.check("stage_text reaches its editor while a banner is up", staged["frontmost"] == staged["app"], detail=staged)
+    g.close_staged(staged)
+    kept = g.notifications(app=banner, text="banner " + nonce)["notifications"]
+    g.check("the Notification is still recorded after its banner is gone", len(kept) == 1, detail=kept)
     g.spawn(sender(g, "vmlab contract", "later " + nonce, delay=4))
     later = g.wait_for(notification="later " + nonce, app=app, timeout=60)
     g.check("wait_for is met by one sent during the wait", later["met"] and later["waited_s"] >= 3, detail=later)

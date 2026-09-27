@@ -31,6 +31,9 @@ class ChannelFallbackTest(VmlabTestCase):
         self.assertEqual((fallback["from"], fallback["to"]), ("ssh", "exec"))
         self.assertIn("broken", fallback["reason"])
         self.assertIn("ssh", (run_dir / "summary.md").read_text())
+        # The console says so too: calls over a fallback may be slower, which changes what polls see.
+        self.assertIn("mac: scenario echo passed in", r.out)
+        self.assertRegex(r.out, r"mac: scenario echo passed in \S+; 1 of 1 Guest call\(s\) fell back from ssh to exec: .*broken")
 
     def test_the_preferred_channel_serves_when_healthy(self):
         self.project.config(FAKE_LAB + '[labs.mac.fake]\nchannels = ["ssh", "exec"]\n')
@@ -40,6 +43,7 @@ class ChannelFallbackTest(VmlabTestCase):
         [scenario] = self.project.report()["scenarios"]
         self.assertEqual(scenario["channels"], {"ssh": 1})
         self.assertEqual(scenario["fallbacks"], [])
+        self.assertNotIn("fell back", self.project.vmlab("run").out)
 
     def test_a_command_exiting_nonzero_does_not_fall_back(self):
         self.project.config(FAKE_LAB + '[labs.mac.fake]\nchannels = ["ssh", "exec"]\n')

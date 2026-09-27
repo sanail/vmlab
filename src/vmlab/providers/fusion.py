@@ -318,12 +318,19 @@ class FusionVM:
     def _leased_ip(self):
         """The address Fusion's NAT DHCP server last leased to this VM's MAC, or None."""
         mac = self.config("ethernet0.generatedAddress") if self.exists() else None
+        if not mac:
+            return None
         try:
             leases = Path(DHCP_LEASES).read_text(encoding="utf-8", errors="replace")
         except OSError:
             return None
-        found = re.findall(r"lease (\S+) \{[^}]*hardware ethernet %s;" % re.escape(mac), leases) if mac else []
-        return found[-1] if found else None  # the file only grows: the last lease is the newest
+        # By its start time: the DHCP server rewrites the file, and an old lease can come after a newer one.
+        found = []
+        for ip, body in re.findall(r"lease (\S+) \{([^}]*)\}", leases):
+            if re.search(r"hardware ethernet %s;" % re.escape(mac), body, re.I):
+                starts = re.search(r"starts \d+ ([\d/]+ [\d:]+);", body)
+                found.append((starts.group(1) if starts else "", ip))
+        return max(found)[1] if found else None
 
     def forget_ip(self):
         self._ip = None
@@ -1131,12 +1138,14 @@ class FusionProvider(Provider):
             # be logged in interactively"), and a Run must not start while a Channel still refuses.
             # A Guest that was already running has passed that: probing vmrun again costs seconds.
             return all(probes) if self._booting else any(probes)
-        for channel in self.channels():
-            result = self._probes(channel, DESKTOP_PROBE)  # it also puts a session off the screen back on it
-            if result:
-                self._seen_session = result.stdout.strip()
-                return True
-        return False
+        # While it boots, every Channel, as for Windows: until VMware Tools publish the new address, ssh may
+        # be pointed at an old one (the snapshot's, an old DHCP lease), and a Run must not start with it.
+        results = (self._probes(channel, DESKTOP_PROBE) for channel in self.channels())  # it also puts a session off the screen back
+        answers = list(results) if self._booting else [next((r for r in results if r), None)]
+        if not all(answers):
+            return False
+        self._seen_session = answers[0].stdout.strip()
+        return True
 
     def boot_state(self):
         """VMware Tools start with the OS: while they do not answer, the boot never got that far."""

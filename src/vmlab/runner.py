@@ -20,6 +20,7 @@ A Lab this Host does not cover (vmlab.arch) is skipped: no build, no Guest, a
 warning, and reports with status "skipped".
 """
 
+import collections
 import threading
 import time
 from datetime import datetime, timezone
@@ -479,6 +480,13 @@ def _ended(result):
         line += " (%d of %d Checks failed)" % (failed, len(checks))
     elif result["status"] == "passed" and skipped:
         line += " (%d of %d Checks skipped)" % (skipped, len(checks))
+    # A fallback Channel may be much slower, and polls then see less: a result to read with that in mind.
+    by_pair = collections.OrderedDict()
+    for f in result["fallbacks"]:
+        by_pair.setdefault((f["from"], f["to"]), []).append(f["reason"])
+    calls = sum(result["channels"].values())
+    for (source, target), reasons in by_pair.items():
+        line += "; %d of %d Guest call(s) fell back from %s to %s: %s" % (len(reasons), calls, source, target, reasons[-1])
     return line
 
 

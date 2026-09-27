@@ -347,6 +347,17 @@ class Guest:
     def screenshot(self, name):
         """Save a screenshot as evidence and return its path relative to the run folder."""
         self._remaining("screenshot")
+        return self._save_screenshot(name)
+
+    def _evidence_screenshot(self, name):
+        """The screen when a Check failed or the Scenario errored, taken by vmlab itself: best effort,
+        since what failed may have been the Guest itself."""
+        try:
+            self._save_screenshot(name)
+        except (GuestError, OSError):
+            pass
+
+    def _save_screenshot(self, name):
         slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", name).strip("-") or "screenshot"
         rel = "%s/%02d-%s.png" % (self._shots_dir, len(self.screenshots) + 1, slug)
         dest = self._run_dir / rel
@@ -362,7 +373,10 @@ class Guest:
         reported as "visual, unverified" because it is not deterministic.
         """
         kind = VISUAL if visual else DETERMINISTIC
+        first_failure = not passed and not any(failed(c) for c in self.checks)
         self.checks.append({"name": name, "passed": bool(passed), "skipped": False, "detail": detail, "kind": kind})
+        if first_failure:
+            self._evidence_screenshot("failed")  # the screen as the first failed Check saw it
         return bool(passed)
 
     def skip(self, name, reason):
@@ -471,6 +485,7 @@ def run_scenario(path, guest, prepare, unreported):
 
     if error:
         status = "error"
+        guest._evidence_screenshot("error")  # before its Staged documents close
     elif any(failed(c) for c in guest.checks):
         status = "failed"
     else:
