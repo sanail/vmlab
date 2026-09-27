@@ -71,6 +71,7 @@ class Guest:
     def __init__(self, lab, provider, run_dir, shots_dir, launch_app, quit_app, interrupt=None):
         self.lab = lab.name
         self.os = lab.os
+        self.language = lab.language  # the Lab language, e.g. "ru-RU": system element names come in it
         self.arch = lab.arch  # the Build artifact's
         self.guest_arch = arch.guest_arch()  # differs from arch when the Guest OS emulates it
         self._provider = provider

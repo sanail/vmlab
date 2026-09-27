@@ -38,6 +38,17 @@ class DoctorTest(VmlabTestCase):
         self.assertExit(r, 1)
         self.assertRegex(r.out, r"FAIL\s+mac: no Channel reaches the Guest")
 
+    def test_the_lab_language_row_on_a_stopped_and_a_running_guest(self):
+        self.project.config(FAKE_LAB + 'language = "ru-RU"\n')
+
+        r = self.project.vmlab("doctor")
+        self.assertRegex(r.out, r"ok\s+mac: Language: ru-RU")
+
+        self.assertExit(self.project.vmlab("up"), 0)
+        r = self.project.vmlab("doctor")
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+mac: Language: ru-RU")
+
     def test_a_stopped_guest_says_how_to_check_its_channels(self):
         self.project.config(FAKE_LAB)
 

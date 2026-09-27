@@ -30,10 +30,10 @@ import uuid
 from pathlib import Path
 
 from vmlab import bases, hostpower, hostproc, uihelpers
-from vmlab.config import host_arch
+from vmlab.config import DEFAULT_LANGUAGE, host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
-    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
+    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
     RTC_OFFSET, save_credentials, shut_down_for_labs, sound_off, utc_clock, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
@@ -82,7 +82,7 @@ GET_WINDOWS = """\
   1. In VMware Fusion: File > New..., choose "Get Windows from Microsoft", pick Windows 11
      and English (United States), and follow Fusion's steps.
      Windows Labs expect en-US element names; a Lab written for another language sets
-     language under [labs.NAME.fusion].
+     language under [labs.NAME].
   2. When Fusion asks how to encrypt the VM (Windows 11 needs a TPM), choose "Only the files
      needed to support a TPM are encrypted" and let Fusion keep the password in your Keychain.
   3. In Windows Setup, make a local account with a password: vmlab signs in with it.
@@ -419,9 +419,8 @@ def _provision(wizard, name, vm):
                     "re-run `vmlab base create %s --reprovision`" % name,
                 )
             wizard.out("  Channel %s reaches the desktop session (session %s, UTF-8)" % (each.name, session))
-        expected = WINDOWS_DEFAULTS["language"]
-        if language.lower() != expected.lower():
-            wizard.out("  display language %s: Windows Labs expect %s unless they set language under [labs.NAME.fusion]" % (language or "unknown", expected))
+        if language.lower() != DEFAULT_LANGUAGE.lower():
+            wizard.out("  display language %s: Windows Labs expect %s unless they set language under [labs.NAME]" % (language or "unknown", DEFAULT_LANGUAGE))
         check_clock(name, ssh, vm, wizard.out)  # in the snapshot Labs boot from
         # The UI helper compiles itself on first use (~10 s): done here, it is in the snapshot,
         # and Labs do not pay for it after every restore.

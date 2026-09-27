@@ -491,6 +491,7 @@ def _status(project, names, as_json):
                 "provider": lab.provider,
                 "os": lab.os,
                 "arch": lab.arch,
+                "language": lab.language,
                 "guest": provider.guest_id,
                 "running": provider.is_running(),
             }

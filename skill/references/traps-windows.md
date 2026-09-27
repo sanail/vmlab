@@ -28,7 +28,7 @@ Symptoms first, then the cause and what to do. vmlab already handles, so Scenari
 
 ## Theme, language and layout settings
 
-Element names come in the Guest's display language: `g.find(text="Close")` finds nothing on a German Windows. A Lab's `language` (default `en-US`) says which one its Scenarios are written for, and `vmlab doctor` fails when the Guest shows another. Match your own app's text, which you control, before the system's.
+Element names come in the Guest's display language: `g.find(text="Close")` finds nothing on a German Windows. vmlab does not change a Windows Guest's language, which comes from its Base guest: the Lab language (`[labs.NAME] language`, default `en-US`) says which one its Scenarios are written for, and `vmlab doctor` fails when the Guest shows another. Match your own app's text, which you control, before the system's; see "Language-dependent apps" in [scenarios.md](scenarios.md).
 
 A web view reads the Windows theme (`AppsUseLightTheme`) once, when it is created. A Scenario that tests a theme sets it before launch: `LAUNCH = False`, set the registry value with `g.exec`, then `g.launch()`. The same goes for any setting an app reads at start. A Check that depends on the keyboard layout sets the layout explicitly and records it, since a Guest's default is whatever its Windows install chose.
 

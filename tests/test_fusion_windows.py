@@ -87,14 +87,14 @@ class WindowsLabConfigTest(WindowsTestCase):
         self.assertIn("labs.win.fusion.session", r.err)
         self.assertIn("unknown key for a Windows Lab", r.err)
 
-    def test_the_display_language_is_a_language_tag(self):
-        self.project.config(WINDOWS_LAB + '[labs.win.fusion]\nlanguage = "English"\n')
+    def test_the_language_moved_to_the_lab_and_the_old_key_names_its_replacement(self):
+        self.project.config(WINDOWS_LAB + '[labs.win.fusion]\nlanguage = "de-DE"\n')
 
         r = self.vmlab("status")
 
         self.assertExit(r, 2)
         self.assertIn("labs.win.fusion.language", r.err)
-        self.assertIn('language = "en-US"', r.err)
+        self.assertIn('[labs.win]: language = "de-DE"', r.err)
 
 
 class WindowsDoctorTest(WindowsTestCase):
@@ -156,39 +156,52 @@ class WindowsDoctorTest(WindowsTestCase):
         self.assertRegex(r.out, r"warn\s+win: Elevation: ")
         self.assertIn("vmlab base create windows-11", r.out)
 
-    def test_a_base_guest_in_the_labs_display_language(self):
+    def test_a_base_guest_in_the_lab_language(self):
         self.set_record(language="en-US")
 
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Display language: en-US")
+        self.assertRegex(r.out, r"ok\s+win: Language: en-US")
 
-    def test_a_base_guest_in_another_display_language_is_a_warning_until_the_guest_runs(self):
+    def test_a_base_guest_in_another_language_fails(self):
         self.set_record(language="de-DE")
 
         r = self.vmlab("doctor")
 
-        self.assertExit(r, 0)  # the Guest can start; its running check fails
-        self.assertRegex(r.out, r"warn\s+win: Display language: .*de-DE.*en-US")
-        self.assertIn('language = "de-DE"', r.out)
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+win: Language: Base guest windows-11 shows de-DE, but the Lab language is en-US")
+        self.assertIn('language = "de-DE" under [labs.win]', r.out)
         self.assertIn("vmlab base create windows-11 --image", r.out)
         self.assertRegex(r.out, r"info\s+win: Guest: stopped", "the checks after it still run")
 
-    def test_a_lab_can_name_another_display_language(self):
-        self.project.config(WINDOWS_LAB + '[labs.win.fusion]\nlanguage = "de-DE"\n')
+    def test_a_lab_can_name_another_language(self):
+        self.project.config(WINDOWS_LAB + 'language = "de-DE"\n')
         self.set_record(language="de-de")
 
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Display language: de-de")
+        self.assertRegex(r.out, r"ok\s+win: Language: de-DE")
+
+    def test_a_windows_copy_is_never_made_again_for_its_language(self):
+        # Windows shows its Base guest's language: the copy is kept, and its Clone row does not say otherwise.
+        self.project.config(WINDOWS_LAB + 'language = "de-DE"\n')
+        self.set_record(language="de-DE")
+        self.vmlab("up")  # no Guest really boots here; the copy is made
+        self.vmlab("down")
+
+        self.vmlab("up")
+        r = self.vmlab("doctor")
+
+        self.assertNotIn("made in", r.out)
+        self.assertEqual(len([c for c in self.raw_calls() if "deleteVM" in c]), 0)
 
     def test_a_base_guest_provisioned_before_languages_were_recorded_is_checked_while_it_runs(self):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"info\s+win: Display language: .*while the Guest runs")
+        self.assertRegex(r.out, r"info\s+win: Language: .*while the Guest runs")
         self.assertIn("vmlab base create windows-11 --reprovision", r.out)
 
     def test_missing_credentials_fail_since_vmrun_cannot_open_the_vm(self):

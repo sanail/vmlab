@@ -4,14 +4,14 @@ A Lab's `[labs.NAME.app]` tells vmlab how to get the app under test into its Gue
 
 | Key | Runs | When |
 | --- | --- | --- |
-| `build` (+ `inputs`, `build_timeout`) | Host shell, project root, with `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH` | the `artifact` is missing or older than any of `inputs` |
+| `build` (+ `inputs`, `build_timeout`) | Host shell, project root, with `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH`, `VMLAB_LANGUAGE` | the `artifact` is missing or older than any of `inputs` |
 | `artifact` | Host path or glob (newest match) | copied into a fresh Guest folder; its Guest path is `$VMLAB_ARTIFACT` |
 | `install` (+ `install_timeout`) | Guest shell | once per suite, and again after every restore |
 | `quit`, then `state` removed, then `launch` | Guest shell | before every Run |
 | `quit` (+ `process`, `quit_timeout`) | Guest shell, then a wait until the app's process has gone | before every Run, and in `g.quit()` |
 | `ready` (+ `ready_timeout`) | one `wait_for` condition on the Guest | after every `launch` |
 
-The Guest shell is `sh` on macOS and Linux, and PowerShell on Windows (`$env:VMLAB_ARTIFACT`; `%VARS%` and a leading `~` work in `state`). TOML literal strings (`'...'`) hold shell quotes without escaping.
+Guest recipes get the Lab's `env` plus `VMLAB_LAB`, `VMLAB_OS`, `VMLAB_ARCH`, `VMLAB_LANGUAGE` (the Lab language, e.g. `ru-RU`) and `VMLAB_ARTIFACT`. The Guest shell is `sh` on macOS and Linux, and PowerShell on Windows (`$env:VMLAB_ARTIFACT`; `%VARS%` and a leading `~` work in `state`). TOML literal strings (`'...'`) hold shell quotes without escaping.
 
 `ready` (optional) says when the launched app can be driven, so no Scenario has to wait for it: one condition with `wait_for`'s keywords, e.g. `ready = { process = "MyApp" }`, a tray app's Tray icon `ready = { tray = "MyApp" }` (the app as `g.tray` takes it: on Windows its process name; on every OS, without opening its menu), a log line `ready = { log = "~/.myapp/app.log", pattern = "listening" }`, or a command `ready = { exec = ["curl", "-fsS", "http://127.0.0.1:8080/health"] }`. `ready_timeout` defaults to the Lab's `step_timeout`. Unmet, the Run errors and `vmlab deploy` exits 1, naming the condition and its last answer.
 

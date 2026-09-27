@@ -41,6 +41,7 @@ TEMPLATE = """\
 # provider = "tart"        # tart: macOS on Apple Silicon; fusion: Linux and Windows (VMware Fusion); fake: no hypervisor (utm, parallels: stubs)
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
+# language = "en-US"       # the Lab language (ll-RR): system element names come in it; en-US by default
 # memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs that don't fit
 # boot_timeout = 300       # seconds from power-on until the Guest must be reachable (the Host's sleep does not count)
 # step_timeout = 60        # default seconds per Guest call
@@ -82,7 +83,6 @@ TEMPLATE = """\
 # [labs.win.fusion]
 # base = "windows-11"      # Base guest to copy; create it once with `vmlab base create windows-11`
 # cpu = 4
-# language = "en-US"       # the Windows display language the Scenarios' element names are in
 """
 
 

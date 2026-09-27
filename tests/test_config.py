@@ -1,3 +1,5 @@
+import json
+
 from harness import FAKE_LAB, VmlabTestCase
 
 SMOKE = """
@@ -95,3 +97,45 @@ class ConfigErrorTest(VmlabTestCase):
         (self.project.dir / "notifications.json").write_text('{"app": "x"}')
         self.project.scenario("smoke.py", SMOKE)
         self.assertConfigError("labs.mac.fake.notifications", "list")
+
+
+LANGUAGE_SCENARIO = """
+def scenario(g):
+    g.check("language " + g.language, True)
+"""
+
+
+class LabLanguageTest(VmlabTestCase):
+    """[labs.NAME] language: the Lab language, ll-RR, en-US unless the Lab says otherwise."""
+
+    def run_language(self, toml):
+        self.project.config(toml)
+        self.project.scenario("language.py", LANGUAGE_SCENARIO)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
+        [check] = self.project.report()["scenarios"][0]["checks"]
+        return check["name"]
+
+    def test_a_lab_is_in_english_unless_it_says_otherwise(self):
+        self.assertEqual(self.run_language(FAKE_LAB), "language en-US")
+
+    def test_scenarios_read_the_labs_language(self):
+        self.assertEqual(self.run_language(FAKE_LAB + 'language = "ru-RU"\n'), "language ru-RU")
+
+    def test_status_shows_the_language(self):
+        self.project.config(FAKE_LAB + 'language = "de-DE"\n')
+        [row] = json.loads(self.project.vmlab("status", "--json").out)
+        self.assertEqual(row["language"], "de-DE")
+
+    def test_a_language_without_a_region_is_rejected_with_an_example(self):
+        self.project.config(FAKE_LAB + 'language = "ru"\n')
+        r = self.project.vmlab("status")
+        self.assertExit(r, 2)
+        self.assertIn("labs.mac.language", r.err)
+        self.assertIn('language = "ru-RU"', r.err)
+
+    def test_a_language_must_be_a_string(self):
+        self.project.config(FAKE_LAB + "language = 7\n")
+        r = self.project.vmlab("status")
+        self.assertExit(r, 2)
+        self.assertIn("labs.mac.language", r.err)

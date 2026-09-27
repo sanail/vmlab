@@ -46,6 +46,10 @@ class BootTimeout(GuestError):
 
 
 BootState = namedtuple("BootState", "reached_os evidence")  # how far a boot got: evidence says what shows it
+# The language a Guest shows, for doctor's Language row: shown in the Guest OS's form (config.language_forms),
+# or None when nothing tells it yet; where says what showed it ("the Guest", "the clone"), or, when shown is
+# None, why it is not known, with fix.
+LanguageShown = namedtuple("LanguageShown", "shown where fix")
 
 
 class ExecResult:
@@ -124,6 +128,11 @@ class Provider:
     def validate_options(cls, config_path, key, options, os_name):
         """Raise ConfigError if this Provider's [labs.<name>.<provider>] table is wrong."""
 
+    @classmethod
+    def base_of(cls, options, os_name):
+        """The Base guest a Lab with these (valid) options clones, or None for Providers without them."""
+        return None
+
     @property
     def guest_id(self):
         """Stable per project and Lab, so projects never share a Guest by accident."""
@@ -149,6 +158,16 @@ class Provider:
         """doctor's checks of the running Guest beyond its Channels and UI helper, which work by now:
         [(check, status, detail, fix)]."""
         return []
+
+    def shown_language(self, running):
+        """The LanguageShown of the Guest: read in it when running, else from what vmlab recorded about it
+        (its clone, its Base guest). GuestError when it cannot be read; None when the Provider cannot tell."""
+        return None
+
+    def language_fix(self):
+        """How to make the Guest show the Lab language, for doctor's Language row. By default the clone
+        is made again, in the Lab language, at its next start."""
+        return "vmlab down %s && vmlab up %s   (the clone is made again, in %s)" % (self.lab.name, self.lab.name, self.lab.language)
 
     def is_running(self):
         raise NotImplementedError

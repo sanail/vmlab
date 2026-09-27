@@ -56,6 +56,10 @@ Read and choose from an app's Tray menu with `g.tray(APP, choose=...)`: it press
 
 `osascript` against System Events waits up to two minutes for a busy app and leaves a hung process behind it that blocks later calls. Wrap such scripts in `with timeout of 10 seconds ... end timeout`, and pass `g.exec` a `timeout=`. Full-screen mode: set the window's `AXFullScreen` attribute, since the Cmd+Ctrl+F chord zooms some windows instead; prove the new Space by a witness, an ordinary window that leaves the on-screen list.
 
+## Menus and dialogs in another language
+
+In a Lab whose language is not `en-US`, the menu bar, Finder, open and save panels and Notifications come in the Lab language: `g.find(text="File")` finds nothing there. vmlab sets it (`AppleLanguages`, `AppleLocale`) when the clone is made, with one extra boot. Find the translated names with `vmlab ui find` on that Lab; see "Language-dependent apps" in [scenarios.md](scenarios.md). An app reads the language when it starts: a Scenario that changes it with `defaults write` must restart the app, and the system's own menus change only after a restart of the Guest.
+
 ## Restarting
 
 A reboot from inside the Guest (`shutdown -r now`) cuts its own Channel and reports success before anything happens. Restart from the Host: `vmlab down LAB && vmlab up LAB`.

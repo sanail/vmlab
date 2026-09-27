@@ -327,6 +327,105 @@ class TartCloneTest(TartTestCase):
         self.assertIn("mac: booting\n", r.out)
 
 
+class TartLanguageTest(TartTestCase):
+    """The Lab language is set on the clone, when it is made; a clone in another language is made again."""
+
+    def setUp(self):
+        super().setUp()
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])
+        self.base_record()
+
+    def clone_record(self):
+        [path] = [p for p in (self.project.home / "tart").glob("vmlab-*.json")]
+        return json.loads(path.read_text())
+
+    def calls(self):
+        calls = [c[0] for c in self.tart_calls() if c[0] in ("clone", "delete", "run")]
+        self.log_path.unlink()
+        return calls
+
+    def test_an_english_clone_boots_once_and_records_its_language(self):
+        self.project.config(TART_LAB)
+
+        self.vmlab("up")  # the fake tart never boots a VM
+
+        self.assertEqual(self.calls(), ["clone", "run"], "no boot to set the language")
+        self.assertEqual(self.clone_record()["language"], "en-US")
+
+    def test_another_language_is_set_in_a_boot_while_cloning(self):
+        self.project.config(TART_LAB + 'language = "ru-RU"\n')
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertEqual(self.calls(), ["clone", "run"], "the fake VM never boots, so the language boot is the last call")
+        self.assertIn("ru-RU", r.err)
+        self.assertIsNone(self.clone_record()["made_from"], "a clone whose language was not set is made again")
+        self.assertRegex(self.vmlab("doctor").out, r"info\s+mac: Language: no finished clone yet", "not ru-RU: it was never set")
+        self.vmlab("up")
+        self.assertEqual(self.calls()[:2], ["delete", "clone"])
+
+    def test_a_changed_language_makes_the_clone_again(self):
+        self.project.config(TART_LAB)
+        self.vmlab("up")
+        self.calls()
+        self.vmlab("up")
+        self.assertEqual(self.calls(), ["run"], "same language: the clone is reused")
+
+        self.project.config(TART_LAB + 'language = "de-DE"\n')
+        self.vmlab("up")
+        self.assertEqual(self.calls()[:2], ["delete", "clone"])
+
+    def test_a_clone_recorded_before_languages_is_english(self):
+        self.project.config(TART_LAB)
+        self.vmlab("up")
+        record = self.clone_record()
+        del record["language"]
+        [path] = [p for p in (self.project.home / "tart").glob("vmlab-*.json")]
+        path.write_text(json.dumps(record))
+        self.calls()
+
+        self.vmlab("up")
+
+        self.assertEqual(self.calls(), ["run"])
+
+    def test_doctor_reads_the_language_of_a_stopped_guest_from_its_clone(self):
+        ssh = self.project.home / "ssh"
+        ssh.mkdir(exist_ok=True)
+        (ssh / "known_hosts").write_text("vmlab-base-macos-tahoe ssh-ed25519 AAAA\n")
+        self.project.config(TART_LAB)
+
+        r = self.vmlab("doctor")
+        self.assertRegex(r.out, r"info\s+mac: Language: no finished clone yet; `vmlab up mac` clones .* in en-US")
+
+        self.vmlab("up")
+        r = self.vmlab("doctor")
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+mac: Language: en-US")
+
+        self.project.config(TART_LAB + 'language = "ru-RU"\n')
+        r = self.vmlab("doctor")
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+mac: Language: the clone shows en-US .*but the Lab language is ru-RU")
+        self.assertIn("vmlab down mac && vmlab up mac", r.out)
+        self.assertRegex(r.out, r"info\s+mac: Clone: made in en-US; `vmlab up mac` makes it again in ru-RU")
+        self.assertRegex(r.out, r"info\s+mac: Guest: stopped", "the checks after it still run")
+
+    def test_a_base_guest_of_another_os_is_a_config_error(self):
+        path = self.project.home / "bases.json"
+        records = json.loads(path.read_text())
+        records["ubuntu-26.04"] = {"provider": "fusion", "os": "linux", "provisioned": 6}
+        path.write_text(json.dumps(records))
+        self.project.config(TART_LAB + '[labs.mac.tart]\nbase = "ubuntu-26.04"\n')
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 2)
+        self.assertIn("labs.mac.tart.base", r.err)
+        self.assertIn("runs linux", r.err)
+        self.assertIn('base = "macos-tahoe"', r.err)
+
+
 class CleanTest(TartTestCase):
     """`vmlab clean`: leftovers of Labs that are gone, deleted only when confirmed."""
 

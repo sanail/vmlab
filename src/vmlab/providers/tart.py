@@ -11,6 +11,10 @@ Tart guest agent over vsock) as the fallback. Both run in the logged-in GUI
 session and hold the TCC grants provisioning writes. Screenshots are taken in
 the Guest with screencapture: Tart has no Host-side screenshot.
 
+A Lab in another language than en-US (the Base guest's) gets it when its clone
+is made: one boot writes the Guest user's AppleLanguages and AppleLocale, and
+the next boot shows the whole desktop in it, menus and panels included.
+
 Options, under [labs.<name>.tart]:
 
     base = "macos-tahoe"      # Base guest to clone (vmlab base list)
@@ -32,9 +36,9 @@ import time
 import uuid
 
 from vmlab import bases, hostpower, hostproc, uihelpers
-from vmlab.config import ConfigError
+from vmlab.config import DEFAULT_LANGUAGE, ConfigError, language_forms
 from vmlab.home import vmlab_home
-from vmlab.providers.base import FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "macos-tahoe", "cpu": 4, "display": "1920x1080", "channels": ["ssh", "exec"]}
@@ -67,6 +71,11 @@ SCREEN_ALERT_TIMEOUT = 60  # s for a screenshot and a read of the log
 # `tart exec` passes the command's exit code and stderr through, so only Tart's
 # own phrasing (naming the VM, or its agent connection) marks a Channel failure.
 TART_EXEC_FAILURE = r'^(the specified VM "{vm}" does not exist|VM "{vm}" is not running|.*(guest agent|gRPC|UNAVAILABLE|vsock))'
+# The Guest user's languages and regional formats ($1: AppleLanguages' only entry, $2: AppleLocale).
+# Apps and the desktop read them when they start: a reboot shows them everywhere.
+SET_LANGUAGE = 'defaults write -g AppleLanguages -array "$1" && defaults write -g AppleLocale "$2"'
+# The Guest user's first language and regional formats, a line each.
+READ_LANGUAGE = ["/bin/sh", "-c", "defaults export -g - | plutil -extract AppleLanguages.0 raw -o - -; echo; defaults export -g - | plutil -extract AppleLocale raw -o - -"]
 DISPLAY_PREFS = "/Library/Preferences/com.apple.windowserver.displays.plist"
 # $VMLAB_HOME/tart/<clone>.json: which project, Lab and Base guest a clone serves, and which
 # provisioning of the Base guest it was made from. `vmlab clean` uses it to find orphans (vmlab.clean).
@@ -239,6 +248,10 @@ class TartProvider(Provider):
                 config_path, key + ".channels", "must list Channels from: %s" % ", ".join(CHANNELS), 'e.g. channels = ["ssh", "exec"]'
             )
 
+    @classmethod
+    def base_of(cls, options, os_name):
+        return options.get("base", DEFAULTS["base"])
+
     @property
     def base_name(self):
         return self.options["base"]
@@ -289,6 +302,8 @@ class TartProvider(Provider):
             findings.append(("Clone", INFO, "none yet; `vmlab up %s` clones Base guest %s" % (self.lab.name, name), None))
         elif _made_from(self.guest_id) != bases.provisioning(record):
             findings.append(("Clone", INFO, "made from an earlier provisioning of %s; `vmlab up %s` makes it again" % (name, self.lab.name), None))
+        elif _clone_language(self.guest_id) != self.lab.language:
+            findings.append(("Clone", INFO, "made in %s; `vmlab up %s` makes it again in %s" % (_clone_language(self.guest_id), self.lab.name, self.lab.language), None))
         else:
             findings.append(("Clone", OK, self.guest_id, None))
         others = sorted(vm for vm, row in vms.items() if row.get("Running") and vm != self.guest_id)
@@ -351,8 +366,9 @@ class TartProvider(Provider):
         vms = list_vms("local")
         base_vm = bases.vm_name(self.base_name)
         made_from = _made_from(self.guest_id)
-        if self.guest_id in vms and made_from != bases.provisioning(record):
+        if self.guest_id in vms and (made_from != bases.provisioning(record) or _clone_language(self.guest_id) != self.lab.language):
             # The Base guest was provisioned again since, even at the same version: the clone lacks what changed.
+            # Or the Lab language changed: it is set when the clone is made.
             tart_ok(["delete", self.guest_id], CALL_TIMEOUT)
             del vms[self.guest_id]
         if self.guest_id not in vms:
@@ -363,13 +379,45 @@ class TartProvider(Provider):
             with self.progress.step("cloning"):
                 tart_ok(["clone", base_vm, self.guest_id], self.lab.boot_timeout)
                 tart_ok(["set", self.guest_id, "--random-mac"], CALL_TIMEOUT)  # clones of one Base guest run side by side
+                self._write_clone_record(None)  # made from nothing yet: a start that fails from here makes it again
+                if self.lab.language != DEFAULT_LANGUAGE:
+                    self._set_language()
             made_from = bases.provisioning(record)
         # Written at every start, so clones made by an older vmlab get a record too.
-        _write_clone_record(self.guest_id, {"project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from})
-        memory_mb = int(self.lab.memory_gb * 1024)
-        tart_ok(["set", self.guest_id, "--cpu", self.options["cpu"], "--memory", memory_mb, "--display", self.options["display"]], CALL_TIMEOUT)
+        self._write_clone_record(made_from)
+        self._configure()
         with self.progress.step("booting"):
             self.vm.start()
+
+    def _write_clone_record(self, made_from):
+        _write_clone_record(self.guest_id, {
+            "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
+            "language": self.lab.language,
+        })  # fmt: skip
+
+    def _configure(self):
+        memory_mb = int(self.lab.memory_gb * 1024)
+        tart_ok(["set", self.guest_id, "--cpu", self.options["cpu"], "--memory", memory_mb, "--display", self.options["display"]], CALL_TIMEOUT)
+
+    def _set_language(self):
+        """Boot a new clone once to give its user the Lab language, then stop it: the next boot shows it."""
+        self._configure()
+        self.vm.start()
+        try:
+            deadline = hostpower.awake_time() + self.lab.boot_timeout  # the Host's awake time, as up()'s
+            while not self.is_reachable():
+                if hostpower.awake_time() >= deadline:
+                    raise self._boot_timeout()
+                time.sleep(BOOT_POLL_SECONDS)
+            languages, locale = language_forms(self.lab.language)["macos"]
+            result = self.exec(["/bin/sh", "-c", SET_LANGUAGE, "sh", languages, locale], CALL_TIMEOUT)
+            if not result.ok:
+                raise GuestError("`defaults write` failed: %s" % _tail(result.stderr), "run `vmlab up %s` again: the clone is made again" % self.lab.name)
+        except GuestError as exc:
+            raise GuestError("the new clone of Lab %s could not be set to %s: %s" % (self.lab.name, self.lab.language, exc.message), exc.fix)
+        finally:
+            if self.is_running():
+                self.stop()
 
     def stop(self):
         self._close_channels()
@@ -404,6 +452,17 @@ class TartProvider(Provider):
         for channel in self.channels():
             if isinstance(channel, SshChannel):
                 channel.close()
+
+    def shown_language(self, running):
+        if running:
+            result = self.exec(READ_LANGUAGE, CALL_TIMEOUT)
+            lines = result.stdout.split()
+            if not (result.ok and len(lines) == 2):
+                raise GuestError("reading AppleLanguages and AppleLocale failed: %s" % (_tail(result.stderr, 1) if result.stderr.strip() else "no answer"), "check the Guest's `defaults read -g`")
+            return LanguageShown(tuple(lines), "the Guest", None)
+        if not (_clone_record(self.guest_id) or {}).get("made_from"):  # no clone, or one whose making did not finish
+            return LanguageShown(None, "no finished clone yet; `vmlab up %s` clones Base guest %s in %s" % (self.lab.name, self.base_name, self.lab.language), None)
+        return LanguageShown(language_forms(_clone_language(self.guest_id))["macos"], "the clone", None)
 
     def restore(self):
         """Clean state is a fresh clone of the Base guest."""
@@ -446,6 +505,11 @@ def _made_from(vm):
         return record.get("made_from")
     legacy = _service_file(vm, LEGACY_CLONE_STATE)
     return legacy.read_text().strip() if legacy.exists() else None
+
+
+def _clone_language(vm):
+    """The Lab language a clone was made in; records from before languages: English, the Base guest's."""
+    return (_clone_record(vm) or {}).get("language") or DEFAULT_LANGUAGE
 
 
 def _write_clone_record(vm, record):

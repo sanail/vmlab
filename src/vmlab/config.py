@@ -4,6 +4,7 @@ Every error names the file, the offending key and how to fix it.
 """
 
 import platform
+import re
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
-LAB_KEYS = ("provider", "os", "arch", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
+LAB_KEYS = ("provider", "os", "arch", "language", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
 APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "process", "quit_timeout", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
 # [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
@@ -26,6 +27,10 @@ READY_KEYS = READY_CONDITIONS + ("app", "pattern", "gone")
 DEFAULT_BUILD_TIMEOUT = 1800
 DEFAULT_INSTALL_TIMEOUT = 600
 DEFAULT_MEMORY_GB = 4
+DEFAULT_LANGUAGE = "en-US"
+# The Lab language: a language and a region, in BCP 47 form (ru-RU, de-DE). One tag names both the
+# language and the regional formats; vmlab translates it to each Guest OS's own form (language_forms).
+LANGUAGE = re.compile(r"^([a-z]{2,3})-([A-Z]{2})$")
 DEFAULT_BOOT_TIMEOUT = 300
 DEFAULT_STEP_TIMEOUT = 60
 DEFAULT_SCENARIO_TIMEOUT = 600
@@ -53,6 +58,7 @@ class Lab:
         self.provider = provider
         self.os = os
         self.arch = arch
+        self.language = settings.get("language", DEFAULT_LANGUAGE)  # the Lab language, e.g. ru-RU
         self.options = options  # provider-specific table, e.g. [labs.<name>.fake]
         self.memory_gb = settings.get("memory_gb", DEFAULT_MEMORY_GB)  # Host RAM the Guest takes when running
         self.boot_timeout = settings.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)  # s from power-on until reachable
@@ -205,6 +211,10 @@ def load(start):
         if not isinstance(options, dict):
             raise ConfigError(path, "%s.%s" % (key, provider), "must be a table", "write it as [%s.%s]" % (key, provider))
         PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options, os_name)
+        language = _language(path, table, key)
+        base = PROVIDERS[provider].base_of(options, os_name)
+        if base:
+            _check_base_os(path, "%s.%s.base" % (key, provider), base, os_name, PROVIDERS[provider].base_of({}, os_name))
         app = _app(path, key + ".app", table.get("app", {}))
         labs[name] = Lab(
             name,
@@ -212,6 +222,7 @@ def load(start):
             os_name,
             arch,
             options,
+            language=language,
             memory_gb=_positive_number(path, table, key, "memory_gb", DEFAULT_MEMORY_GB, "GB"),
             boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),
             step_timeout=_positive_number(path, table, key, "step_timeout", DEFAULT_STEP_TIMEOUT),
@@ -230,6 +241,49 @@ def _required_choice(path, table, key, field, choices):
     if value not in choices:
         raise ConfigError(path, full, "unknown %s %r" % (field, value), "use one of: %s" % ", ".join(choices))
     return value
+
+
+def _language(path, table, key):
+    value = table.get("language", DEFAULT_LANGUAGE)
+    if not (isinstance(value, str) and LANGUAGE.match(value)):
+        raise ConfigError(
+            path, key + ".language", "must be a language and a region, ll-RR (got %r)" % (value,),
+            'e.g. language = "ru-RU" (Russian in Russia); the default is "%s"' % DEFAULT_LANGUAGE,
+        )  # fmt: skip
+    return value
+
+
+def language_forms(tag):
+    """How each Guest OS names the Lab language tag (ru-RU): {"macos": ("ru-RU", "ru_RU"), i.e.
+    AppleLanguages' first entry and AppleLocale, "linux": "ru_RU.UTF-8", "windows": "ru-RU"}."""
+    locale = tag.replace("-", "_")
+    return {"macos": (tag, locale), "linux": locale + ".UTF-8", "windows": tag}
+
+
+def shows_language(os_name, shown, tag):
+    """Does shown, a Guest's language in its OS's form (language_forms), show the Lab language tag?"""
+    wanted = language_forms(tag)[os_name]
+    if os_name == "macos":
+        return tuple(s.lower() for s in shown) == tuple(w.lower() for w in wanted)
+    if os_name == "linux":  # the encoding has several spellings: ru_RU.UTF-8, ru_RU.utf8
+        return shown.lower().replace("utf-8", "utf8") == wanted.lower().replace("utf-8", "utf8")
+    return shown.lower() == wanted.lower()
+
+
+def _check_base_os(path, key, base, os_name, default):
+    """A Lab clones a Base guest of its own OS; the registry says which OS each one runs."""
+    from vmlab import bases  # it imports this module
+    from vmlab.providers.base import GuestError
+
+    try:
+        record = bases.Registry().get(base) or {}
+    except GuestError:
+        return  # a corrupt registry: `up` and doctor say so
+    if record.get("os") and record["os"] != os_name:
+        raise ConfigError(
+            path, key, "Base guest %s runs %s, but this Lab has os = %s" % (base, record["os"], os_name),
+            'name a %s Base guest, e.g. base = "%s" (see `vmlab base list`)' % (os_name, default),
+        )  # fmt: skip
 
 
 def _positive_number(path, table, key, field, default, unit="seconds"):

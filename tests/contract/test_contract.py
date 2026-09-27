@@ -64,6 +64,7 @@ class Target:
         config.write_text(lab_toml, encoding="utf-8")
         status = self.status()
         self.os = status["os"]
+        self.language = status["language"]
         self.provider = status["provider"]
         # The Fake Provider emulates the UI contract on every OS; real Guests have helpers per OS.
         self.has_ui = self.provider == "fake" or self.os in UI_OSES
@@ -364,6 +365,16 @@ def scenario(g):
     never = g.wait_for(notification="never " + nonce, timeout=3)
     g.check("one never sent is unmet at the timeout", not never["met"] and never["waited_s"] < 30, detail=never)
 '''
+
+
+# A standard element of the stock editor stage_text opens (TextEdit, GNOME Text Editor, Notepad), by
+# Guest OS and Lab language: system element names come in the Lab language.
+STANDARD_ELEMENT = {
+    # its window's menu button, named by its description (vmlab-ui leaves the main menu bar out)
+    ("macos", "en-US"): "document actions", ("macos", "ru-RU"): "\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430",
+    ("linux", "en-US"): "Open", ("linux", "ru-RU"): "\u041e\u0442\u043a\u0440\u044b\u0442\u044c",  # a button
+    ("windows", "en-US"): "File",  # a menu
+}
 
 
 def ui(test):
@@ -893,6 +904,46 @@ def scenario(g):
     shown = [n["name"] for n in walk(g.tree()) if %r in (n["name"] or "")]
     g.check("the Staged document the Scenario left open was closed with its Run", not shown, detail=sorted(shown))
 """ % os.path.splitext(os.path.basename(second["file"].replace("\\", "/")))[0]))
+
+    def test_07c_the_guest_shows_the_lab_language(self):
+        self.assertPassed(*self.target.scenario("language.py", COMMANDS + """
+FAKE = %r
+LANGUAGE = %r  # the Lab's, as the config says
+
+def scenario(g):
+    g.check("g.language is the Lab language", g.language == LANGUAGE, detail=g.language)
+    if FAKE:
+        g.skip("the Guest's own setting", "a Fake Guest has no language of its own")
+        return
+    locale = g.language.replace("-", "_")
+    if g.os == "macos":
+        r = g.exec(["sh", "-c", "defaults export -g - | plutil -extract AppleLanguages.0 raw -o - -; echo; defaults export -g - | plutil -extract AppleLocale raw -o - -"])
+        g.check("AppleLanguages and AppleLocale", r.stdout.split() == [g.language, locale], detail=r.stdout)
+    elif g.os == "linux":
+        r = g.exec(["sh", "-c", 'printf "%%s %%s" "$LANG" "$(locale -k LC_MESSAGES >/dev/null && echo ok)"'])
+        g.check("a command sees the session's LANG, an installed locale", r.stdout.split() == [locale + ".UTF-8", "ok"], detail=r.stdout + r.stderr)
+    else:
+        r = g.exec(["powershell", "-NoProfile", "-Command", "(Get-UICulture).Name"])
+        g.check("the display language", r.stdout.strip() == g.language, detail=r.stdout)
+""" % (self.target.provider == "fake", self.target.language)))
+
+    @ui
+    def test_07d_ui_a_stock_app_names_its_elements_in_the_lab_language(self):
+        name = STANDARD_ELEMENT.get((self.target.os, self.target.language))
+        if self.target.provider == "fake" or not name:
+            self.skipTest("no standard element named for %s in %s" % (self.target.os, self.target.language))
+        self.assertPassed(*self.target.scenario("ui_language.py", UI + """
+NAME = %r
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:8]
+    app = g.stage_text("language " + tag)["app"]
+    found = [e for e in g.find(text=NAME, app=app)["matches"] if NAME in (e["name"], e.get("description"))]
+    g.check("the editor shows %%r" %% NAME, bool(found), detail=found[:3])
+    typed = "ascii " + tag
+    g.type(typed)
+    g.check("ASCII text types as it is", g.wait_for(role="textarea", text=typed, app=app, timeout=10)["met"])
+""" % name))
 
     @ui
     def test_08_ui_input_clipboard_click_and_wait(self):

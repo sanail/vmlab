@@ -172,6 +172,11 @@ def scenario(g):
 """)
         self.assertExit(self.project.vmlab("run"), 0)
 
+    def test_the_app_gets_the_lab_language(self):
+        self.project.config(FAKE_LAB + 'language = "ru-RU"\n' + RECIPE.replace("launch-$CHANNEL_ENV", "launch-$VMLAB_LANGUAGE"))
+        self.project.scenario("a.py", READ_LOG % ["install-beta", "quit", "launch-ru-RU"])
+        self.assertExit(self.project.vmlab("run"), 0)
+
     def test_a_failing_launch_is_a_run_error(self):
         self.project.config(FAKE_LAB + RECIPE.replace('launch = "echo launch-$CHANNEL_ENV >> ~/deploy.log"', 'launch = "echo no display >&2; exit 1"'))
         self.project.scenario("a.py", PASS)

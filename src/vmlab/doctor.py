@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from vmlab import arch, bases, runner
-from vmlab.config import PROCESS_EXAMPLE, host_arch
+from vmlab.config import PROCESS_EXAMPLE, host_arch, shows_language
 from vmlab.home import GuestLock, vmlab_home
 from vmlab.memory import free_memory_gb
 from vmlab.providers import PROVIDERS, fusion, provider_for
@@ -144,6 +144,7 @@ def _diagnose_lab(provider, lab, bench_calls):
     if holder:
         add("Guest lock", WARN, "in use by another vmlab (%s)" % holder, "runs and deploys of Lab %s fail until it finishes" % lab.name)
     if not provider.is_running():
+        _check_language(provider, lab, False, add)
         _check_memory(lab, add)
         add("Guest", INFO, "stopped; Channels not checked", "vmlab up %s && vmlab doctor%s %s" % (lab.name, " --bench" if bench_calls else "", lab.name))
         return findings
@@ -171,6 +172,7 @@ def _diagnose_lab(provider, lab, bench_calls):
         checks = [("Guest", WARN, exc.message, exc.fix)]
     for check in checks:
         add(*check)
+    _check_language(provider, lab, True, add)
     _check_screenshot(provider, add)
     try:
         ok, detail = provider.ui_helper().describe(PROBE_TIMEOUT)
@@ -185,6 +187,25 @@ def _diagnose_lab(provider, lab, bench_calls):
     if bench_calls:
         _bench(provider, lab, bench_calls, add)
     return findings
+
+
+def _check_language(provider, lab, running, add):
+    """Does the Guest show the Lab language? Read in the running Guest, else from what vmlab recorded."""
+    try:
+        seen = provider.shown_language(running)
+    except GuestError as exc:
+        add("Language", WARN, "cannot read it: %s" % exc.message, exc.fix)
+        return
+    if seen is None:
+        return
+    if seen.shown is None:
+        add("Language", INFO, seen.where, seen.fix)
+    elif shows_language(lab.os, seen.shown, lab.language):
+        add("Language", OK, lab.language)
+    else:
+        shown = " ".join(seen.shown) if isinstance(seen.shown, tuple) else seen.shown or "no language"
+        add("Language", FAIL, "%s shows %s, but the Lab language is %s: system element names (menus, buttons, dialogs) come in it" % (seen.where, shown, lab.language),
+            provider.language_fix())  # fmt: skip
 
 
 def _check_quit(lab, add):

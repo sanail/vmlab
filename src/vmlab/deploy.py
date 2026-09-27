@@ -1,7 +1,8 @@
 """Deploy the Build artifact per the Lab's [labs.<name>.app] recipe.
 
 - build: on the Host, in the project root, only when the artifact is missing or
-  older than one of its inputs. The hook gets VMLAB_LAB, VMLAB_OS and VMLAB_ARCH.
+  older than one of its inputs. The hook gets VMLAB_LAB, VMLAB_OS, VMLAB_ARCH and
+  VMLAB_LANGUAGE (the Lab language, e.g. ru-RU).
 - deliver + install: once per suite, and again after any restore. The artifact
   is copied to a uniquely named Guest folder (shared-folder caches never serve
   a stale copy), then the install recipe runs.
@@ -10,7 +11,8 @@
   it has one.
 
 Guest recipes run in the Guest's shell with the Lab's app.env plus VMLAB_LAB,
-VMLAB_OS, VMLAB_ARCH and VMLAB_ARTIFACT (the Guest path of the delivered copy).
+VMLAB_OS, VMLAB_ARCH, VMLAB_LANGUAGE and VMLAB_ARTIFACT (the Guest path of the
+delivered copy).
 """
 
 import glob
@@ -61,7 +63,7 @@ def build_if_stale(project, lab, log_path=None, progress=QUIET):
 
 def _build(project, lab, log_path):
     app, key = lab.app, "labs.%s.app" % lab.name
-    env = dict(os.environ, VMLAB_LAB=lab.name, VMLAB_OS=lab.os, VMLAB_ARCH=lab.arch)
+    env = dict(os.environ, VMLAB_LAB=lab.name, VMLAB_OS=lab.os, VMLAB_ARCH=lab.arch, VMLAB_LANGUAGE=lab.language)
     try:
         code, out, err = hostproc.run(["/bin/sh", "-c", app.build], app.build_timeout, cwd=str(project.root), env=env)
     except subprocess.TimeoutExpired:
@@ -170,7 +172,7 @@ def _unmet(named_by, result):
 
 def _recipe(provider, lab, step, guest_artifact, timeout, check=True, extra_env=None):
     command = getattr(lab.app, step)
-    env = dict(lab.app.env, VMLAB_LAB=lab.name, VMLAB_OS=lab.os, VMLAB_ARCH=lab.arch, VMLAB_ARTIFACT=guest_artifact or "")
+    env = dict(lab.app.env, VMLAB_LAB=lab.name, VMLAB_OS=lab.os, VMLAB_ARCH=lab.arch, VMLAB_LANGUAGE=lab.language, VMLAB_ARTIFACT=guest_artifact or "")
     env.update(extra_env or {})
     result = provider.exec(provider.shell_argv(command), timeout, env=env)
     if check and not result.ok:

@@ -265,7 +265,7 @@ class FusionDoctorTest(FusionTestCase):
         self.base_guest("first")
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"].update(dict({"provisioned": 6}, **record))
+        records["ubuntu-26.04"].update(dict({"provisioned": 7}, **record))
         path.write_text(json.dumps(records))
         if credentials:
             (self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.credentials.json").write_text('{"user": "vmlab", "password": "pw"}')
@@ -281,7 +281,7 @@ class FusionDoctorTest(FusionTestCase):
 
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"ok\s+linux: Provider fusion")
-        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v6\)")
+        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v7\)")
         self.assertRegex(r.out, r"info\s+linux: Clone: none yet")
 
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
@@ -290,7 +290,7 @@ class FusionDoctorTest(FusionTestCase):
 
         r = self.vmlab("doctor")
 
-        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v6\)")
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v7\)")
 
     def test_a_base_guest_without_its_provisioned_snapshot_fails(self):
         self.project.config(FUSION_LAB)
@@ -356,6 +356,32 @@ class FusionDoctorTest(FusionTestCase):
 
         self.assertRegex(r.out, r"info\s+linux: Clone: made for the Wayland session")
         self.assertIn("vmlab up linux", r.out)
+
+    def test_a_stopped_clone_shows_its_language_as_recorded(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        r = self.vmlab("doctor")
+        self.assertRegex(r.out, r"info\s+linux: Language: no finished clone yet; `vmlab up linux` clones Base guest ubuntu-26.04 in en-US")
+
+        self.vmlab("up")
+        self.vmlab("down")
+
+        r = self.vmlab("doctor")
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+linux: Language: en-US")
+
+    def test_a_base_guest_of_another_os_is_a_config_error(self):
+        self.project.config(FUSION_LAB + '[labs.linux.fusion]\nbase = "macos-tahoe"\n')
+        path = self.project.home / "bases.json"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps({"macos-tahoe": {"provider": "tart", "os": "macos", "provisioned": 12}}))
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 2)
+        self.assertIn("labs.linux.fusion.base", r.err)
+        self.assertIn("Base guest macos-tahoe runs macos, but this Lab has os = linux", r.err)
+        self.assertIn('base = "ubuntu-26.04"', r.err)
 
     def test_a_base_guest_with_a_sound_device_is_a_warning_that_base_create_fixes(self):
         self.project.config(FUSION_LAB)
@@ -612,6 +638,42 @@ class FusionCloneTest(FusionTestCase):
         self.assertEqual(len(self.calls("deleteVM")), 1)
         self.assertEqual(len(self.calls("clone")), 2)
 
+    def test_an_english_clone_boots_no_extra_time(self):
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("start")), 1)
+        [record] = [json.loads(p.read_text()) for p in (self.project.home / "fusion").glob("vmlab-*-linux.json")]
+        self.assertEqual(record["language"], "en-US")
+
+    def test_another_language_gets_clean_state_only_once_it_is_set(self):
+        # Set in the booted clone, before vmlab-clean is taken, as a session switch is; no Guest boots here.
+        self.project.config(FUSION_LAB + 'language = "ru-RU"\n')
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("ru-RU", r.err)
+        [vm] = self.clones().values()
+        self.assertNotIn("vmlab-clean", vm["snapshots"])
+        self.assertFalse(vm["running"], "a clone left half-prepared is stopped")
+        self.assertRegex(self.vmlab("doctor").out, r"info\s+linux: Language: no finished clone yet", "not ru-RU: it was never set")
+
+    def test_changing_the_language_recreates_the_clone(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.project.config(FUSION_LAB + 'language = "de-DE"\n')
+
+        r = self.vmlab("doctor")
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+linux: Language: the clone shows en_US.UTF-8, but the Lab language is de-DE")
+        self.assertIn("vmlab down linux && vmlab up linux", r.out)
+        self.assertRegex(r.out, r"info\s+linux: Clone: made in en-US")
+
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+        self.assertEqual(len(self.calls("clone")), 2)
+
     def test_the_clone_starts_without_a_sound_device(self):
         # A Guest must not play through the Host's speakers or take its Bluetooth headset. Reverting
         # to a snapshot brings back the sound of the moment it was taken: turned off at every start.
@@ -764,7 +826,7 @@ class FusionOldSnapshotsTest(FusionTestCase):
         self.base_guest(provisioned_id)
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"]["provisioned"] = 6  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
+        records["ubuntu-26.04"]["provisioned"] = 7  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
         path.write_text(json.dumps(records))
         self.set_state(self.base_vmx_path(), snapshots=old + ["vmlab-provisioned-%s" % provisioned_id])
 

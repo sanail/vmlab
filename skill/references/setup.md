@@ -53,7 +53,8 @@ Each Lab is one Guest: one OS version on one Provider. Add one `[labs.NAME]` tab
 
 - macOS: `provider = "tart"`, `[labs.NAME.tart] base = "macos-tahoe"`.
 - Linux: `provider = "fusion"`, `[labs.NAME.fusion] base = "ubuntu-26.04"`, `session = "wayland"` (GNOME) or `"x11"` (Xfce). Testing both Desktop sessions means two Labs.
-- Windows: `provider = "fusion"`, `[labs.NAME.fusion] base = "windows-11"`, `language = "en-US"` (the default: the display language Scenarios' element names are in; the wizard's VM must be English (United States) Windows, and `vmlab doctor` fails a Lab whose Guest shows another).
+- Windows: `provider = "fusion"`, `[labs.NAME.fusion] base = "windows-11"`. Windows shows its Base guest's display language: the wizard's VM must be English (United States) Windows, and `vmlab doctor` fails a Lab whose Guest shows a language other than the Lab language.
+- `language` under `[labs.NAME]` is the Lab language: the language and regional formats the Guest shows, as `ll-RR` (`ru-RU`, `de-DE`), `en-US` by default. vmlab sets it on macOS and Linux clones; system element names come in it. Testing an app in several languages means one Lab per language (e.g. `linux` and `linux-ru`); see "Language-dependent apps" in [scenarios.md](scenarios.md).
 - `arch` is the Build artifact's; leave it out for the Host's own.
 
 Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the Host, installed, quit and launched in the Guest, what says the launched app is ready (if anything does), and which Guest paths hold the app's state. Read [app-recipes.md](app-recipes.md) and derive every recipe from the project's build system and packaging. Show the user what you wrote, and say which recipes are guesses to confirm.

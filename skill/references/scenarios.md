@@ -16,7 +16,8 @@ def scenario(g):
     mock = g.spawn(["python3", "-m", "http.server", "8080"])  # detached; stopped with the Run (see below)
     g.screenshot("after start")                 # evidence: screenshots/<scenario>/01-after-start.png in the Run folder
     g.check("the icon looks right", True, visual=True)  # a judgement from a screenshot: "visual, unverified"
-    # g.lab, g.os ("macos" | "windows" | "linux"), g.arch (the Build artifact's), g.guest_arch
+    # g.lab, g.os ("macos" | "windows" | "linux"), g.language (the Lab language, e.g. "ru-RU"),
+    # g.arch (the Build artifact's), g.guest_arch
 ```
 
 `g.put(guest_path, content)` writes a file into the Guest and `g.get(guest_path, binary=False)` reads one back, with no quoting or shell in between: `~` alone or before a slash is the Guest user's home (`~name` is just a name), and on Windows `%VARS%` expand (`g.put(r"%TEMP%\input.txt", data)`). Spaces and non-ASCII names need nothing special. `put` replaces the file at the path: a symlink there is replaced by the file, and what it pointed to is left alone. `get` raises when the file is not there; both count against the Scenario's timeout, each call (the whole copy) against the Lab's `step_timeout`. Files stay after the Run, so "put a file, restart the app, it reads it" works; `app.state`, `FRESH` and nonces keep leftovers out of later Runs. The CLI has the same: `vmlab put GUEST_PATH [--from HOSTFILE]` (piped stdin when no `--from`, and an empty pipe makes an empty file; prints the Guest path) and `vmlab get GUEST_PATH` (to stdout).
@@ -113,6 +114,25 @@ def scenario(g):
     up = g.wait_for(exec=["curl", "-fsS", "http://127.0.0.1:8080/health"], pattern="ok", timeout=20)
     g.check("the mock server is up", up["met"], detail=up)
 ```
+
+## Language-dependent apps
+
+A Lab's Guest shows the Lab language (`[labs.NAME] language`, `en-US` by default): the OS's own menus, buttons, dialogs and formats come in it, and an app that follows the OS language shows its translated text. One Lab per language (`mac`, `mac-ru`) tests an app in several.
+
+- **System element names are translated.** `g.find(text="Open")` finds nothing in another language. Match the app's own elements by role, or by a text the Scenario knows for that language; find the names of system elements (a menu, a file dialog's buttons) in the Guest itself with `vmlab ui find` or `vmlab ui tree` on that Lab, never from memory.
+- **Test data and Checks name the expected translation.** A Check that the app shows its settings title in the Lab language names that title as the app's translation files have it, and dates, numbers and currencies as the Lab's regional formats write them.
+- **One Scenario, several language Labs.** Keep the expected text in a table keyed by `g.language`, and branch on it only where the texts differ; `VMLAB_LANGUAGE` gives the app's recipes the same tag.
+
+```python
+TITLE = {"en-US": "Settings", "de-DE": "Einstellungen"}
+
+def scenario(g):
+    title = TITLE[g.language]
+    shown = g.wait_for(text=title, app="MyApp", timeout=10)
+    g.check("the settings window is titled in the Lab language", shown["met"], detail=shown)
+```
+
+- Typing is unchanged: `g.type` types any text in every Lab language (the keyboard layout stays US).
 
 ## Traps on every OS
 

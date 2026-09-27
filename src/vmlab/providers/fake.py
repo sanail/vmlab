@@ -35,9 +35,9 @@ import zlib
 from datetime import datetime, timezone
 
 from vmlab import hostproc
-from vmlab.config import ConfigError
+from vmlab.config import ConfigError, language_forms
 from vmlab.home import vmlab_home
-from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
@@ -93,6 +93,10 @@ class FakeProvider(Provider):
     def stop(self):
         self._running_marker.unlink()
         self._record("down")
+
+    def shown_language(self, running):
+        """The Fake Guest shows the Lab language, whatever it is."""
+        return LanguageShown(language_forms(self.lab.language)[self.lab.os], "the Guest", None)
 
     def is_reachable(self):
         try:

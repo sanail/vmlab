@@ -25,9 +25,12 @@ no Wayland consent dialog. Guests have no sound device: nothing they play
 reaches the Host, and they cannot take its Bluetooth headset.
 
 The Linux desktop session is GNOME on Wayland, or Xfce on X11 for Labs that
-ask for it: a new clone of such a Lab boots once to switch its autologin
-session before its Clean state is taken. Commands run with the session's
-environment (DISPLAY, WAYLAND_DISPLAY, ...), as a terminal on its desktop would.
+ask for it; a Lab language other than en-US (the Base guest's) is set in the
+clone too, with its GNOME/GTK translations downloaded. A new clone of such a
+Lab boots once to switch its autologin session and language before its Clean
+state is taken. Commands run with the session's environment (DISPLAY,
+WAYLAND_DISPLAY, LANG, ...), as a terminal on its desktop would. A Windows
+Guest shows the language of its Base guest.
 
 Options, under [labs.<name>.fusion]:
 
@@ -58,16 +61,14 @@ import uuid
 from pathlib import Path
 
 from vmlab import bases, hostpower, hostproc
-from vmlab.config import ConfigError, host_arch
+from vmlab.config import DEFAULT_LANGUAGE, ConfigError, host_arch, language_forms
 from vmlab.home import vmlab_home
 from vmlab.providers import windows
-from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, BootState, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, Provider
+from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, BootState, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "ubuntu-26.04", "cpu": 4, "channels": ["ssh", "vmrun"], "session": "wayland"}
-# language: the Windows display language the Lab's Scenarios expect; element names are in it.
-WINDOWS_DEFAULTS = {"base": "windows-11", "cpu": 4, "channels": ["ssh", "vmrun"], "language": "en-US"}
-LANGUAGE = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
+WINDOWS_DEFAULTS = {"base": "windows-11", "cpu": 4, "channels": ["ssh", "vmrun"]}
 CHANNELS = ("ssh", "vmrun")
 # The autologin session (name of its .desktop file) for each session type. Base guests boot into Wayland.
 SESSIONS = {"wayland": "ubuntu", "x11": "xfce"}
@@ -85,7 +86,7 @@ PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest b
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 1800
-PROVISION_VERSION = 6  # bump when provision.sh, the Shell extension or the recorder changes; `base create` then re-provisions
+PROVISION_VERSION = 7  # bump when provision.sh, the Shell extension or the recorder changes; `base create` then re-provisions
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
@@ -127,7 +128,7 @@ echo "$t"
 SESSION_ENV = r"""
 XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}; : "${DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus}"
 export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
-eval "$(systemctl --user show-environment 2>/dev/null | sed -n -E 's/^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|DESKTOP_SESSION|GTK_MODULES|QT_ACCESSIBILITY|QT_LINUX_ACCESSIBILITY_ALWAYS_ON|WEBKIT_DISABLE_DMABUF_RENDERER)=([A-Za-z0-9_:/.,@+-]*)$/\1=\2; export \1/p')"
+eval "$(systemctl --user show-environment 2>/dev/null | sed -n -E 's/^(DISPLAY|WAYLAND_DISPLAY|XAUTHORITY|XDG_SESSION_TYPE|XDG_CURRENT_DESKTOP|XDG_SESSION_DESKTOP|DESKTOP_SESSION|GTK_MODULES|QT_ACCESSIBILITY|QT_LINUX_ACCESSIBILITY_ALWAYS_ON|WEBKIT_DISABLE_DMABUF_RENDERER|LANG|LANGUAGE|LC_[A-Z_]+)=([A-Za-z0-9_:/.,@+-]*)$/\1=\2; export \1/p')"
 exec "$@"
 """
 # Sets the user's autologin session ($1: name, $2: type) in AccountsService, where GDM looks.
@@ -147,6 +148,37 @@ with open(path, "w") as f:
     config.write(f, space_around_delimiters=False)
 ' "/var/lib/AccountsService/users/$(id -un)" "$1" "$2" && sync
 """
+# Gives the user the Lab language ($1: the locale, e.g. ru_RU.UTF-8; $2: the language, ru): in
+# AccountsService, where GDM takes the session's language and formats from, and as the system locale;
+# downloads its GNOME/GTK translations (their -base packages come along). Provisioning installed every
+# locale. user-dirs.locale says the folders' names are already this language's, or xdg-user-dirs-gtk
+# asks at login whether to rename them. Exit 4: the download failed; exit 5: Ubuntu has no translations
+# package for the language.
+SET_LANGUAGE = r"""
+set -e
+for _ in $(seq 1 300); do sudo -n fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 1; done
+sudo -n apt-get update -qq || exit 4
+apt-cache show "language-pack-gnome-$2" >/dev/null 2>&1 || { echo "Ubuntu has no package language-pack-gnome-$2" >&2; exit 5; }
+sudo -n DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "language-pack-$2" "language-pack-gnome-$2" >/dev/null || exit 4
+sudo -n python3 -c '
+import configparser, sys
+path, locale = sys.argv[1:]
+config = configparser.ConfigParser()
+config.optionxform = str
+config.read(path)
+if not config.has_section("User"):
+    config.add_section("User")
+config["User"].update(Language=locale, FormatsLocale=locale)
+with open(path, "w") as f:
+    config.write(f, space_around_delimiters=False)
+' "/var/lib/AccountsService/users/$(id -un)" "$1"
+sudo -n update-locale LANG="$1" LANGUAGE="${1%%.*}:$2"
+mkdir -p ~/.config && printf '%s\n' "${1%%.*}" > ~/.config/user-dirs.locale
+sync
+"""
+LANGUAGE_TIMEOUT = 900  # s to download and install a language's translations
+# The session's language, as the user manager holds it (DESKTOP_PROBE waits until the session published it).
+SESSION_LANGUAGE = ["/bin/sh", "-c", "systemctl --user show-environment | sed -n 's/^LANG=//p'"]
 EXTENSION_DIR = "/tmp/vmlab-shell-extension"  # where provisioning finds the Shell extension's files and RECORDER
 RECORDER = "notification-recorder.py"  # vmlab's Notification recorder, run by the systemd user unit RECORDER_UNIT
 RECORDER_UNIT = "vmlab-notifications.service"
@@ -835,6 +867,13 @@ class FusionProvider(Provider):
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
         allowed = defaults(os_name)
+        if "language" in options:  # a Fusion key until the Lab language covered every OS
+            value = options["language"]
+            lab = key.rsplit(".", 1)[0]
+            raise ConfigError(
+                config_path, key + ".language", "moved: the Lab language is a key of the Lab itself",
+                "remove it here and put it under [%s]: language = %s" % (lab, json.dumps(value if isinstance(value, str) else DEFAULT_LANGUAGE)),
+            )  # fmt: skip
         for k in sorted(set(options) - set(allowed)):
             raise ConfigError(
                 config_path, "%s.%s" % (key, k), "unknown key" + (" for a Windows Lab" if k in DEFAULTS else ""), "remove it; allowed keys: %s" % ", ".join(allowed)
@@ -852,9 +891,10 @@ class FusionProvider(Provider):
             )
         if options.get("session", DEFAULTS["session"]) not in SESSIONS:
             raise ConfigError(config_path, key + ".session", "must be one of: %s" % ", ".join(sorted(SESSIONS)), 'e.g. session = "x11"')
-        language = options.get("language", allowed.get("language"))
-        if os_name == "windows" and not (isinstance(language, str) and LANGUAGE.match(language)):
-            raise ConfigError(config_path, key + ".language", "must be a Windows language tag", 'e.g. language = "en-US" (the default)')
+
+    @classmethod
+    def base_of(cls, options, os_name):
+        return options.get("base", defaults(os_name)["base"])
 
     @property
     def windows(self):
@@ -931,25 +971,38 @@ class FusionProvider(Provider):
                              "vmlab base create %s   (asks for one click on the UAC prompt)" % name))  # fmt: skip
         if "ssh" in self.options["channels"] and not is_pinned(base_vm):
             findings.append(("SSH host key", WARN, "none pinned for %s: the ssh Channel refuses its Guests" % base_vm, "vmlab base create %s --reprovision" % name))
-        if self.windows and not self.vm.is_running():  # a running Guest is asked instead: diagnose_guest
-            language = record.get("language")
-            if language:
-                findings.append(self._language_finding(language, "Base guest %s" % name, WARN))
-            else:
-                findings.append(("Display language", INFO, "not recorded for Base guest %s (provisioned by an older vmlab); checked while the Guest runs" % name,
-                                 "vmlab base create %s --reprovision   (records it)" % name))  # fmt: skip
         return findings + self._diagnose_clone(record)
 
-    def _language_finding(self, language, where, status):
-        """Does where (the Base guest as recorded, or the running Guest) show Windows in the Lab's language?
-        A mismatch is status: a Base guest's does not stop its Guest from starting."""
-        wanted = self.options["language"]
-        if language.lower() == wanted.lower():
-            return ("Display language", OK, language, None)
-        return ("Display language", status, "%s shows Windows in %s, but the Lab expects %s: element names (buttons, menus, windows) come in the display language" % (where, language, wanted),
-                "make a Windows VM in %s with Fusion's \"Get Windows from Microsoft\" (it asks for the language), then adopt it in place of the current one: "
+    def shown_language(self, running):
+        if running:
+            return LanguageShown(self._read_language(), "the Guest", None)
+        if self.windows:  # it shows its Base guest's
+            language = (bases.Registry().get(self.base_name) or {}).get("language")
+            if language:
+                return LanguageShown(language, "Base guest %s" % self.base_name, None)
+            return LanguageShown(None, "not recorded for Base guest %s (provisioned by an older vmlab); checked while the Guest runs" % self.base_name,
+                                 "vmlab base create %s --reprovision   (records it)" % self.base_name)  # fmt: skip
+        if not self.vm.exists() or CLEAN_SNAPSHOT not in self.vm.snapshots():  # no clone, or one whose making did not finish
+            return LanguageShown(None, "no finished clone yet; `vmlab up %s` clones Base guest %s in %s" % (self.lab.name, self.base_name, self.lab.language), None)
+        return LanguageShown(language_forms(_clone_language(self.guest_id))["linux"], "the clone", None)
+
+    def _read_language(self):
+        from vmlab.providers import fusion_windows
+
+        result = self.exec(fusion_windows.DISPLAY_LANGUAGE if self.windows else SESSION_LANGUAGE, CALL_TIMEOUT)
+        if not result.ok:
+            raise GuestError("reading the Guest's language failed: %s" % (result.stderr.strip() or "exit %s" % result.code),
+                             "check the Guest's PowerShell" if self.windows else "check `systemctl --user show-environment` in the Guest")  # fmt: skip
+        return result.stdout.strip()
+
+    def language_fix(self):
+        if not self.windows:
+            return super().language_fix()
+        wanted = self.lab.language
+        shown = (bases.Registry().get(self.base_name) or {}).get("language") or "its language"
+        return ("make a Windows VM in %s with Fusion's \"Get Windows from Microsoft\" (it asks for the language), then adopt it in place of the current one: "
                 "vmlab base create %s --image PATH/TO/ITS.vmx (Labs copy the new one at their next start); or, if the Lab's Scenarios are written for %s, "
-                'set language = "%s" under [labs.%s.fusion]' % (wanted, self.base_name, language, language, self.lab.name))  # fmt: skip
+                'set language = "%s" under [labs.%s]' % (wanted, self.base_name, shown, shown, self.lab.name))  # fmt: skip
 
     def _diagnose_clone(self, record):
         up = "`vmlab up %s` makes it again" % self.lab.name
@@ -961,6 +1014,9 @@ class FusionProvider(Provider):
         made_for = clone.get("session", DEFAULTS["session"])
         if made_for != self.session:
             return [("Clone", INFO, "made for the %s session; %s for %s" % (SESSION_NAMES.get(made_for, made_for), up, SESSION_NAMES[self.session]), None)]
+        made_in = _clone_language(self.guest_id)
+        if not self.windows and made_in != self.lab.language:  # a Windows copy shows its Base guest's language
+            return [("Clone", INFO, "made in %s; %s in %s" % (made_in, up, self.lab.language), None)]
         try:
             clean = CLEAN_SNAPSHOT in self.vm.snapshots()
         except GuestError as exc:
@@ -971,7 +1027,7 @@ class FusionProvider(Provider):
 
     def diagnose_guest(self):
         if self.windows:
-            return [self._diagnose_language(), self._diagnose_clock()]
+            return [self._diagnose_clock()]
         if not self.session:
             return []
         if self._seen_session != self.session:
@@ -1037,17 +1093,6 @@ class FusionProvider(Provider):
             fix = "restart the Guest: vmlab down %s && vmlab up %s" % (self.lab.name, self.lab.name)
         return ("Clock", WARN, detail, fix)
 
-    def _diagnose_language(self):
-        from vmlab.providers import fusion_windows
-
-        try:
-            result = self.exec(fusion_windows.DISPLAY_LANGUAGE, CALL_TIMEOUT)
-        except GuestError as exc:
-            return ("Display language", WARN, "cannot read it: %s" % exc.message, exc.fix)
-        if not (result.ok and result.stdout.strip()):
-            return ("Display language", WARN, "cannot read it: %s" % (result.stderr.strip() or "no answer"), "check the Guest's PowerShell")
-        return self._language_finding(result.stdout.strip(), "the Guest", FAIL)
-
     def is_running(self):
         return self.vm.is_running()
 
@@ -1078,8 +1123,8 @@ class FusionProvider(Provider):
                     base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
                 made_from = bases.provisioning(record)
                 self._write_clone_record(made_from)
-                if self.session not in (None, DEFAULTS["session"]):
-                    self._switch_session()
+                if not self.windows and (self.session != DEFAULTS["session"] or self.lab.language != DEFAULT_LANGUAGE):
+                    self._prepare_clone()
                 self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
         self._configure()
@@ -1089,18 +1134,19 @@ class FusionProvider(Provider):
 
     def _clone_is_current(self, record):
         """Whether the existing clone is one start() keeps: made from the Base guest's current
-        provisioning, for the Lab's session, with its Clean state taken."""
+        provisioning, for the Lab's session and language, with its Clean state taken."""
         clone = _clone_record(self.guest_id)
         return (
             clone.get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
             and clone.get("session", DEFAULTS["session"]) == self.session
+            and (self.windows or _clone_language(self.guest_id) == self.lab.language)
             and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its session switch did not finish
         )
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {
             "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
-            "session": self.session,
+            "session": self.session, "language": None if self.windows else self.lab.language,
         })  # fmt: skip
 
     def _configure(self):
@@ -1109,9 +1155,12 @@ class FusionProvider(Provider):
         # A hardware clock in UTC, whatever the Mac's time zone (UTC_CLOCK).
         self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024), "sound.present": "FALSE", **UTC_CLOCK})
 
-    def _switch_session(self):
-        """Boot a new clone once to make the Lab's session its autologin session, then stop it."""
+    def _prepare_clone(self):
+        """Boot a new Linux clone once to make the Lab's session its autologin session and give it the
+        Lab language, then stop it."""
         name = SESSION_NAMES[self.session]
+        what = " and ".join(([] if self.session == DEFAULTS["session"] else ["switched to the %s session" % name])
+                            + ([] if self.lab.language == DEFAULT_LANGUAGE else ["set to %s" % self.lab.language]))  # fmt: skip
         self._configure()
         self.vm.start(self.lab.boot_timeout)
         try:
@@ -1119,16 +1168,40 @@ class FusionProvider(Provider):
             while not self.is_reachable():
                 if hostpower.awake_time() >= deadline:
                     late = self._boot_timeout()
-                    raise GuestError("the new clone of Lab %s was not switched to the %s session: %s" % (self.lab.name, name, late.message), late.fix)
+                    raise GuestError("the new clone of Lab %s was not %s: %s" % (self.lab.name, what, late.message), late.fix)
                 time.sleep(BOOT_POLL_SECONDS)
-            result = self.exec(["/bin/sh", "-c", SWITCH_SESSION, "sh", SESSIONS[self.session], self.session], CALL_TIMEOUT)
-            if not result.ok:
-                raise GuestError(
-                    "switching Lab %s to the %s session failed: %s" % (self.lab.name, name, result.stderr.strip()),
-                    "re-provision its Base guest, which then installs it: vmlab base create %s --reprovision" % self.base_name,
-                )
+            if self.session != DEFAULTS["session"]:
+                result = self.exec(["/bin/sh", "-c", SWITCH_SESSION, "sh", SESSIONS[self.session], self.session], CALL_TIMEOUT)
+                if not result.ok:
+                    raise GuestError(
+                        "switching Lab %s to the %s session failed: %s" % (self.lab.name, name, result.stderr.strip()),
+                        "re-provision its Base guest, which then installs it: vmlab base create %s --reprovision" % self.base_name,
+                    )
+            if self.lab.language != DEFAULT_LANGUAGE:
+                self._set_language()
         finally:
             self.stop()
+
+    def _set_language(self):
+        locale, language = language_forms(self.lab.language)["linux"], self.lab.language.split("-")[0]
+        with self.progress.step("installing the %s translations" % self.lab.language):
+            result = self.exec(["/bin/sh", "-c", SET_LANGUAGE, "sh", locale, language], LANGUAGE_TIMEOUT)
+        if result.code == 4:
+            raise GuestError(
+                "setting Lab %s to %s failed: its GNOME/GTK translations (language-pack-gnome-%s) could not be downloaded:\n%s"
+                % (self.lab.name, self.lab.language, language, "\n".join(result.stderr.strip().splitlines()[-5:])),
+                "the Guest downloads them from Ubuntu's archive at its first start: check the Mac's network, then run `vmlab up %s` again" % self.lab.name,
+            )  # fmt: skip
+        if result.code == 5:
+            raise GuestError(
+                "setting Lab %s to %s failed: Ubuntu has no GNOME/GTK translations for it (no package language-pack-gnome-%s)" % (self.lab.name, self.lab.language, language),
+                "choose a Lab language Ubuntu translates GNOME into (apt-cache search language-pack-gnome lists them), or leave language out for en-US",
+            )
+        if not result.ok:
+            raise GuestError(
+                "setting Lab %s to %s failed: %s" % (self.lab.name, self.lab.language, "\n".join(result.stderr.strip().splitlines()[-5:])),
+                "re-provision its Base guest, which installs every locale: vmlab base create %s --reprovision" % self.base_name,
+            )
 
     def up(self):
         super().up()
@@ -1298,6 +1371,11 @@ def _clone_record(vm):
         return json.loads((fusion_dir() / (vm + CLONE_RECORD)).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+def _clone_language(vm):
+    """The Lab language a Linux clone was made in; records from before languages: English, the Base guest's."""
+    return _clone_record(vm).get("language") or DEFAULT_LANGUAGE
 
 
 def _write_clone_record(vm, record):

@@ -38,6 +38,10 @@ Panels keep Tray icons and their menus out of `ui tree`: read and choose from a 
 - An app's list of recent files stays empty: Base guests remember no recent files (`org.gnome.desktop.privacy remember-recent-files`), since every Run opens files and the list would only grow. A Scenario that tests such a list turns it on first: `g.exec(["gsettings", "set", "org.gnome.desktop.privacy", "remember-recent-files", "true"])`.
 - A black screenshot means the Guest's screen is off; restart it (`vmlab down LAB && vmlab up LAB`) and report it if it returns, since provisioning turns blanking off.
 
+## The desktop in another language
+
+In a Lab whose language is not `en-US`, GNOME, Xfce and GTK apps show the Lab language: vmlab sets `ru_RU.UTF-8` (for `ru-RU`) for the user and the system and downloads the language's GNOME/GTK translations when the clone is made, so that first start needs the Mac's network. Commands vmlab runs see the session's `LANG`, `LANGUAGE` and `LC_*`, so an app launched by a recipe or `g.spawn` follows the Lab language as one started from the desktop does. Find translated element names with `vmlab ui find` on that Lab; see "Language-dependent apps" in [scenarios.md](scenarios.md). The folders in the home folder keep their English names.
+
 ## Keyboard layouts
 
 A Check that depends on the layout sets it explicitly and records it: `gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'ru')]"` on GNOME, `setxkbmap ru` on X11.

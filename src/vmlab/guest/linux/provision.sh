@@ -35,13 +35,13 @@ for _ in $(seq 1 300); do
   sleep 1
 done
 
-say "packages: accessibility bus, input and clipboard tools, VMware Tools, an X11 session"
+say "packages: accessibility bus, input and clipboard tools, VMware Tools, an X11 session, every locale"
 # at-spi2-core + python3-pyatspi read the UI tree (vmlab-ui.py); in X11 sessions
 # xdotool sends input, python3-xlib asks the window manager, xclip reaches the
 # clipboard and wmctrl tells that the window manager is up; open-vm-tools-desktop
 # serves vmrun and resizes the screen; gnome-text-editor is where stage-text
-# stages text.
-PACKAGES="open-vm-tools-desktop openssh-server at-spi2-core python3-pyatspi gir1.2-atspi-2.0 python3-xlib xdotool xclip wmctrl x11-utils psmisc gnome-text-editor"
+# stages text; locales-all holds every locale, so a clone in any Lab language has its own.
+PACKAGES="open-vm-tools-desktop openssh-server at-spi2-core python3-pyatspi gir1.2-atspi-2.0 python3-xlib xdotool xclip wmctrl x11-utils psmisc gnome-text-editor locales-all"
 # GNOME 50 has no X11 session any more: Xfce provides one, on the same GDM. Without
 # recommends it stays small (no screen saver, power manager or extra apps), but
 # keeps a notification server: without xfce4-notifyd nothing answers apps' notifications.
