@@ -6,7 +6,7 @@ Drive input only through `g.press`, `g.type`, `g.click` and `g.clipboard`: the s
 
 ## Which Desktop session
 
-A Lab runs GNOME on Wayland (`session = "wayland"`) or Xfce on X11 (`"x11"`). What differs for apps: on Wayland an app cannot grab a global hotkey, read another app's window, or read the clipboard unless it is focused. An app that works on X11 and fails on Wayland is often a finding, not a Scenario bug; testing both means two Labs.
+A Lab runs GNOME on Wayland (`session = "wayland"`) or Xfce on X11 (`"x11"`). What differs for apps: on Wayland an app cannot grab a global hotkey, read another app's window, or read the clipboard unless it is focused. An app that works on X11 and fails on Wayland is often a finding, not a Scenario bug; testing both means two Labs. When the user asks for "Linux" and the behaviour to test works by design in one session only (the app's docs say, e.g., that on Wayland it reads only the clipboard), set up that session, and tell the user which one you left out and why.
 
 ## Global hotkeys on Wayland
 

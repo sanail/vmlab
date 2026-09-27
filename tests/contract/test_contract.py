@@ -315,7 +315,8 @@ Start-Sleep -Seconds $Delay
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 $xml = New-Object Windows.Data.Xml.Dom.XmlDocument
-$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text>' + $Title + '</text><text>' + $Body + '</text></binding></visual></toast>')
+# As apps send them (notify-rust, which Tauri uses): an empty subtitle between the title and the body.
+$xml.LoadXml('<toast><visual><binding template="ToastGeneric"><text id="1">' + $Title + '</text><text id="2"></text><text id="3">' + $Body + '</text></binding></visual></toast>')
 [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($Aumid).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
 """
 OSASCRIPT = ["osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run"]

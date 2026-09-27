@@ -37,7 +37,7 @@ Windows installers per user put the app under `%LOCALAPPDATA%\Programs\X` rather
 
 The Host is a Mac, so the macOS Build artifact is a native build, and the others are cross-builds, a container build, a build inside the Guest, or CI's artifacts. The Build artifact's `arch` is the Host's unless the Lab says otherwise (x64 Windows builds run under emulation on Apple Silicon).
 
-- **Tauri**: always build through the Tauri CLI (`npm run tauri build -- ...`): bare `cargo build` makes a dev binary that loads its frontend from the dev server, so its window opens blank. macOS: native (`--bundles app`). Windows: `--runner cargo-xwin --target aarch64-pc-windows-msvc` (or `x86_64-pc-windows-msvc`), which needs `cargo install cargo-xwin`, `rustup target add ...`, and LLVM (`brew install llvm`, keg-only: point `RC` at its `llvm-rc`, or the build fails with `NotAttempted("llvm-rc")`); `--no-bundle` gives the bare `.exe`, and an NSIS installer needs `brew install nsis`. Linux: WebKitGTK does not cross-compile from a Mac: build in a Linux container (Docker, an `ubuntu:22.04` image of the Guest's arch with `libwebkit2gtk-4.1-dev` and the Rust toolchain, the project mounted) or in the Guest.
+- **Tauri**: always build through the Tauri CLI (`npm run tauri build -- ...`): bare `cargo build` makes a dev binary that loads its frontend from the dev server, so its window opens blank. macOS: native (`--bundles app`). Windows: `--runner cargo-xwin --target aarch64-pc-windows-msvc` (or `x86_64-pc-windows-msvc`), which needs `cargo install cargo-xwin`, `rustup target add ...`, and LLVM (`brew install llvm`, keg-only: point `RC` at its `llvm-rc`, or the build fails with `NotAttempted("llvm-rc")`); `--no-bundle` gives the bare `.exe`, and an NSIS installer needs `brew install nsis`. An app with `"createUpdaterArtifacts": true` in `tauri.conf.json` (the updater plugin's) fails every such build at its end without the release signing key (`A public key has been found, but no private key`), a good bundle beside it: add `--config '{"bundle":{"createUpdaterArtifacts":false}}'` to each OS's build rather than hand the key to test builds. Linux: WebKitGTK does not cross-compile from a Mac: build in a Linux container (Docker, an `ubuntu:22.04` image of the Guest's arch with `libwebkit2gtk-4.1-dev` and the Rust toolchain, the project mounted) or in the Guest.
 - **Electron** (electron-builder, electron-forge): packages for every OS from a Mac, e.g. `npx electron-builder --win zip --arm64`, `--linux deb --arm64`. Native Node modules need prebuilt binaries for the target; without them, build in the Guest.
 - **Qt** (C++): no practical cross-build from a Mac to Windows or Linux: build in the Guest, or use CI's artifacts.
 - **.NET** (Avalonia, WinForms, WPF, MAUI): `dotnet publish -r win-arm64 --self-contained -p:PublishSingleFile=true` (or `linux-arm64`, `win-x64`) cross-publishes from a Mac; WinForms and WPF also need `-p:EnableWindowsTargeting=true`. A macOS `.app` needs a bundling step (Avalonia documents one).
@@ -53,7 +53,7 @@ For stacks that do not cross-build, deliver the source and build in `install`:
 ```toml
 [labs.linux.app]
 artifact = ".vmlab/runs/source.tar.gz"
-build = "mkdir -p .vmlab/runs && git ls-files -z -co --exclude-standard | tar czf .vmlab/runs/source.tar.gz --null -T -"
+build = "mkdir -p .vmlab/runs && git ls-files -z -co --exclude-standard | COPYFILE_DISABLE=1 tar czf .vmlab/runs/source.tar.gz --null -T -"
 inputs = ["src", "src-tauri/src", "package.json"]   # the source that matters
 install = '''
 set -e
@@ -67,6 +67,6 @@ sudo apt-get install -y ./src-tauri/target/release/bundle/deb/*.deb
 install_timeout = 3600
 ```
 
-- The tarball holds tracked and untracked files but nothing git ignores, so `node_modules` and build output stay on the Host. It lives in `.vmlab/runs/`, which is git-ignored.
+- The tarball holds tracked and untracked files but nothing git ignores, so `node_modules` and build output stay on the Host. It lives in `.vmlab/runs/`, which is git-ignored. `COPYFILE_DISABLE=1` keeps macOS's `tar` from adding a `._NAME` file of extended attributes beside each file that has them, which a build then reads as source (Tauri: `failed to read file 'capabilities/._default.json': stream did not contain valid UTF-8`); the same goes for any tarball of the project made on the Host.
 - Toolchains install into the Lab's clone, and a restore takes them away again, so the first `install` after a restore pays for them. Keep the toolchain steps idempotent (`apt-get install` of what is there is quick; `command -v ... ||`) so later installs skip them. Base guests are shared by all projects, so toolchains never go into them.
 - Windows: the same shape in PowerShell; `tar` ships with Windows (`tar -xzf $env:VMLAB_ARTIFACT -C $HOME\src`), toolchains through `winget install --silent --accept-source-agreements --accept-package-agreements ...`.

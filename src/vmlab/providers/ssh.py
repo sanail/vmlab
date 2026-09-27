@@ -146,8 +146,7 @@ class SshChannel(Channel):
         """Start the master connection if there is none. Best effort: without one, calls connect directly."""
         if not self._control or self._master_alive():
             return
-        if self._control.exists():
-            self._control.unlink()  # left by a master that died
+        self._control.unlink(missing_ok=True)  # left by a master that died, or going with one that is exiting
         try:
             # Its own session and no pipes: -f leaves the master running in the background,
             # holding whatever it was given.
@@ -183,8 +182,8 @@ class SshChannel(Channel):
             hostproc.run(["ssh"] + self._master_options() + ["-O", "exit", "vmlab-guest"], 10)
         except subprocess.TimeoutExpired:
             pass
-        if self._control.exists():
-            self._control.unlink()
+        # The master removes its socket itself as it exits, maybe just after this looked.
+        self._control.unlink(missing_ok=True)
 
     def exec(self, argv, timeout, env, stdin=None):
         return self.run_command(remote_command(argv, env, self.path_append), argv, timeout, stdin)

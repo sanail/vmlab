@@ -1151,7 +1151,7 @@ public static class Helper {
                     found.Add(Obj(
                         "app", Encoding.UTF8.GetString(Column(statement, 0)),
                         "title", texts.Count > 0 ? texts[0] : "",
-                        "body", string.Join("\n", texts.GetRange(Math.Min(1, texts.Count), Math.Max(0, texts.Count - 1)).ToArray()),
+                        "body", string.Join("\n", texts.GetRange(Math.Min(1, texts.Count), Math.Max(0, texts.Count - 1)).FindAll(delegate(string line) { return line.Length > 0; }).ToArray()),
                         "time", DateTime.FromFileTimeUtc(Native.sqlite3_column_int64(statement, 1)).ToString(ISO, System.Globalization.CultureInfo.InvariantCulture)));
                 }
             } finally {
@@ -1173,7 +1173,8 @@ public static class Helper {
         return db == IntPtr.Zero ? "out of memory" : Marshal.PtrToStringAnsi(Native.sqlite3_errmsg(db));
     }
 
-    /// The texts of a Notification's first binding: its title, then its body's lines.
+    /// The texts of a Notification's first binding: its title, then its body's lines. The body leaves out empty
+    /// ones, such as the empty subtitle many apps send between the two, as macOS and Linux show no such line.
     static List<string> ToastTexts(string payload) {
         List<string> texts = new List<string>();
         System.Xml.XmlDocument xml = new System.Xml.XmlDocument();

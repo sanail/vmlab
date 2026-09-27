@@ -1,4 +1,5 @@
 import json
+import time
 
 from harness import FAKE_LAB, VmlabTestCase
 
@@ -46,6 +47,21 @@ class UpDownTest(VmlabTestCase):
         self.assertRegex(r.out, r"mac: booting\n")
         self.assertRegex(r.out, r"mac: booting done in \d+s\n")
         self.assertTrue(r.out.endswith("mac running\n"), r.out)
+
+    def test_step_lines_reach_a_pipe_as_they_happen(self):
+        # Not a terminal, as in CI or `vmlab up > log`: a step still running must show there.
+        self.project.config(FAKE_LAB + """
+[labs.mac.fake]
+boot_seconds = 3
+""")
+        started = time.monotonic()
+        proc = self.project.vmlab_background("up", "mac")
+        self.addCleanup(proc.communicate)
+
+        first = proc.stdout.readline()
+
+        self.assertEqual(first.strip(), "mac: booting")
+        self.assertLess(time.monotonic() - started, 2, "the line came only as vmlab exited, after the 3 s boot")
 
     def test_up_and_down_are_idempotent(self):
         self.project.config(FAKE_LAB)

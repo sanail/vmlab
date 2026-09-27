@@ -42,7 +42,10 @@ from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
 DEFAULT_CHANNELS = ["ssh", "exec"]
 FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are written (under fs, as every Guest path)
-OPTIONS = ("ui_tree", "notifications", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds")
+OPTIONS = (
+    "ui_tree", "notifications", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds",
+    "crashing_restores",
+)  # fmt: skip
 
 
 class FakeProvider(Provider):
@@ -98,6 +101,12 @@ class FakeProvider(Provider):
             return False
 
     def restore(self):
+        # crashing_restores: which restores (counted from 1) fail as a bug in vmlab would, not as a GuestError
+        count = self.state_dir / "restores"
+        n = int(count.read_text()) + 1 if count.exists() else 1
+        count.write_text(str(n))
+        if n in self.lab.options.get("crashing_restores", []):
+            raise FileNotFoundError(2, "No such file or directory", str(self.state_dir / "gone"))
         fs = self.fs
         shutil.rmtree(str(fs))
         (fs / "home").mkdir(parents=True)

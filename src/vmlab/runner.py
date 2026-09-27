@@ -23,11 +23,12 @@ warning, and reports with status "skipped".
 import collections
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
 from vmlab import __version__, arch, hostpower, report
-from vmlab.config import ConfigError
+from vmlab.config import ConfigError, UsageError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run, quit
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
 from vmlab.memory import free_memory_gb
@@ -117,6 +118,9 @@ def run(
     except KeyboardInterrupt:
         _print_tally(runs, repeat, locked_out)
         _say_what_was_left(runs, locked_out, stop_command)
+        raise
+    except Exception:
+        _print_tally(runs, repeat, locked_out)  # what the Labs finished is not lost with the error
         raise
     _print_tally(runs, repeat, out)
     kept_running([r.lab.name for r, still_ours in zip(runs, outcomes) if still_ours], out, stop_command)
@@ -274,6 +278,10 @@ def guest_lock(provider):
     return lock
 
 
+# What a Suite run passes on as it is, with its own exit code; anything else a Lab raises is a failure of vmlab's own.
+EXPECTED = (ConfigError, UsageError, GuestInUse)
+
+
 class _LabRun:
     """One Lab's part of an invocation: its build, and its Suite runs' folders and Scenarios."""
 
@@ -356,6 +364,10 @@ class _LabRun:
                         results = self._scenarios(provider, scenarios, ad_hoc, fresh, lab_calls, out, interrupt)
                     except GuestError as exc:
                         self.error = self._lab_error(provider, exc)
+                    except EXPECTED:
+                        raise
+                    except Exception as exc:
+                        self.error = self._vmlab_error(exc)
                     self._stop_repeating_if_failed(results, stop_repeating)
                     if repetition == repeat or stop_repeating and stop_repeating.is_set():
                         break
@@ -365,6 +377,10 @@ class _LabRun:
                     lab_calls, repetition = ChannelUse(), repetition + 1
             except GuestError as exc:
                 self.error = self._lab_error(provider, exc)
+            except EXPECTED:
+                raise
+            except Exception as exc:
+                self.error = self._vmlab_error(exc)
             finally:
                 keep = keep or bool(stop_repeating and stop_repeating.is_set())
                 if ours and not keep:
@@ -387,6 +403,16 @@ class _LabRun:
         except GuestError as shot_exc:
             return "%s\n  no screenshot of its screen: %s" % (exc, shot_exc.message)
         return "%s\n  its screen then: %s" % (exc, shot)
+
+    def _vmlab_error(self, exc):
+        """A failure of vmlab's own rather than the Guest's (a bug): it errors this Lab's Suite run
+        alone, so the other Labs and the tally go on, and keeps the traceback in the Run folder."""
+        self.run_dir.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / "traceback.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        where = traceback.extract_tb(exc.__traceback__)[-1]
+        return "vmlab failed: %s: %s (%s:%d); its traceback: traceback.txt in the Run folder, worth reporting" % (
+            type(exc).__name__, exc, Path(where.filename).name, where.lineno,
+        )  # fmt: skip
 
     def _stop_repeating_if_failed(self, results, stop_repeating):
         if stop_repeating and self._status(results) not in ("passed", "skipped"):

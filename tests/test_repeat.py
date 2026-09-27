@@ -5,6 +5,7 @@ import os
 import re
 import signal
 import time
+from pathlib import Path
 
 from harness import FAKE_LAB, VmlabTestCase
 
@@ -110,6 +111,24 @@ class RepeatTest(VmlabTestCase):
         self.assertIn("mac/sometimes_breaks: errored 1 of 3", r.out)
         self.assertIn("mac/sometimes_breaks: after the helper: passed 1 of 1, skipped 1", r.out)
         self.assertIn("mac: 1 other Check(s) passed 3 of 3\n", r.out)
+
+    def test_vmlab_failing_on_one_lab_errors_its_repetition_and_the_others_run_on(self):
+        self.project.config(TWO_LABS + """
+[labs.mac.fake]
+crashing_restores = [2]
+""")
+        self.flaky({})
+
+        r = self.project.vmlab("run", "--repeat", "3", "--parallel")
+
+        self.assertExit(r, 1)
+        self.assertNotIn("Traceback", r.err)
+        self.assertRegex(r.out, r"ERROR mac: vmlab failed: FileNotFoundError: .* \(fake\.py:\d+\); its traceback: traceback\.txt")
+        [errored] = re.findall(r"ERROR mac \(repetition 2 of 3\): .*; report: (\S+)", r.out)
+        self.assertIn("FileNotFoundError", (Path(errored) / "traceback.txt").read_text())
+        self.assertIn("mac: 2 of 3 repetition(s) passed", r.out)
+        self.assertIn("mac: errored 1 of 3", r.out)
+        self.assertIn("ubuntu: 3 of 3 repetition(s) passed", r.out)
 
     def test_a_check_its_scenario_did_not_reach_every_time_is_not_listed_as_a_success(self):
         self.project.config(FAKE_LAB)

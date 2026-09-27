@@ -24,6 +24,9 @@ QUIET_HELP = "print no step lines (each step as it starts, and its time), only t
 
 
 def main(argv=None):
+    # Every line as it is printed, also into a pipe or a CI log: most commands take minutes, and the
+    # last step line with no "done" line must be the one still running.
+    sys.stdout.reconfigure(line_buffering=True)
     parser = argparse.ArgumentParser(prog="vmlab", description="Test desktop apps inside Guests.")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
     sub.required = True

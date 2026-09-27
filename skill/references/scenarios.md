@@ -117,7 +117,8 @@ def scenario(g):
 ## Traps on every OS
 
 - **Prove the precondition.** An empty read cannot tell "the app is wrong" from "the window is not up yet": every read-based Check first `wait_for`s the window or element it reads, and fails with that as its reason when it never comes.
-- **Nonces.** Test data carries a value unique to the Run (`uuid.uuid4().hex[:8]`), so leftovers of an earlier Run (a log line, a notification, a file) never pass a Check.
+- **Nonces.** Test data carries a value unique to the Run (`uuid.uuid4().hex[:8]`), so leftovers of an earlier Run (a log line, a notification, a file) never pass a Check. Patterns and `text` are searched for, not matched whole: give each expectation its own nonce, or text no other one contains (`"seen " + nonce` is found in `"unseen " + nonce`).
+- **Match the text as drawn.** `text` is case-sensitive, and web views (WebKit on macOS and Linux, WebView2) put a label into the tree as it is drawn: a heading written `Providers` and styled `text-transform: uppercase` is `PROVIDERS` there. Look with `vmlab ui find` or `ui tree` before writing the match.
 - **Argv, not shell strings.** `g.exec` takes a list; each shell a string passes through parses it again (Host, Guest shell, `osascript` or PowerShell). Put longer test data in a Guest file with `g.put` and pass its path; `g.exec` takes no stdin.
 - **Look before concluding.** Input that does nothing usually means something else holds the screen (a consent prompt, a dialog): `g.screenshot` and look.
 
