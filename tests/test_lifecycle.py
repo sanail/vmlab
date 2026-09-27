@@ -37,6 +37,16 @@ class UpDownTest(VmlabTestCase):
         self.assertExit(self.project.vmlab("down"), 0)
         self.assertEqual(self.status(), {"mac": False, "ubuntu": False})
 
+    def test_up_prints_each_step_as_it_starts_and_ends(self):
+        self.project.config(FAKE_LAB)
+
+        r = self.project.vmlab("up", "mac")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"mac: booting\n")
+        self.assertRegex(r.out, r"mac: booting done in \d+s\n")
+        self.assertTrue(r.out.endswith("mac running\n"), r.out)
+
     def test_up_and_down_are_idempotent(self):
         self.project.config(FAKE_LAB)
         self.assertExit(self.project.vmlab("up", "mac"), 0)

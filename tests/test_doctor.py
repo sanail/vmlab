@@ -102,7 +102,8 @@ class DoctorTest(VmlabTestCase):
         r = self.project.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"info\s+Host: Host: ")
+        self.assertRegex(r.out, r"info\s+Host: (macOS|Linux|Windows)")
+        self.assertNotIn("Host: Host:", r.out)
         self.assertRegex(r.out, r"Host: Hypervisors: .*Tart")  # found or not, each is named
         self.assertRegex(r.out, r"ok\s+Host: vmlab home")
 
@@ -243,7 +244,8 @@ class HostOnlyDoctorTest(VmlabTestCase):
         r = self.project.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"info\s+Host: Host: ")
+        self.assertRegex(r.out, r"info\s+Host: (macOS|Linux|Windows)")
+        self.assertNotIn("Host: Host:", r.out)
         self.assertRegex(r.out, r"info\s+Host: Hypervisors: .*Tart not found")
         self.assertRegex(r.out, r"info\s+Host: Project: no \.vmlab/vmlab\.toml")
         self.assertIn("vmlab init", r.out)

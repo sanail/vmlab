@@ -297,6 +297,8 @@ def _bench(provider, lab, calls, add):
 
 def render(findings, out):
     for f in findings:
-        out("%-4s  %s: %s: %s" % (f["status"], f["lab"] or "Host", f["check"], f["detail"]))
+        where = f["lab"] or "Host"
+        what = "" if f["check"] == where else "%s: " % f["check"]  # the Host's own line: "Host: macOS ...", once
+        out("%-4s  %s: %s%s" % (f["status"], where, what, f["detail"]))
         if f["fix"] and f["status"] != OK:
             out("      fix: %s" % f["fix"])

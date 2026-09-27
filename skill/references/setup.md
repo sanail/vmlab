@@ -25,6 +25,8 @@ A hypervisor is missing when step 1's `Hypervisors` line says `not found` for it
   2. Open the `.dmg` and double-click its installer ("Double-click to install"); it asks for an administrator password and puts Fusion in Applications. Verified when `/Applications/VMware Fusion.app/Contents/Public/vmrun` exists.
   3. Open VMware Fusion once and answer what it asks on first launch (its licence terms, macOS permission prompts). Verified when the user confirms Fusion's window is open with no prompt left, and `vmlab doctor` shows `VMware Fusion <version>` on its `Hypervisors` line.
 
+  From then on macOS may show a "Login Items" notification, "Software from VMware, Inc. can run in the background", when a Run or `vmlab up` starts the first Fusion Guest: Fusion installs its helper daemons (`/Library/LaunchDaemons/com.vmware.*.plist`) each time it starts its first VM and removes them once its last one stops. It is harmless and needs nothing: tell the user so if they ask.
+
 Done when the `Hypervisors` line names every hypervisor the agreed Labs need.
 
 ## 3. Base guests

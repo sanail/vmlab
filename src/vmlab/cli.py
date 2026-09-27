@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from vmlab import __version__, arch, bases, config, doctor, hostpower, runner, ui, vendoring
+from vmlab.progress import Progress
 from vmlab.config import ConfigError, UsageError
 from vmlab.home import StartedGuests
 from vmlab.providers import provider_for
@@ -461,6 +462,7 @@ def _up_down(project, command, names):
         if warning:
             print("warning: %s: %s" % (lab.name, warning))
         provider = provider_for(project, lab)
+        provider.progress = Progress(print, lab.name)  # a Guest's boot takes minutes: say which step it is in
         getattr(provider, command)()
         started_guests.discard(runner.guest_key(provider))  # the user now owns (or stopped) it
         print("%s %s" % (lab.name, "running" if command == "up" else "stopped"))
