@@ -44,6 +44,10 @@ _Avoid_: binary, package, build
 The graphical login session inside a Linux **Guest** (GNOME on Wayland, or Xfce on X11) whose screen the UI contract drives. A **Lab** chooses one.
 _Avoid_: session (alone, which could mean a **Run**)
 
+**Lab language**:
+The language and regional formats a **Lab**'s **Guest** shows the application and its **Scenarios** (e.g. ru-RU); system element names come in it. vmlab sets it where the **Guest OS** allows and otherwise takes it from the **Base guest**, checking that the **Guest** shows it. English (en-US) unless the **Lab** says otherwise.
+_Avoid_: locale, display language (both name one OS's part of it)
+
 **Scenario**:
 An ordered sequence of steps performed against the application in a **Guest**, containing **Checks**.
 _Avoid_: test case, script, flow
@@ -98,6 +102,7 @@ _Avoid_: test suite, smoke tests
 - A **Regression suite** restores **Clean state** once at its start; a **Scenario** may demand its own restore
 - A **Suite run** holds one **Run** per **Scenario** it executes; what a **Scenario** starts in the **Guest** ends with its **Run**, not with the **Suite run**
 - A **Scenario** closes each **Staged document** it opened; one it leaves open is closed at the end of its **Run**
+- A **Lab** has one **Lab language**; testing an application in several languages means declaring several **Labs**
 - A **Guest**'s architecture follows the **Host**'s; the other architecture is covered only where the **Guest OS** emulates it
 
 ## Flagged ambiguities
