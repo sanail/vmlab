@@ -34,12 +34,13 @@ from vmlab.config import host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
     BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, WINDOWS_DEFAULTS, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
-    save_credentials, shut_down_for_labs, sound_off, vm_password, vmrun, vmx_path,
+    RTC_OFFSET, save_credentials, shut_down_for_labs, sound_off, utc_clock, vm_password, vmrun, vmx_path,
 )  # fmt: skip
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
 
-PROVISION_VERSION = 4  # bump when provision.ps1 changes; `base create` then re-provisions
+UTC_SINCE = 5  # the first provisioning that keeps Windows' clock in UTC
+PROVISION_VERSION = 5  # bump when provision.ps1 changes; `base create` then re-provisions
 PROBE = ["cmd", "/c", "exit 0"]
 ELEVATION_TIMEOUT = 180  # s: Windows cancels an unanswered UAC prompt after about two minutes
 POLICIES = r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -69,12 +70,13 @@ WINDOW_START_WAIT = 60  # s for Fusion to power on a VM it opened
 SESSION = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $PID).SessionId; [Console]::OutputEncoding.CodePage; " + LANGUAGE_PS]
 DISPLAY_LANGUAGE = ["powershell", "-NoProfile", "-NonInteractive", "-Command", LANGUAGE_PS]
 FUSION_FOLDERS = ("Virtual Machines.localized", "Virtual Machines", "Documents/Virtual Machines.localized")
-# The Guest's clock: its UTC time in ms, its UTC offset now in minutes, its time zone's display name.
+# The Guest's clock: its UTC time in ms, its time zone's id, and whether Windows reads its hardware
+# clock as UTC (RealTimeIsUniversal; 0 when unset).
 CLOCK = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
-         "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); [TimeZoneInfo]::Local.GetUtcOffset([DateTime]::UtcNow).TotalMinutes; [TimeZoneInfo]::Local.DisplayName"]  # fmt: skip
+         "[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); [TimeZoneInfo]::Local.Id; "
+         "[int](Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation').RealTimeIsUniversal"]  # fmt: skip
 CLOCK_TOLERANCE = 120  # s the Guest's UTC clock may differ from the Host's, the call's own time aside
-DATE_AND_TIME = "Settings > Time & language > Date & time"
-WRONG_ZONE, CLOCK_OFF, UNREAD = "wrong time zone", "clock off", "unread"  # why a Guest's clock does not match (guest_clock)
+NOT_UTC, CLOCK_OFF, UNREAD = "not in UTC", "clock off", "unread"  # why a Guest's clock is not as vmlab sets it (guest_clock)
 
 GET_WINDOWS = """\
   1. In VMware Fusion: File > New..., choose "Get Windows from Microsoft", pick Windows 11
@@ -85,13 +87,10 @@ GET_WINDOWS = """\
      needed to support a TPM are encrypted" and let Fusion keep the password in your Keychain.
   3. In Windows Setup, make a local account with a password: vmlab signs in with it.
      If Setup insists on a Microsoft account, press Shift+F10 and run: start ms-cxh:localonly
-  4. Set Windows' time zone to your Mac's (Settings > Time & language > Date & time; it is
-     Pacific Time after an English (United States) install). Fusion gives Windows the Mac's
-     local time, which Windows reads in its own time zone: another one sets its clock hours off.
-  5. Once Windows shows its desktop, install VMware Tools (vmlab runs everything through them;
+  4. Once Windows shows its desktop, install VMware Tools (vmlab runs everything through them;
      Fusion's flow leaves them out): in Fusion, Virtual Machine > Install VMware Tools; in
      Windows, open the DVD drive in File Explorer, run setup (Typical), and restart when it asks.
-  6. Come back here. vmlab copies the VM; the original stays yours."""
+  5. Come back here. vmlab copies the VM; the original stays yours."""
 KEYCHAIN_NOTE = ("  If macOS asks whether %s may use a password in your Keychain, click Always Allow:\n"
                  "  Allow lets it once, and vmlab needs it again on later runs.")
 START_IN_FUSION = """\
@@ -110,6 +109,7 @@ def create_base(name, image, prompt, reprovision, out):
     # --image naming another VM than the one adopted: adopt it in its place (e.g. Windows in another language)
     other_image = bool(image and record.get("image") and _image_vmx(image) != Path(record["image"]).resolve())
     sound_off(vm, out)
+    utc_clock(vm, out)
     if record.get("provisioned") == PROVISION_VERSION and vm.exists() and record.get("snapshot") in vm.snapshots() and not (reprovision or other_image):
         shut_down_for_labs(vm, out)
         out("Base guest %s is ready (Fusion VM %s)" % (name, vm.vmx))
@@ -229,6 +229,7 @@ def _adopt(wizard, name, vm, image):
     wizard.out("copying %s into %s (an APFS clone: instant, and it shares the original's disk space)" % (source, vm.vmx.parent))
     source_vm.clone_copy(vm)
     sound_off(vm, wizard.out)  # before Windows first runs as a Base guest; Lab copies inherit it
+    utc_clock(vm, wizard.out)
     bases.Registry().put(name, {
         "provider": "fusion", "os": "windows", "arch": host_arch(), "vm": vm.name, "vmx": str(vm.vmx), "image": str(source),
         "user": found["user"], "installed": True, "provisioned": None,
@@ -323,7 +324,6 @@ def _provision(wizard, name, vm):
             _start_with_window(wizard, vm)
         else:
             vm.start()
-    windowed = not record.get("elevated")  # started in a window for the UAC click (or left in one by an earlier run)
 
     def signed_in():
         deadline = hostpower.awake_time() + BASE_BOOT_TIMEOUT
@@ -361,15 +361,6 @@ def _provision(wizard, name, vm):
         signed_in,
         ahead=True,
     )
-    def show():
-        if not windowed:
-            _keychain_save(vm)
-            _open_in_fusion(vm)
-
-    # Before the snapshot Labs boot from keeps Windows' time zone. A Base guest started headless
-    # (re-provisioning) is put in a window only when the person has to set it.
-    check_clock(wizard, channel, vm, show)
-
     def silent():
         try:
             result = channel.exec(SILENT_ELEVATION, CALL_TIMEOUT, {})
@@ -396,11 +387,11 @@ def _provision(wizard, name, vm):
     record["elevated"] = True
     registry.put(name, record)
 
-    wizard.out("provisioning %s (OpenSSH, autologin, no updates, sleep or OneDrive, UTF-8, native PowerShell; a few minutes)" % vm.name)
+    wizard.out("provisioning %s (OpenSSH, autologin, no updates, sleep or OneDrive, UTF-8, clock in UTC, native PowerShell; a few minutes)" % vm.name)
     creds = credentials(vm.name)
     stdin = json.dumps({
         "script": pkgutil.get_data("vmlab", "guest/windows/provision.ps1").decode("ascii"),
-        "params": {"user": creds["user"], "password": creds["password"], "key": public_key()},
+        "params": {"user": creds["user"], "password": creds["password"], "key": public_key(), "utc": int(time.time() * 1000)},
     }).encode("utf-8")  # fmt: skip
     result = channel.exec(PROVISION, PROVISION_TIMEOUT, {}, stdin=io.BytesIO(stdin))
     lines = [line for line in result.stdout.splitlines() if line.strip()]
@@ -415,7 +406,7 @@ def _provision(wizard, name, vm):
         )
     pin_host_key(vm.name, host_key[0])
 
-    wizard.out("rebooting %s: autologin, UTF-8" % vm.name)
+    wizard.out("rebooting %s: autologin, UTF-8, clock in UTC" % vm.name)
     vm.stop()
     vm.start()
     ssh = WindowsSshChannel(creds["user"], vm.ip, vm.name, vm.name)
@@ -431,6 +422,7 @@ def _provision(wizard, name, vm):
         expected = WINDOWS_DEFAULTS["language"]
         if language.lower() != expected.lower():
             wizard.out("  display language %s: Windows Labs expect %s unless they set language under [labs.NAME.fusion]" % (language or "unknown", expected))
+        check_clock(name, ssh, vm, wizard.out)  # in the snapshot Labs boot from
         # The UI helper compiles itself on first use (~10 s): done here, it is in the snapshot,
         # and Labs do not pay for it after every restore.
         info = uihelpers.windows_helper_info(ssh, uihelpers.WINDOWS_COMPILE_TIMEOUT)
@@ -497,21 +489,12 @@ def _desktop_session(vm, channel):
         time.sleep(2)
 
 
-def host_time_zone():
-    """(name, UTC offset now in minutes) of the Mac's time zone, e.g. ("Europe/Moscow", 180)."""
-    try:
-        target = os.readlink("/etc/localtime")  # /var/db/timezone/zoneinfo/Europe/Moscow
-    except OSError:
-        target = ""
-    name = target.split("zoneinfo/", 1)[1] if "zoneinfo/" in target else time.strftime("%Z")
-    return name, time.localtime().tm_gmtoff // 60
-
-
 def guest_clock(channel):
-    """Does the Windows Guest's clock (in UTC) match the Host's? (cause, detail, fix): cause is None
-    when it does, else WRONG_ZONE, CLOCK_OFF (in the Mac's time zone) or UNREAD; fix says what to do
-    in Windows. Fusion hands Windows the Mac's local time as its hardware clock, and Windows reads
-    it in its own time zone: in another one than the Mac's, its clock runs hours off."""
+    """Is the Windows Guest's clock as vmlab sets it: in UTC (time zone UTC, the hardware clock read
+    as UTC) and matching the Host's? (cause, detail, fix): cause is None when it is, else NOT_UTC,
+    CLOCK_OFF (in UTC, still off) or UNREAD; fix is given for UNREAD only, the callers know the
+    rest. A Guest not in UTC reads Fusion's hardware clock in its own time zone: right only while
+    that offset matches the clock's."""
     before = time.time()
     try:
         result = channel.exec(CLOCK, CALL_TIMEOUT, {})
@@ -520,48 +503,40 @@ def guest_clock(channel):
     after = time.time()
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()] if result.ok else []
     try:
-        guest_ms, guest_offset, zone = int(lines[0]), round(float(lines[1])), lines[2]
+        guest, zone, universal = int(lines[0]) / 1000.0, lines[1], int(lines[2])
     except (IndexError, ValueError):
         return UNREAD, "cannot read the Guest's clock: %s" % (result.stderr.strip() or result.stdout.strip() or "no answer"), "check the Guest's PowerShell"
-    guest = guest_ms / 1000.0
-    if before - CLOCK_TOLERANCE <= guest <= after + CLOCK_TOLERANCE:
-        return None, "matches the Host's (time zone %s)" % zone, None
+    right = before - CLOCK_TOLERANCE <= guest <= after + CLOCK_TOLERANCE
     off = guest - (before + after) / 2
-    detail = "the Guest's clock runs %s %s the Host's (in UTC); Windows' time zone is %s, %s now" % (
-        _duration(abs(off)), "ahead of" if off > 0 else "behind", zone, _utc_offset(guest_offset))  # fmt: skip
-    mac_zone, mac_offset = host_time_zone()
-    if guest_offset == mac_offset:
-        return CLOCK_OFF, detail + ", and the time zone is the Mac's", "sync the clock: %s > Sync now (under Additional settings)" % DATE_AND_TIME
-    return WRONG_ZONE, detail + "; the Mac's is %s, %s now" % (mac_zone, _utc_offset(mac_offset)), (
-        "set Windows' time zone to the Mac's, %s (%s now): %s > Time zone (if \"Set time zone automatically\" is on, turn it off first), "
-        "then Sync now (under Additional settings): a new time zone leaves the clock as it was" % (mac_zone, _utc_offset(mac_offset), DATE_AND_TIME))  # fmt: skip
+    time_now = "its time matches the Host's" if right else "its clock runs %s %s the Host's (in UTC)" % (_duration(abs(off)), "ahead of" if off > 0 else "behind")
+    wrong = ["its time zone is %s, not UTC" % zone] if zone != "UTC" else []
+    if universal != 1:
+        wrong.append("it reads its hardware clock as local time, not UTC (RealTimeIsUniversal is not set)")
+    if wrong:
+        return NOT_UTC, "Windows does not keep its clock in UTC: %s; %s" % ("; ".join(wrong), time_now), None
+    if not right:
+        return CLOCK_OFF, "Windows keeps its clock in UTC, but %s" % time_now, None
+    return None, "in UTC, and %s" % time_now, None
 
 
-def check_clock(wizard, channel, vm, show):
-    """The wizard's step: Windows' clock matches the Mac's before vmlab provisions the Guest.
-    show() puts the Guest in a Fusion window, called once the person has something to do in it."""
-    shown = []
-
-    def check():
-        cause, detail, fix = guest_clock(channel)
-        if cause is None:
-            return None
-        if not shown:
-            shown.append(show())
-        return "%s.\n  To do: %s" % (detail, fix) if fix else detail
-
-    wizard.step(
-        "Set Windows' clock to the Mac's",
-        "  Fusion gives Windows the Mac's local time, which Windows reads in its own time zone: in\n"
-        "  another one its clock runs hours off (an English (United States) install picks Pacific\n"
-        "  Time). Set it in the Guest's Fusion window as the line below says; if no window shows the\n"
-        "  Guest, open %s in Fusion." % vm.vmx.parent,
-        check,
-    )
-
-
-def _utc_offset(minutes):
-    return "UTC%s%02d:%02d" % ("-" if minutes < 0 else "+", abs(minutes) // 60, abs(minutes) % 60)
+def check_clock(name, channel, vm, out):
+    """After provisioning's reboot: Windows keeps its clock in UTC and it matches the Host's, with
+    nothing for the person to do; GuestError with the cause otherwise."""
+    cause, detail, fix = guest_clock(channel)
+    if cause is None:
+        out("  ok: the clock: %s" % detail)
+        return
+    if cause == NOT_UTC:
+        raise GuestError("provisioning did not set the clock of %s: %s" % (vm.name, detail),
+                         "re-run `vmlab base create %s --reprovision` and look at its provisioning lines for the clock" % name)  # fmt: skip
+    if cause == CLOCK_OFF:
+        rtc = vm.config(RTC_OFFSET)
+        if rtc != "0":  # changed since vmlab set it before the start
+            raise GuestError("%s: %s. Its hardware clock is not UTC: %s has %s" % (vm.name, detail, vm.vmx, '%s = "%s"' % (RTC_OFFSET, rtc) if rtc is not None else "no " + RTC_OFFSET),
+                             "re-run `vmlab base create %s --reprovision`: it sets the hardware clock to UTC before it starts the Guest" % name)  # fmt: skip
+        raise GuestError("%s: %s, although its hardware clock is UTC" % (vm.name, detail),
+                         "re-run `vmlab base create %s --reprovision`: the Guest reads the hardware clock again when it boots" % name)  # fmt: skip
+    raise GuestError("%s: %s" % (vm.name, detail), fix)
 
 
 def _duration(seconds):

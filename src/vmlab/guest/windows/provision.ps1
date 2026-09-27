@@ -1,12 +1,14 @@
 # Provisions a Windows Base guest for vmlab; run elevated, as the Guest user. Idempotent.
 #
-# -Params: a JSON file {"user", "password", "key"} readable by the user alone; deleted once read.
+# -Params: a JSON file {"user", "password", "key", "utc": the Host's time in ms when it sent them}
+# readable by the user alone; deleted once read.
 # -Log gets what it does, and its last line is "vmlab-host-key: <sshd's ed25519 public key>";
 # it exits 1 after an error, which ends the log.
 # Plain ASCII on purpose: Windows PowerShell reads a script without a BOM in the system code page.
 param([Parameter(Mandatory = $true)][string]$Params, [Parameter(Mandatory = $true)][string]$Log)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$since = [Diagnostics.Stopwatch]::StartNew()  # since the Host sent its time, give or take the call's start
 $p = Get-Content -Raw -LiteralPath $Params | ConvertFrom-Json
 Remove-Item -Force -LiteralPath $Params
 Set-Content -LiteralPath $Log -Value @() -Encoding UTF8
@@ -17,6 +19,19 @@ function Set-Value($path, $name, $value, $type = 'DWord') {
     if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
     New-ItemProperty -Path $path -Name $name -Value $value -PropertyType $type -Force | Out-Null
 }
+
+Say 'the clock in UTC (read at the reboot)'
+# As Linux and macOS Guests keep it: vmlab gives the VM a hardware clock in UTC (rtc.diffFromUTC),
+# Windows reads it as UTC and shows it in time zone UTC, so its time is right whatever the Mac's
+# time zone. Nothing sets the zone from the network: Windows' automatic time zone stays off.
+Set-Value 'HKLM:\SYSTEM\CurrentControlSet\Control\TimeZoneInformation' RealTimeIsUniversal 1
+& tzutil.exe /s UTC
+if ($LASTEXITCODE) { throw "tzutil /s UTC failed (exit $LASTEXITCODE)" }
+Set-Value 'HKLM:\SYSTEM\CurrentControlSet\Services\tzautoupdate' Start 4
+# Until the reboot Windows still reads the clock in its old zone: hours off in UTC, in what the
+# rest of provisioning writes. The Host's time, now in time zone UTC, sets it right meanwhile.
+[TimeZoneInfo]::ClearCachedData()
+Set-Date -Date ([DateTimeOffset]::FromUnixTimeMilliseconds([long]$p.utc).UtcDateTime + $since.Elapsed) | Out-Null
 
 Say 'elevation without a prompt (for this throwaway Guest only)'
 $system = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'

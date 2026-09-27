@@ -199,6 +199,17 @@ class FusionTestCase(VmlabTestCase):
         self.assertIn('sound.present = "FALSE"', text)
         self.assertNotIn('sound.present = "TRUE"', text)
 
+    def set_rtc(self, vmx, offset):
+        """Set the VM's hardware clock offset from UTC in seconds, as Fusion keeps it; None: unset."""
+        text = "\n".join(line for line in vmx.read_text().splitlines() if not line.startswith("rtc.diffFromUTC"))
+        vmx.write_text(text + ('\nrtc.diffFromUTC = "%s"\n' % offset if offset is not None else "\n"))
+
+    def assertUtcClock(self, vmx):
+        """The VM's hardware clock is UTC, whatever the Mac's time zone (Fusion reuses a VM's last
+        offset when none is set, and the first one is the Mac's)."""
+        lines = [line for line in Path(vmx).read_text().splitlines() if line.startswith("rtc.diffFromUTC")]
+        self.assertEqual(lines, ['rtc.diffFromUTC = "0"'])
+
 
 class FusionConfigTest(FusionTestCase):
     def assertConfigError(self, toml, key, *fragments):
@@ -380,6 +391,18 @@ class FusionDoctorTest(FusionTestCase):
         self.assertIn("shutting vmlab-base-ubuntu-26.04 down", r.out)
         self.assertEqual(len(self.calls("stop")), 1)
         self.assertNoSound(self.base_vmx_path())
+
+    def test_a_lab_starts_with_its_hardware_clock_in_utc(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        self.vmlab("up")
+        [clone] = self.clones()
+        self.vmlab("down")
+        self.set_rtc(Path(clone), 10800)  # e.g. a Lab cloned by an older vmlab, on a Mac in Moscow
+
+        self.vmlab("up")
+
+        self.assertUtcClock(clone)
 
     def test_a_lab_with_a_sound_device_is_a_warning_until_its_next_start(self):
         self.project.config(FUSION_LAB)

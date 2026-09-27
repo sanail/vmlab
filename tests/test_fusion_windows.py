@@ -56,7 +56,7 @@ class WindowsTestCase(FusionTestCase):
         records = json.loads(path.read_text()) if path.exists() else {}
         records["windows-11"] = {
             "provider": "fusion", "os": "windows", "arch": "arm64", "vm": vm, "vmx": str(vmx), "image": "/somewhere/Windows 11.vmx",
-            "user": "tester", "installed": True, "provisioned": 4, "provisioned_id": provisioned_id, "snapshot": snapshot, "elevated": True,
+            "user": "tester", "installed": True, "provisioned": 5, "provisioned_id": provisioned_id, "snapshot": snapshot, "elevated": True,
         }  # fmt: skip
         path.write_text(json.dumps(records))
         return vmx
@@ -116,7 +116,7 @@ class WindowsDoctorTest(WindowsTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v4\)")
+        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v5\)")
 
     def test_a_running_base_guest_is_a_warning_that_base_create_fixes_without_a_window(self):
         # A Base guest runs headless, with no Start menu to click; vmrun stops it with the VM password vmlab keeps.
@@ -145,7 +145,7 @@ class WindowsDoctorTest(WindowsTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"warn\s+win: Base guest windows-11: provisioned by an older vmlab \(v2; this one provisions v4\)")
+        self.assertRegex(r.out, r"warn\s+win: Base guest windows-11: provisioned by an older vmlab \(v2; this one provisions v5\)")
         self.assertIn("fix: vmlab base create windows-11", r.out)
 
     def test_a_guest_that_asks_for_elevation_is_a_warning(self):
@@ -235,6 +235,13 @@ class WindowsCloneTest(WindowsTestCase):
         self.vmlab("up")
 
         self.assertNoSound(self.clone_vmx())
+
+    def test_the_copy_starts_with_its_hardware_clock_in_utc(self):
+        self.set_rtc(self.base_vmx, 10800)  # a Base guest Fusion made on a Mac in Moscow
+
+        self.vmlab("up")
+
+        self.assertUtcClock(self.clone_vmx())
 
     def test_every_vmrun_call_on_the_copy_carries_the_vm_password(self):
         self.vmlab("up")
@@ -429,7 +436,17 @@ class WindowsBaseWizardTest(WindowsTestCase):
         self.assertIn("sound device off", r.out)
         self.assertNoSound(base)
 
-    def test_provisioning_starts_the_base_guest_without_a_sound_device(self):
+    def test_a_ready_base_guest_gets_its_hardware_clock_in_utc(self):
+        base = self.windows_base()
+        self.set_rtc(base, None)  # Fusion's Get Windows VM: its first start takes the Mac's offset
+
+        r = self.wizard()
+
+        self.assertExit(r, 0)
+        self.assertIn("hardware clock", r.out)
+        self.assertUtcClock(base)
+
+    def test_provisioning_starts_the_base_guest_without_a_sound_device_and_with_its_hardware_clock_in_utc(self):
         base = self.windows_base()
         self.set_sound(base, True)
         self.set_base_record(provisioned=None, elevated=False)
@@ -444,6 +461,7 @@ class WindowsBaseWizardTest(WindowsTestCase):
 
         self.assertIn("Start the Guest in a Fusion window", r.err)
         self.assertNoSound(base)
+        self.assertUtcClock(base)
 
     def test_a_guest_fusion_will_not_start_in_a_window_is_opened_in_fusion(self):
         # Fusion refuses `vmrun start gui` for an encrypted VM whose password it cannot read

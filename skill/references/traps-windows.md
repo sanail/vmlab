@@ -56,11 +56,11 @@ Provisioning turns Windows Update off, the Microsoft Store's app updates with it
 
 ## Clock hours off
 
-**Symptom**: times the Guest reports (`g.notifications()`, file times, the app's own logs) are hours off the Host's, and `vmlab doctor` warns `Clock: the Guest's clock runs ... the Host's`.
+**Symptom**: times the Guest reports (`g.notifications()`, file times, the app's own logs) are hours off the Host's, and `vmlab doctor` warns `Clock: Windows does not keep its clock in UTC` or `Clock: ... its clock runs ... the Host's`.
 
-**Cause**: Fusion hands Windows the Mac's local time as its hardware clock, and Windows reads it in its own time zone. A Base guest set up in another zone than the Mac's, or a Mac that has since moved to another zone, puts every Lab off by the difference.
+**Cause**: every Guest runs in UTC: vmlab sets Fusion's hardware clock to UTC and provisioning makes Windows read it as UTC, in time zone UTC. A Base guest provisioned by an older vmlab left Windows in its own time zone, reading Fusion's clock, which followed the Mac's zone, in it: hours off whenever the two differ. A Guest of the current provisioning whose zone is not UTC had it changed after its Clean state (by the app, a Scenario or a person).
 
-**Do**: relay doctor's fix to the user: the Base guest's time zone is set to the Mac's through `vmlab base create windows-11 --reprovision`, run in a terminal window of their own; it waits while they set it in Windows' Settings. A Guest already in the Mac's zone that is still off needs only a restart (`vmlab down LAB && vmlab up LAB`).
+**Do**: relay doctor's fix. An older Base guest: `vmlab base create windows-11`, run by the user in a terminal window of their own (it provisions again, asking for nothing about the time; Labs copy it again at their next start). A zone changed in the Guest: a Scenario that changes it declares `FRESH`, or the Run uses `--fresh`. A Guest in UTC that is still off: `vmlab down LAB && vmlab up LAB`. An app under test sees UTC as local time; a Scenario that needs another zone sets it with `tzutil /s "<Windows zone id>"`.
 
 ## PowerShell parses twice
 

@@ -434,6 +434,24 @@ def sound_off(vm, out):
         out("  turned %s's sound device off: Guests play nothing on the Host" % vm.name)
 
 
+# The VM's hardware clock as UTC plus this many seconds. Without it, Fusion reuses a VM's last
+# offset, which its first start took from the Mac's time zone (Windows then reads its clock hours
+# off in any other zone, and on a Mac that travels); Windows' own writes to the clock leave it.
+RTC_OFFSET = "rtc.diffFromUTC"
+UTC_CLOCK = {RTC_OFFSET: "0"}
+
+
+def utc_clock(vm, out):
+    """Give a Base guest a hardware clock in UTC, as Labs get at every start (_configure). A
+    running one is shut down first: Fusion rewrites a running VM's .vmx."""
+    if vm.exists() and vm.config(RTC_OFFSET) != UTC_CLOCK[RTC_OFFSET]:
+        if vm.is_running():
+            out("  shutting %s down to set its hardware clock to UTC" % vm.name)
+            vm.stop()
+        vm.set_config(UTC_CLOCK)
+        out("  set %s's hardware clock to UTC: the Mac's time zone does not matter" % vm.name)
+
+
 def sound_findings():
     """doctor's Host check: vmlab's Fusion VMs (every Base guest and Lab clone, of any project)
     with a sound device. [(check, status, detail, fix)]"""
@@ -1007,10 +1025,15 @@ class FusionProvider(Provider):
         cause, detail, fix = fusion_windows.guest_clock(self)
         if cause is None:
             return ("Clock", OK, detail, None)
-        if cause == fusion_windows.WRONG_ZONE:  # the Lab boots with its Base guest's time zone: set it there
-            fix = ("%s. Do it in Base guest %s, which the Lab starts from: vmlab base create %s --reprovision (in a terminal window: "
-                   "it waits while you do it; the Lab is copied again at its next start)" % (fix, self.base_name, self.base_name))  # fmt: skip
-        elif cause == fusion_windows.CLOCK_OFF:  # it reads the Mac's time again when it starts: vmlab-clean is taken powered off
+        if cause == fusion_windows.NOT_UTC:
+            record = bases.Registry().get(self.base_name) or {}
+            if (record.get("provisioned") or 0) < fusion_windows.UTC_SINCE:  # the Lab starts from its Base guest's setup
+                fix = ("Base guest %s was provisioned by an older vmlab, which left Windows' clock in its own time zone: vmlab base create %s "
+                       "(provisions it again in UTC; the Lab is copied again at its next start)" % (self.base_name, self.base_name))  # fmt: skip
+            else:  # its Clean state has it right: something in the Guest changed it since
+                fix = ("something in the Guest (the app, a Scenario, a person) changed it since its Clean state, which has it right: "
+                       "`vmlab run --fresh` restores Clean state before every Scenario")
+        elif cause == fusion_windows.CLOCK_OFF:  # every start reads the hardware clock again: vmlab-clean is taken powered off
             fix = "restart the Guest: vmlab down %s && vmlab up %s" % (self.lab.name, self.lab.name)
         return ("Clock", WARN, detail, fix)
 
@@ -1083,7 +1106,8 @@ class FusionProvider(Provider):
     def _configure(self):
         # At every start: reverting to vmlab-clean brings back the settings of the moment it was taken.
         # No sound device: a Guest must not play through the Host's speakers nor take its Bluetooth headset.
-        self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024), "sound.present": "FALSE"})
+        # A hardware clock in UTC, whatever the Mac's time zone (UTC_CLOCK).
+        self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024), "sound.present": "FALSE", **UTC_CLOCK})
 
     def _switch_session(self):
         """Boot a new clone once to make the Lab's session its autologin session, then stop it."""
