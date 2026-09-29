@@ -108,3 +108,35 @@ class GuestLock:
         if self._file:
             self._file.close()  # closing drops the flock
             self._file = None
+
+
+class BaseGuestLock:
+    """Held while a Lab copies a Base guest, and while vmlab changes it (installs a language
+    into a Windows one), across vmlab processes and the threads of a --parallel Run: each
+    holder opens the file itself, and flock sets two open files of one process against each
+    other too. A context manager; waiting() is called once when another holder makes it wait."""
+
+    def __init__(self, name, waiting=None):
+        self.path = vmlab_home() / "locks" / ("base-%s.lock" % name)
+        self.waiting = waiting
+        self._file = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(mode=0o700, exist_ok=True)
+        self._file = self.path.open("a")
+        if fcntl:
+            try:
+                fcntl.flock(self._file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                if self.waiting:
+                    self.waiting()
+                fcntl.flock(self._file, fcntl.LOCK_EX)
+        else:
+            _lock.acquire()
+        return self
+
+    def __exit__(self, *exc):
+        if not fcntl:
+            _lock.release()
+        self._file.close()
+        self._file = None

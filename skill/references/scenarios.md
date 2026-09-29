@@ -132,7 +132,8 @@ def scenario(g):
     g.check("the settings window is titled in the Lab language", shown["met"], detail=shown)
 ```
 
-- Typing is unchanged: `g.type` types any text in every Lab language (the keyboard layout stays US).
+- Typing is unchanged: `g.type` types any text in every Lab language, and `g.press` presses keys of the US keyboard layout, which stays active (on Windows the Lab language's keyboard is installed next to it).
+- On Windows, some inbox apps and system names can stay English after vmlab installs a language pack: prefer the app's own text, and look names up with `vmlab ui find` on that Lab.
 
 ## Traps on every OS
 

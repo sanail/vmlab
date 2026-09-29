@@ -25,6 +25,7 @@ import os
 import pkgutil
 import re
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -33,14 +34,15 @@ from vmlab import bases, hostpower, hostproc, uihelpers
 from vmlab.config import DEFAULT_LANGUAGE, host_arch
 from vmlab.providers.base import GuestError
 from vmlab.providers.fusion import (
-    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, PROVISION_TIMEOUT, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
-    RTC_OFFSET, save_credentials, shut_down_for_labs, sound_off, utc_clock, vm_password, vmrun, vmx_path,
+    BASE_BOOT_TIMEOUT, CALL_TIMEOUT, DISK_OP_TIMEOUT, PROVISION_TIMEOUT, FusionVM, WindowsVmrunChannel, credentials, delete_old_snapshots, fusion_dir, provisioned_snapshot, running_vmx,
+    RTC_OFFSET, save_credentials, shut_down_for_labs, sound_off, stop_hint, utc_clock, vm_password, vmrun, vmx_path,
 )  # fmt: skip
+from vmlab.providers import windows
 from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
 
 UTC_SINCE = 5  # the first provisioning that keeps Windows' clock in UTC
-PROVISION_VERSION = 5  # bump when provision.ps1 changes; `base create` then re-provisions
+PROVISION_VERSION = 6  # bump when provision.ps1 changes; `base create` then re-provisions
 PROBE = ["cmd", "/c", "exit 0"]
 ELEVATION_TIMEOUT = 180  # s: Windows cancels an unanswered UAC prompt after about two minutes
 POLICIES = r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
@@ -64,11 +66,16 @@ Get-Content -LiteralPath $log
 Remove-Item -Force -ErrorAction SilentlyContinue $script, $params
 exit $p.ExitCode
 """]  # fmt: skip
-LANGUAGE_PS = "(Get-UICulture).Name"  # the signed-in user's display language, e.g. en-US
+# The signed-in user's display language, e.g. en-US: the one apps show. Not Get-UICulture: a console
+# program's UI language falls back to one its console's code page suits, and provisioning makes that
+# UTF-8, so PowerShell, cmd and every console program read English whatever the display language.
+LANGUAGE_PS = ("[Globalization.CultureInfo]::new([int](Add-Type -PassThru -Name UiLanguage -Namespace Vmlab -MemberDefinition "
+               "'[DllImport(\"kernel32.dll\")] public static extern ushort GetUserDefaultUILanguage();')::GetUserDefaultUILanguage()).Name")  # fmt: skip
 NO_TOOLS_GRACE = 180  # s after which a Guest whose VMware Tools never answer surely lacks them
 WINDOW_START_WAIT = 60  # s for Fusion to power on a VM it opened
 SESSION = ["powershell", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id $PID).SessionId; [Console]::OutputEncoding.CodePage; " + LANGUAGE_PS]
-DISPLAY_LANGUAGE = ["powershell", "-NoProfile", "-NonInteractive", "-Command", LANGUAGE_PS]
+# What doctor's Language row reads: the display language, then the regional formats (config.language_forms).
+DISPLAY_LANGUAGE = ["powershell", "-NoProfile", "-NonInteractive", "-Command", LANGUAGE_PS + "; (Get-Culture).Name"]
 FUSION_FOLDERS = ("Virtual Machines.localized", "Virtual Machines", "Documents/Virtual Machines.localized")
 # The Guest's clock: its UTC time in ms, its time zone's id, and whether Windows reads its hardware
 # clock as UTC (RealTimeIsUniversal; 0 when unset).
@@ -81,8 +88,8 @@ NOT_UTC, CLOCK_OFF, UNREAD = "not in UTC", "clock off", "unread"  # why a Guest'
 GET_WINDOWS = """\
   1. In VMware Fusion: File > New..., choose "Get Windows from Microsoft", pick Windows 11
      and English (United States), and follow Fusion's steps.
-     Windows Labs expect en-US element names; a Lab written for another language sets
-     language under [labs.NAME].
+     The Base guest stays English: each Lab picks its language (language under [labs.NAME]),
+     and vmlab installs that language into the Base guest the first time a Lab asks for it.
   2. When Fusion asks how to encrypt the VM (Windows 11 needs a TPM), choose "Only the files
      needed to support a TPM are encrypted" and let Fusion keep the password in your Keychain.
   3. In Windows Setup, make a local account with a password: vmlab signs in with it.
@@ -387,7 +394,7 @@ def _provision(wizard, name, vm):
     record["elevated"] = True
     registry.put(name, record)
 
-    wizard.out("provisioning %s (OpenSSH, autologin, no updates, sleep or OneDrive, UTF-8, clock in UTC, native PowerShell; a few minutes)" % vm.name)
+    wizard.out("provisioning %s (OpenSSH, autologin, one keyboard, no updates, sleep or OneDrive, UTF-8, clock in UTC, native PowerShell; a few minutes)" % vm.name)
     creds = credentials(vm.name)
     stdin = json.dumps({
         "script": pkgutil.get_data("vmlab", "guest/windows/provision.ps1").decode("ascii"),
@@ -419,8 +426,8 @@ def _provision(wizard, name, vm):
                     "re-run `vmlab base create %s --reprovision`" % name,
                 )
             wizard.out("  Channel %s reaches the desktop session (session %s, UTF-8)" % (each.name, session))
-        if language.lower() != DEFAULT_LANGUAGE.lower():
-            wizard.out("  display language %s: Windows Labs expect %s unless they set language under [labs.NAME]" % (language or "unknown", DEFAULT_LANGUAGE))
+        languages = _installed_languages(ssh, name)
+        wizard.out("  " + display_language_note(language, languages))
         check_clock(name, ssh, vm, wizard.out)  # in the snapshot Labs boot from
         # The UI helper compiles itself on first use (~10 s): done here, it is in the snapshot,
         # and Labs do not pay for it after every restore.
@@ -432,9 +439,27 @@ def _provision(wizard, name, vm):
     provisioned_id = uuid.uuid4().hex
     snapshot = provisioned_snapshot(provisioned_id)
     vm.snapshot(snapshot)  # earlier ones stay: vmlab says how to delete them in Fusion (delete_old_snapshots)
-    record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot, language=language)
+    record.update(provisioned=PROVISION_VERSION, provisioned_id=provisioned_id, snapshot=snapshot, language=language,
+                  languages=[each for each in languages if each.lower() != language.lower()])
     registry.put(name, record)
     wizard.out('Base guest %s is ready (Fusion VM %s). Windows Labs use it with: [labs.<name>.fusion] base = "%s"' % (name, vm.vmx, name))
+
+
+def display_language_note(language, languages):
+    """Provisioning's line on the Base guest's languages: information, since a Lab picks its own."""
+    others = [each for each in languages if each.lower() != (language or "").lower()]
+    return "display language %s: what Windows Labs show unless they set language under [labs.NAME]%s" % (
+        language or "unknown", "; language packs installed too: %s" % ", ".join(others) if others else "")
+
+
+def _installed_languages(ssh, name):
+    """The languages whose packs the Base guest has (Get-InstalledLanguage needs an administrator)."""
+    result = elevated(ssh, "add-language.ps1", ["-List"], CALL_TIMEOUT)
+    languages = installed_languages(result.stdout)
+    if not result.ok or languages is None:
+        raise GuestError("reading the Base guest's installed languages failed: %s" % ((result.stderr or result.stdout).strip() or "exit %s" % result.code),
+                         "re-run `vmlab base create %s --reprovision`" % name)  # fmt: skip
+    return languages
 
 
 def _start_with_window(wizard, vm):
@@ -543,3 +568,131 @@ def _duration(seconds):
     if minutes < 60:
         return "%d min" % minutes
     return "%d h" % (minutes // 60) + (" %d min" % (minutes % 60) if minutes % 60 else "")
+
+
+# Languages. A Windows Base guest stays in its own display language (English, from the wizard); a Lab
+# in another one gets it on its copy (set_language), from a language pack vmlab installs into the Base
+# guest the first time a Lab needs it (add_language), so that later copies only switch, with no download.
+LANGUAGE_PACK_TIMEOUT = 3600  # s to download and install a language pack from Windows Update
+SET_LANGUAGE_TIMEOUT = 300  # s to switch a copy's user and system to the Lab language
+LANGUAGES_LINE = "vmlab-languages: "  # add-language.ps1's line with the languages whose packs are installed
+LANGUAGE_SET_LINE = "vmlab-language-set: "  # set-language.ps1's last line, once it set everything
+LANGUAGE_FIX = ("the Base guest downloads the pack from Windows Update: check that the Host is online and that Windows Update "
+                "is not blocked on its network, then start the Lab again (vmlab up)")  # fmt: skip
+
+
+def base_languages(record):
+    """The languages a Windows Base guest shows without a download: its display language first, then
+    the others whose packs are installed. Records from before the list: the display language alone."""
+    display = record.get("language") or DEFAULT_LANGUAGE
+    return [display] + [each for each in record.get("languages") or [] if each.lower() != display.lower()]
+
+
+def has_language(record, tag):
+    return tag.lower() in (each.lower() for each in base_languages(record))
+
+
+def installed_languages(stdout):
+    """The languages add-language.ps1 or provisioning found installed, from their LANGUAGES_LINE; None without one."""
+    lines = [line[len(LANGUAGES_LINE):].split() for line in stdout.splitlines() if line.startswith(LANGUAGES_LINE)]
+    return lines[-1] if lines else None
+
+
+def elevated(ssh, script, args, timeout):
+    """Run the Guest script guest/windows/SCRIPT with args in the ssh session itself, which is elevated
+    (the Channels' calls run in the desktop session, which is not). The script goes over scp: a
+    command line is too short for it, and Windows' sshd reads no more than about 4 KB of stdin.
+    The script deletes itself. An ExecResult; GuestError when ssh fails."""
+    path = r"%s\vmlab-%s-%s" % (windows.CALL_DIR, uuid.uuid4().hex[:12], script)
+    with tempfile.NamedTemporaryFile(suffix=".ps1") as local:
+        local.write(pkgutil.get_data("vmlab", "guest/windows/" + script))
+        local.flush()
+        ssh.send_file(local.name, path, CALL_TIMEOUT)
+    command = 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "%s" %s' % (path, " ".join(args))
+    return ssh.run_command(command, [script] + list(args), timeout, None)
+
+
+def wait_for_ssh(vm, ssh, timeout, what):
+    """Wait until sshd answers in vm, which was just started; GuestError after timeout."""
+    deadline = hostpower.awake_time() + timeout
+    while True:
+        vm.forget_ip()
+        try:
+            if ssh.run_command("cmd /c exit 0", PROBE, CALL_TIMEOUT, None).ok:
+                return
+            problem = "the probe failed"
+        except GuestError as exc:
+            problem = exc.message
+        if hostpower.awake_time() >= deadline:
+            raise GuestError("%s: sshd did not answer within %ss: %s" % (what, timeout, problem),
+                             "look at its screen (open -a 'VMware Fusion' '%s')" % vm.vmx)  # fmt: skip
+        time.sleep(2)
+
+
+def add_language(name, language, out, boot_timeout, vm=None, ssh=None):
+    """Install language's pack into Windows Base guest name, which must be stopped, and take a new
+    snapshot for Lab copies. The caller holds the Base guest's lock (home.BaseGuestLock); boot_timeout
+    is the Lab's, which waits for it.
+
+    It starts from the recorded snapshot, which copies are made from, not from what the VM holds now.
+    add-language.ps1 lets Windows Update run for the download only and checks that it is off again,
+    as provisioning left it, and puts the user's languages and keyboards back as they were. So the
+    new snapshot differs from the old one by the pack alone: the provisioning (bases.provisioning)
+    stays the same, and copies made before stay current. On failure the Base guest is stopped, back
+    at its snapshot, with its record unchanged. Returns the new record."""
+    registry = bases.Registry()
+    record = registry.get(name)
+    vm = vm or FusionVM(record["vmx"], secrets=record.get("vm", bases.vm_name(name)))
+    if (record.get("provisioned") or 0) < PROVISION_VERSION:  # earlier ones leave Edge's updater on, which the install must not run
+        raise GuestError("Base guest %s was provisioned by an older vmlab (v%s), before vmlab installed languages into it" % (name, record.get("provisioned")),
+                         "vmlab base create %s   (provisions it again; Labs are copied again at their next start)" % name)  # fmt: skip
+    if vm.is_running():
+        raise GuestError("Base guest %s is running; vmlab installs the %s language pack into it only while it is stopped" % (name, language), stop_hint(name))
+    ssh = ssh or WindowsSshChannel(record["user"], vm.ip, vm.name, vm.name)  # as provisioning reaches it
+    vm.revert(record["snapshot"], DISK_OP_TIMEOUT)
+    vm.start()
+    try:
+        wait_for_ssh(vm, ssh, boot_timeout, "Base guest %s did not boot" % name)
+        result = elevated(ssh, "add-language.ps1", ["-Language", language], LANGUAGE_PACK_TIMEOUT)
+        for line in result.stdout.splitlines():
+            if line.strip() and not line.startswith(LANGUAGES_LINE):
+                out("  " + line.strip())
+        languages = installed_languages(result.stdout)
+        if not result.ok or languages is None or not any(each.lower() == language.lower() for each in languages):
+            detail = "\n".join((result.stderr.strip().splitlines() + [line for line in result.stdout.splitlines() if line.strip()])[-8:]) or "exit %s" % result.code
+            raise GuestError("installing the %s language pack into Base guest %s failed:\n%s" % (language, name, detail), LANGUAGE_FIX)
+    except BaseException:
+        _put_back(vm, record["snapshot"])
+        raise
+    finally:
+        ssh.close()
+    snapshot = "%s-%s" % (provisioned_snapshot(bases.provisioning(record)), uuid.uuid4().hex[:6])
+    try:
+        vm.stop()
+        vm.snapshot(snapshot)
+    except BaseException:
+        _put_back(vm, record["snapshot"])
+        raise
+    display = record.get("language") or DEFAULT_LANGUAGE
+    record.update(snapshot=snapshot, languages=[each for each in languages if each.lower() != display.lower()])
+    registry.put(name, record)
+    return record
+
+
+def _put_back(vm, snapshot):
+    """Stop vm and revert it to snapshot, whatever the failure left; best-effort: the error that got here matters more."""
+    try:
+        vm.stop()
+        vm.revert(snapshot, DISK_OP_TIMEOUT)
+    except GuestError:
+        pass
+
+
+def set_language(ssh, language):
+    """Give a running copy's autologin user, the welcome screen and new users the Lab language: its
+    display language, regional formats and keyboard next to US, which stays the default. The next
+    sign-in shows it. GuestError when it fails."""
+    result = elevated(ssh, "set-language.ps1", ["-Language", language], SET_LANGUAGE_TIMEOUT)
+    if not result.ok or LANGUAGE_SET_LINE not in result.stdout:  # PowerShell exits 0 for a -File it cannot find
+        detail = "\n".join((result.stderr.strip().splitlines() + result.stdout.strip().splitlines())[-8:]) or "exit %s" % result.code
+        raise GuestError("setting the copy to %s failed: %s" % (language, detail), "run `vmlab up` again: the copy is made again")

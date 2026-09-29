@@ -373,8 +373,42 @@ STANDARD_ELEMENT = {
     # its window's menu button, named by its description (vmlab-ui leaves the main menu bar out)
     ("macos", "en-US"): "document actions", ("macos", "ru-RU"): "\u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u0434\u043e\u043a\u0443\u043c\u0435\u043d\u0442\u0430",
     ("linux", "en-US"): "Open", ("linux", "ru-RU"): "\u041e\u0442\u043a\u0440\u044b\u0442\u044c",  # a button
-    ("windows", "en-US"): "File",  # a menu
+    ("windows", "en-US"): "File", ("windows", "ru-RU"): "\u0424\u0430\u0439\u043b",  # a menu
 }
+
+
+# The user's display language, which apps show. Not Get-UICulture: a console program's UI language
+# falls back to one the console's UTF-8 code page suits, English.
+WINDOWS_UI_LANGUAGE = (
+    "[Globalization.CultureInfo]::new([int](Add-Type -PassThru -Name UiLanguage -Namespace Vmlab -MemberDefinition "
+    "'[DllImport(\"kernel32.dll\")] public static extern ushort GetUserDefaultUILanguage();')::GetUserDefaultUILanguage()).Name"
+)
+
+# The keyboard of the desktop session's foreground window (its layout's low word, e.g. 0409 for
+# US), every keyboard the user has, and the Lab language's own one.
+WINDOWS_KEYBOARD = r'''
+KEYBOARD = """
+Add-Type -Namespace Vmlab -Name Keys -MemberDefinition @(
+  '[DllImport("user32.dll")] public static extern System.IntPtr GetForegroundWindow();',
+  '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr w, System.IntPtr p);',
+  '[DllImport("user32.dll")] public static extern System.IntPtr GetKeyboardLayout(uint thread);')
+'{0:x8}' -f [Vmlab.Keys]::GetKeyboardLayout([Vmlab.Keys]::GetWindowThreadProcessId([Vmlab.Keys]::GetForegroundWindow(), [System.IntPtr]::Zero)).ToInt64()
+(Get-WinUserLanguageList | ForEach-Object { $_.InputMethodTips }) -join ' '
+((New-WinUserLanguageList $env:LAB_LANGUAGE)[0].InputMethodTips) -join ' '
+"""
+
+def scenario(g):
+    tag = uuid.uuid4().hex[:8]
+    app = g.stage_text("keys " + tag)["app"]
+    r = g.exec(["powershell", "-NoProfile", "-Command", KEYBOARD], env={"LAB_LANGUAGE": g.language})
+    layout, installed, own = (r.stdout.splitlines() + ["", "", ""])[:3]
+    g.check("the active keyboard is US", layout.strip()[-4:] == "0409", detail=r.stdout + r.stderr)
+    g.check("the Lab language's keyboard is installed", bool(own.split()) and set(own.split()) <= set(installed.split()), detail=r.stdout)
+    g.press("a")
+    g.type(" \u041f\u0440\u0438\u0432\u0435\u0442")
+    typed = "a \u041f\u0440\u0438\u0432\u0435\u0442"
+    g.check("press types the key's US letter, type any text", g.wait_for(role="textarea", text=typed, app=app, timeout=10)["met"], detail=g.find(role="textarea", app=app))
+'''
 
 
 def ui(test):
@@ -923,9 +957,9 @@ def scenario(g):
         r = g.exec(["sh", "-c", 'printf "%%s %%s" "$LANG" "$(locale -k LC_MESSAGES >/dev/null && echo ok)"'])
         g.check("a command sees the session's LANG, an installed locale", r.stdout.split() == [locale + ".UTF-8", "ok"], detail=r.stdout + r.stderr)
     else:
-        r = g.exec(["powershell", "-NoProfile", "-Command", "(Get-UICulture).Name"])
-        g.check("the display language", r.stdout.strip() == g.language, detail=r.stdout)
-""" % (self.target.provider == "fake", self.target.language)))
+        r = g.exec(["powershell", "-NoProfile", "-Command", WINDOWS_UI_LANGUAGE + "; (Get-Culture).Name"])
+        g.check("the display language and the regional formats", r.stdout.split() == [g.language, g.language], detail=r.stdout)
+""" % (self.target.provider == "fake", self.target.language) + "WINDOWS_UI_LANGUAGE = %r\n" % WINDOWS_UI_LANGUAGE))
 
     @ui
     def test_07d_ui_a_stock_app_names_its_elements_in_the_lab_language(self):
@@ -944,6 +978,26 @@ def scenario(g):
     g.type(typed)
     g.check("ASCII text types as it is", g.wait_for(role="textarea", text=typed, app=app, timeout=10)["met"])
 """ % name))
+
+    def test_07e_windows_keeps_us_keys_and_utf8_in_every_lab_language(self):
+        # The Lab language's keyboard sits next to US, which stays active: g.press sends keys. Both
+        # Channels still run calls in UTF-8, which vmlab's Channels need, whatever the language.
+        if self.target.os != "windows":
+            self.skipTest("Windows keyboards and code pages")
+        probe = ["exec", "--lab", self.target.lab, "--", "powershell", "-NoProfile", "-Command", "[Console]::OutputEncoding.CodePage; " + WINDOWS_UI_LANGUAGE]
+        over_ssh = self.target.vmlab(*probe)
+        self.assertEqual((over_ssh.returncode, over_ssh.stdout.split()), (0, ["65001", self.target.language]), over_ssh.stderr)
+        stand_in = Path(tempfile.mkdtemp(prefix="vmlab-no-ssh-"))
+        self.addCleanup(shutil.rmtree, str(stand_in), ignore_errors=True)
+        for name in ("ssh", "scp"):  # ssh cannot reach the Guest: the call falls back to vmrun
+            (stand_in / name).write_text("#!/bin/sh\necho 'ssh: connect to host port 22: Connection refused' >&2\nexit 255\n")
+            (stand_in / name).chmod(0o755)
+        over_vmrun = subprocess.run(
+            [sys.executable, str(zipapp_path())] + probe, cwd=str(self.target.root), capture_output=True, text=True, timeout=300,
+            env=dict(self.target.env, PATH="%s:%s" % (stand_in, self.target.env["PATH"])),
+        )  # fmt: skip
+        self.assertEqual((over_vmrun.returncode, over_vmrun.stdout.split()), (0, ["65001", self.target.language]), over_vmrun.stderr)
+        self.assertPassed(*self.target.scenario("ui_keyboard.py", UI + WINDOWS_KEYBOARD))
 
     @ui
     def test_08_ui_input_clipboard_click_and_wait(self):

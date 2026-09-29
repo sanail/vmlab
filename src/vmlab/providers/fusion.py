@@ -30,7 +30,9 @@ clone too, with its GNOME/GTK translations downloaded. A new clone of such a
 Lab boots once to switch its autologin session and language before its Clean
 state is taken. Commands run with the session's environment (DISPLAY,
 WAYLAND_DISPLAY, LANG, ...), as a terminal on its desktop would. A Windows
-Guest shows the language of its Base guest.
+copy in another language than its Base guest's display language boots once
+to switch to it too, from a language pack vmlab installs into the Base guest
+the first time a Lab needs it (fusion_windows.add_language).
 
 Options, under [labs.<name>.fusion]:
 
@@ -62,7 +64,7 @@ from pathlib import Path
 
 from vmlab import bases, hostpower, hostproc
 from vmlab.config import DEFAULT_LANGUAGE, ConfigError, host_arch, language_forms
-from vmlab.home import vmlab_home
+from vmlab.home import BaseGuestLock, vmlab_home
 from vmlab.providers import windows
 from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, BootState, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
@@ -584,7 +586,8 @@ def old_snapshots(vms=None, only=None):
             names = [s for s in vm.snapshots() if s.startswith(PROVISIONED_PREFIX) and s != record["snapshot"]]
         except GuestError:
             continue
-        holders = _linked_clones(name, vm, vms) if names else {}
+        # A Windows Base guest is encrypted, and its Labs are copies, which need none of its snapshots.
+        holders = _linked_clones(name, vm, vms) if names and not _encrypted(vm.vmx) else {}
         found += [OldSnapshot(vm, name, s, running, holders.get(s, [])) for s in names]
     return found
 
@@ -976,15 +979,12 @@ class FusionProvider(Provider):
     def shown_language(self, running):
         if running:
             return LanguageShown(self._read_language(), "the Guest", None)
-        if self.windows:  # it shows its Base guest's
-            language = (bases.Registry().get(self.base_name) or {}).get("language")
-            if language:
-                return LanguageShown(language, "Base guest %s" % self.base_name, None)
-            return LanguageShown(None, "not recorded for Base guest %s (provisioned by an older vmlab); checked while the Guest runs" % self.base_name,
-                                 "vmlab base create %s --reprovision   (records it)" % self.base_name)  # fmt: skip
+        clone = "copy" if self.windows else "clone"
         if not self.vm.exists() or CLEAN_SNAPSHOT not in self.vm.snapshots():  # no clone, or one whose making did not finish
-            return LanguageShown(None, "no finished clone yet; `vmlab up %s` clones Base guest %s in %s" % (self.lab.name, self.base_name, self.lab.language), None)
-        return LanguageShown(language_forms(_clone_language(self.guest_id))["linux"], "the clone", None)
+            return LanguageShown(None, "no finished %s yet; `vmlab up %s` %s Base guest %s in %s" % (clone, self.lab.name, "copies" if self.windows else "clones",
+                                                                                                      self.base_name, self.lab.language), None)  # fmt: skip
+        made_in = _clone_language(self.guest_id, self._base_language(bases.Registry().get(self.base_name)))
+        return LanguageShown(language_forms(made_in)[self.lab.os], "the " + clone, None)
 
     def _read_language(self):
         from vmlab.providers import fusion_windows
@@ -993,16 +993,9 @@ class FusionProvider(Provider):
         if not result.ok:
             raise GuestError("reading the Guest's language failed: %s" % (result.stderr.strip() or "exit %s" % result.code),
                              "check the Guest's PowerShell" if self.windows else "check `systemctl --user show-environment` in the Guest")  # fmt: skip
+        if self.windows:  # the display language, then the regional formats
+            return tuple((result.stdout.split() + ["", ""])[:2])
         return result.stdout.strip()
-
-    def language_fix(self):
-        if not self.windows:
-            return super().language_fix()
-        wanted = self.lab.language
-        shown = (bases.Registry().get(self.base_name) or {}).get("language") or "its language"
-        return ("make a Windows VM in %s with Fusion's \"Get Windows from Microsoft\" (it asks for the language), then adopt it in place of the current one: "
-                "vmlab base create %s --image PATH/TO/ITS.vmx (Labs copy the new one at their next start); or, if the Lab's Scenarios are written for %s, "
-                'set language = "%s" under [labs.%s]' % (wanted, self.base_name, shown, shown, self.lab.name))  # fmt: skip
 
     def _diagnose_clone(self, record):
         up = "`vmlab up %s` makes it again" % self.lab.name
@@ -1014,8 +1007,8 @@ class FusionProvider(Provider):
         made_for = clone.get("session", DEFAULTS["session"])
         if made_for != self.session:
             return [("Clone", INFO, "made for the %s session; %s for %s" % (SESSION_NAMES.get(made_for, made_for), up, SESSION_NAMES[self.session]), None)]
-        made_in = _clone_language(self.guest_id)
-        if not self.windows and made_in != self.lab.language:  # a Windows copy shows its Base guest's language
+        made_in = _clone_language(self.guest_id, self._base_language(record))
+        if made_in.lower() != self.lab.language.lower():
             return [("Clone", INFO, "made in %s; %s in %s" % (made_in, up, self.lab.language), None)]
         try:
             clean = CLEAN_SNAPSHOT in self.vm.snapshots()
@@ -1111,19 +1104,22 @@ class FusionProvider(Provider):
         if not self.vm.exists() and self.vm.vmx.parent.exists():
             with self.progress.step("deleting the old clone"):
                 self.vm.delete(self.lab.boot_timeout)  # a copy or clone that did not finish: start over
-        if not self.vm.exists():
+        if not self.vm.exists() and self.windows:
+            record = self._copy()
+            made_from = bases.provisioning(record)
+            self._write_clone_record(made_from)
+            if self.lab.language.lower() != self._base_language(record).lower():
+                self._prepare_copy()
+            self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
+        elif not self.vm.exists():
             base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
             if base_vm.is_running():
                 raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, stop_hint(self.base_name))
             with self.progress.step("cloning"):
-                if self.windows:
-                    base_vm.clone_copy(self.vm)
-                    self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
-                else:
-                    base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
+                base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
                 made_from = bases.provisioning(record)
                 self._write_clone_record(made_from)
-                if not self.windows and (self.session != DEFAULTS["session"] or self.lab.language != DEFAULT_LANGUAGE):
+                if self.session != DEFAULTS["session"] or self.lab.language != DEFAULT_LANGUAGE:
                     self._prepare_clone()
                 self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
@@ -1139,15 +1135,62 @@ class FusionProvider(Provider):
         return (
             clone.get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
             and clone.get("session", DEFAULTS["session"]) == self.session
-            and (self.windows or _clone_language(self.guest_id) == self.lab.language)
+            and _clone_language(self.guest_id, self._base_language(record)).lower() == self.lab.language.lower()
             and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its session switch did not finish
         )
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {
             "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
-            "session": self.session, "language": None if self.windows else self.lab.language,
+            "session": self.session, "language": self.lab.language,
         })  # fmt: skip
+
+    def _base_language(self, record):
+        """The language a clone shows unless vmlab sets another: its Base guest's display language on
+        Windows (what provisioning found), English on Linux."""
+        return ((record or {}).get("language") or DEFAULT_LANGUAGE) if self.windows else DEFAULT_LANGUAGE
+
+    def _copy(self):
+        """Make the Windows Lab's copy of its Base guest, first installing the Lab language's pack into the
+        Base guest when it lacks it. Under the Base guest's lock, which other vmlab processes and the other
+        Labs of a --parallel Run take too: a copy is never made while a language is being installed, and two
+        Labs needing the same missing language install it once. Returns the Base guest's record."""
+        from vmlab.providers import fusion_windows
+
+        waiting = lambda: self.progress.say("waiting for Base guest %s: another Lab copies it or installs a language into it" % self.base_name)  # noqa: E731
+        with BaseGuestLock(self.base_name, waiting):
+            record = self._base()  # again, under the lock: another Lab may have installed the language meanwhile
+            base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
+            if base_vm.is_running():
+                raise GuestError("Base guest %s is running; it must be stopped to be cloned" % self.base_name, stop_hint(self.base_name))
+            if not fusion_windows.has_language(record, self.lab.language):
+                with self.progress.step("installing the %s language pack into Base guest %s" % (self.lab.language, self.base_name),
+                                        "(once for every Lab on this Host: it downloads several hundred MB from Windows Update and takes about half an hour)"):  # fmt: skip
+                    record = fusion_windows.add_language(self.base_name, self.lab.language, self.progress.say, self.lab.boot_timeout, vm=base_vm)
+                delete_old_snapshots(self.base_name, base_vm, lambda question: False, self.progress.say)  # says how to delete them in Fusion
+            with self.progress.step("cloning"):
+                base_vm.clone_copy(self.vm)
+                self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
+        return record
+
+    def _prepare_copy(self):
+        """Boot a new Windows copy once to give it the Lab language, then stop it: the next sign-in shows it."""
+        from vmlab.providers import fusion_windows
+
+        record = bases.Registry().get(self.base_name) or {}
+        base_vm = record.get("vm", bases.vm_name(self.base_name))
+        ssh = windows.WindowsSshChannel(record.get("user", GUEST_USER), self.vm.ip, base_vm, self.guest_id)
+        with self.progress.step("setting the new copy to %s (one extra boot)" % self.lab.language):
+            self._configure()
+            self.vm.start(self.lab.boot_timeout)
+            try:
+                fusion_windows.wait_for_ssh(self.vm, ssh, self.lab.boot_timeout, "the new copy of Lab %s was not set to %s" % (self.lab.name, self.lab.language))
+                fusion_windows.set_language(ssh, self.lab.language)
+            except GuestError as exc:
+                raise GuestError("the new copy of Lab %s could not be set to %s: %s" % (self.lab.name, self.lab.language, exc.message), exc.fix)
+            finally:
+                ssh.close()
+                self.stop()
 
     def _configure(self):
         # At every start: reverting to vmlab-clean brings back the settings of the moment it was taken.
@@ -1373,9 +1416,10 @@ def _clone_record(vm):
         return {}
 
 
-def _clone_language(vm):
-    """The Lab language a Linux clone was made in; records from before languages: English, the Base guest's."""
-    return _clone_record(vm).get("language") or DEFAULT_LANGUAGE
+def _clone_language(vm, base_language=DEFAULT_LANGUAGE):
+    """The Lab language a clone was made in. Records from before languages (a Linux clone) or from before
+    vmlab set a Windows copy's (language None): its Base guest's, base_language."""
+    return _clone_record(vm).get("language") or base_language
 
 
 def _write_clone_record(vm, record):

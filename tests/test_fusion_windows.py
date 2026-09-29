@@ -56,7 +56,7 @@ class WindowsTestCase(FusionTestCase):
         records = json.loads(path.read_text()) if path.exists() else {}
         records["windows-11"] = {
             "provider": "fusion", "os": "windows", "arch": "arm64", "vm": vm, "vmx": str(vmx), "image": "/somewhere/Windows 11.vmx",
-            "user": "tester", "installed": True, "provisioned": 5, "provisioned_id": provisioned_id, "snapshot": snapshot, "elevated": True,
+            "user": "tester", "installed": True, "provisioned": 6, "provisioned_id": provisioned_id, "snapshot": snapshot, "elevated": True,
         }  # fmt: skip
         path.write_text(json.dumps(records))
         return vmx
@@ -116,7 +116,7 @@ class WindowsDoctorTest(WindowsTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v5\)")
+        self.assertRegex(r.out, r"ok\s+win: Base guest windows-11: provisioned \(v6\)")
 
     def test_a_running_base_guest_is_a_warning_that_base_create_fixes_without_a_window(self):
         # A Base guest runs headless, with no Start menu to click; vmrun stops it with the VM password vmlab keeps.
@@ -145,7 +145,7 @@ class WindowsDoctorTest(WindowsTestCase):
         r = self.vmlab("doctor")
 
         self.assertExit(r, 0)
-        self.assertRegex(r.out, r"warn\s+win: Base guest windows-11: provisioned by an older vmlab \(v2; this one provisions v5\)")
+        self.assertRegex(r.out, r"warn\s+win: Base guest windows-11: provisioned by an older vmlab \(v2; this one provisions v6\)")
         self.assertIn("fix: vmlab base create windows-11", r.out)
 
     def test_a_guest_that_asks_for_elevation_is_a_warning(self):
@@ -156,54 +156,6 @@ class WindowsDoctorTest(WindowsTestCase):
         self.assertRegex(r.out, r"warn\s+win: Elevation: ")
         self.assertIn("vmlab base create windows-11", r.out)
 
-    def test_a_base_guest_in_the_lab_language(self):
-        self.set_record(language="en-US")
-
-        r = self.vmlab("doctor")
-
-        self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Language: en-US")
-
-    def test_a_base_guest_in_another_language_fails(self):
-        self.set_record(language="de-DE")
-
-        r = self.vmlab("doctor")
-
-        self.assertExit(r, 1)
-        self.assertRegex(r.out, r"FAIL\s+win: Language: Base guest windows-11 shows de-DE, but the Lab language is en-US")
-        self.assertIn('language = "de-DE" under [labs.win]', r.out)
-        self.assertIn("vmlab base create windows-11 --image", r.out)
-        self.assertRegex(r.out, r"info\s+win: Guest: stopped", "the checks after it still run")
-
-    def test_a_lab_can_name_another_language(self):
-        self.project.config(WINDOWS_LAB + 'language = "de-DE"\n')
-        self.set_record(language="de-de")
-
-        r = self.vmlab("doctor")
-
-        self.assertExit(r, 0)
-        self.assertRegex(r.out, r"ok\s+win: Language: de-DE")
-
-    def test_a_windows_copy_is_never_made_again_for_its_language(self):
-        # Windows shows its Base guest's language: the copy is kept, and its Clone row does not say otherwise.
-        self.project.config(WINDOWS_LAB + 'language = "de-DE"\n')
-        self.set_record(language="de-DE")
-        self.vmlab("up")  # no Guest really boots here; the copy is made
-        self.vmlab("down")
-
-        self.vmlab("up")
-        r = self.vmlab("doctor")
-
-        self.assertNotIn("made in", r.out)
-        self.assertEqual(len([c for c in self.raw_calls() if "deleteVM" in c]), 0)
-
-    def test_a_base_guest_provisioned_before_languages_were_recorded_is_checked_while_it_runs(self):
-        r = self.vmlab("doctor")
-
-        self.assertExit(r, 0)
-        self.assertRegex(r.out, r"info\s+win: Language: .*while the Guest runs")
-        self.assertIn("vmlab base create windows-11 --reprovision", r.out)
-
     def test_missing_credentials_fail_since_vmrun_cannot_open_the_vm(self):
         (self.project.home / "fusion" / "vmlab-base-windows-11.credentials.json").unlink()
 
@@ -211,6 +163,120 @@ class WindowsDoctorTest(WindowsTestCase):
 
         self.assertExit(r, 1)
         self.assertRegex(r.out, r"FAIL\s+win: Guest credentials: .*missing")
+
+
+class WindowsLanguageTest(WindowsTestCase):
+    """A Windows Lab's language is set on its copy, from a language pack vmlab installs into the Base
+    guest the first time a Lab needs it (the install itself: test_windows_language). No Guest boots
+    here: a copy that needs its language set is left without Clean state, and made again."""
+
+    def setUp(self):
+        super().setUp()
+        self.project.config(WINDOWS_LAB)
+        self.base_vmx = self.windows_base()
+        self.set_record(language="en-US")
+
+    def set_record(self, **fields):
+        path = self.project.home / "bases.json"
+        records = json.loads(path.read_text())
+        records["windows-11"].update(fields)
+        path.write_text(json.dumps(records))
+
+    def clone_record(self):
+        [path] = (self.project.home / "fusion").glob("vmlab-*-win.json")
+        return path, json.loads(path.read_text())
+
+    def base_calls(self, command):
+        return [c for c in self.calls(command) if "vmlab-base-windows-11" in c[1]]
+
+    def test_a_copy_in_the_base_guests_language_boots_no_extra_time_and_records_it(self):
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("start")), 1)
+        self.assertEqual(self.clone_record()[1]["language"], "en-US")
+        self.vmlab("down")
+        r = self.vmlab("doctor")
+        self.assertRegex(r.out, r"ok\s+win: Language: en-US")
+        self.assertRegex(r.out, r"ok\s+win: Clone: ")
+
+    def test_before_a_copy_is_made_the_language_is_not_known(self):
+        r = self.vmlab("doctor")
+
+        self.assertRegex(r.out, r"info\s+win: Language: no finished copy yet; `vmlab up win` copies Base guest windows-11 in en-US")
+
+    def test_a_copy_recorded_before_languages_shows_its_base_guests_and_is_kept(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        path, record = self.clone_record()
+        path.write_text(json.dumps(dict(record, language=None)))
+
+        self.assertRegex(self.vmlab("doctor").out, r"ok\s+win: Language: en-US")
+        self.vmlab("up")
+
+        self.assertEqual(self.calls("deleteVM"), [])
+
+    def test_a_changed_lab_language_fails_doctor_and_makes_the_copy_again_in_it(self):
+        self.set_record(languages=["de-DE"])
+        self.vmlab("up")
+        self.vmlab("down")
+        self.project.config(WINDOWS_LAB + 'language = "de-DE"\n')
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 1)
+        self.assertRegex(r.out, r"FAIL\s+win: Language: the copy shows en-US en-US, but the Lab language is de-DE")
+        self.assertIn("fix: vmlab down win && vmlab up win", r.out)
+        self.assertRegex(r.out, r"info\s+win: Clone: made in en-US; `vmlab up win` makes it again in de-DE")
+        self.assertNotIn("Get Windows from Microsoft", r.out, "no second Windows to make")
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+        self.assertIn("could not be set to de-DE", r.err, "the new copy boots once to switch; no Guest answers here")
+        [vm] = self.clones().values()
+        self.assertNotIn("vmlab-clean", vm["snapshots"], "Clean state only once the language is set")
+        self.assertFalse(vm["running"], "a copy left half-prepared is stopped")
+        self.assertEqual(self.base_calls("start"), [], "de-DE is installed: the Base guest stays stopped")
+
+    def test_a_language_the_base_guest_lacks_is_installed_into_it_before_the_copy(self):
+        self.project.config(WINDOWS_LAB + 'language = "ru-RU"\n')
+
+        r = self.vmlab("up")  # no Guest answers here: the install fails, and says why
+
+        self.assertExit(r, 1)
+        self.assertIn("win: installing the ru-RU language pack into Base guest windows-11", r.out)
+        self.assertEqual([c[2] for c in self.base_calls("revertToSnapshot")], ["vmlab-provisioned-first"] * 2, "from its snapshot, and back to it")
+        self.assertEqual(len(self.base_calls("start")), 1)
+        self.assertFalse(self.vms()[str(self.base_vmx.resolve())]["running"], "the Base guest is left stopped")
+        self.assertEqual(self.snapshots(self.base_vmx), ["clean", "vmlab-provisioned-first"], "no new snapshot")
+        self.assertEqual(self.clones(), {}, "no copy of a Base guest without the language")
+        record = json.loads((self.project.home / "bases.json").read_text())["windows-11"]
+        self.assertEqual((record["snapshot"], record.get("languages")), ("vmlab-provisioned-first", None))
+
+    def test_an_installed_language_is_not_installed_again(self):
+        self.set_record(languages=["ru-RU"])
+        self.project.config(WINDOWS_LAB + 'language = "ru-RU"\n')
+
+        r = self.vmlab("up")
+
+        self.assertNotIn("language pack", r.out)
+        self.assertEqual(self.base_calls("start"), [])
+        self.assertIn("setting the new copy to ru-RU", r.out)
+
+    def test_an_english_copy_stays_current_after_a_language_is_installed(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        # What add_language leaves: a new snapshot, the language listed, the same provisioning.
+        vmsd = self.base_vmx.with_suffix(".vmsd")
+        vmsd.write_text(vmsd.read_text() + "\nvmlab-provisioned-first-a1b2c3")
+        self.set_record(snapshot="vmlab-provisioned-first-a1b2c3", languages=["ru-RU"])
+
+        self.vmlab("up")
+        self.vmlab("down")
+
+        self.assertEqual(self.calls("deleteVM"), [])
+        self.assertRegex(self.vmlab("doctor").out, r"ok\s+win: Clone: ")
 
 
 class WindowsCloneTest(WindowsTestCase):
@@ -340,6 +406,18 @@ class WindowsOldSnapshotsTest(WindowsTestCase):
         self.assertInFusion(doctor.out)
         self.assertIn("kept: vmlab cannot delete an encrypted VM's snapshots", clean.out)
         self.assertEqual([c for c in self.raw_calls() if "deleteSnapshot" in c], [])
+
+    def test_a_copy_made_from_an_earlier_snapshot_does_not_keep_it(self):
+        # A copy is a whole VM of its own: it needs none of the Base guest's snapshots.
+        self.windows_base("second", earlier=("first",))
+        self.vmlab("up")
+        self.vmlab("down")
+        self.windows_base("third", earlier=("first", "second"))
+
+        r = self.vmlab("base", "create", "windows-11", "--yes")
+
+        self.assertNotIn("still needs it", r.out)
+        self.assertInFusion(r.out)
 
     def test_a_new_copy_deletes_none_either(self):
         self.vmlab("up")

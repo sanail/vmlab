@@ -94,7 +94,7 @@ public static class VmlabLsa {
 '@ -Language CSharp
 [VmlabLsa]::Store('DefaultPassword', $p.password)
 
-Say 'no updates, sleep, screen saver or lock screen'
+Say 'no updates (Windows, Store apps, Edge), sleep, screen saver or lock screen'
 Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoUpdate 1
 Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoRebootWithLoggedOnUsers 1
 # The policy covers the operating system's updates only. Windows Update Medic sets wuauserv back to
@@ -140,6 +140,14 @@ $failures = @(Get-Content -LiteralPath $result -ErrorAction SilentlyContinue | W
 Remove-Item -Force -ErrorAction SilentlyContinue -LiteralPath $script, $result
 if (-not $done) { throw 'turning Windows Update off as SYSTEM did not finish in 2 minutes' }
 if ($failures) { throw ($failures -join '; ') }
+# Edge updates itself apart from Windows Update: its tasks run at every boot of a clone and replace
+# its version during a Run (and in the Base guest while vmlab installs a language into it).
+Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate' UpdateDefault 0
+Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\EdgeUpdate' AutoUpdateCheckPeriodMinutes 0
+Get-ScheduledTask -TaskName 'MicrosoftEdgeUpdate*' -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
+foreach ($service in 'edgeupdate', 'edgeupdatem') {
+    if (Get-Service $service -ErrorAction SilentlyContinue) { Stop-Service $service -Force -ErrorAction SilentlyContinue; Set-Service $service -StartupType Disabled }
+}
 foreach ($setting in 'standby-timeout-ac', 'monitor-timeout-ac', 'hibernate-timeout-ac', 'disk-timeout-ac') { & powercfg.exe /change $setting 0 }
 & powercfg.exe /hibernate off
 & powercfg.exe /setacvalueindex SCHEME_CURRENT SUB_NONE CONSOLELOCK 0
@@ -149,6 +157,24 @@ Set-Value 'HKCU:\Control Panel\Desktop' ScreenSaveActive '0' String
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\UserProfileEngagement' ScoobeSystemSettingEnabled 0
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' SubscribedContent-310093Enabled 0
 Set-Value 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' SoftLandingEnabled 0
+
+Say 'one keyboard: the display language''s own'
+# As Linux and macOS Guests have it: Windows Setup adds the keyboard of the region it was given (a
+# Russian one, say, next to US), and every Lab would get it. A Lab in another language gets its
+# keyboard next to US when its copy is made (set-language.ps1).
+# A task 30 s after sign-in (\Microsoft\Windows\International\Synchronize Language Settings) writes
+# the list back as it was: first its run in this sign-in.
+$explorer = Get-Process explorer -ErrorAction SilentlyContinue | Sort-Object StartTime | Select-Object -First 1
+for ($i = 0; $explorer -and $i -lt 90; $i++) {
+    $sync = Get-ScheduledTask -TaskPath '\Microsoft\Windows\International\' -TaskName 'Synchronize Language Settings' -ErrorAction SilentlyContinue
+    if (-not $sync -or $sync.State -eq 'Disabled' -or (($sync | Get-ScheduledTaskInfo).LastRunTime -gt $explorer.StartTime -and $sync.State -ne 'Running')) { break }
+    Start-Sleep -Seconds 2
+}
+Add-Type -Name UiLanguage -Namespace Vmlab -MemberDefinition '[DllImport("kernel32.dll")] public static extern ushort GetUserDefaultUILanguage();'
+$display = [Globalization.CultureInfo]::new([int][Vmlab.UiLanguage]::GetUserDefaultUILanguage()).Name
+Set-WinUserLanguageList (New-WinUserLanguageList $display) -Force
+Copy-UserInternationalSettingsToSystem -WelcomeScreen $true -NewUser $true
+Say "  $((Get-WinUserLanguageList | ForEach-Object { "$($_.LanguageTag) [$($_.InputMethodTips -join ' ')]" }) -join ', ')"
 
 Say 'no recent documents'
 # Every Run opens files (Staged documents): each would leave one more shortcut in Recent Items.

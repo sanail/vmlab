@@ -7,7 +7,9 @@ provisioned_id, new with every successful provisioning, so Lab clones made
 before it can tell they are stale even when the version did not change.
 Fusion Base guests also record their .vmx, whether the install finished, and
 the snapshot Lab clones are made from; Windows ones, whose image is the VM
-they were copied from, also whether the Guest elevates without asking.
+they were copied from, also whether the Guest elevates without asking, their
+display language and the other languages whose packs vmlab installed (a new
+snapshot for each, with the same provisioned_id: copies made before stay).
 Its SSH host key is pinned in vmlab's known_hosts (vmlab.providers.ssh).
 """
 

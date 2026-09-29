@@ -255,15 +255,16 @@ def _language(path, table, key):
 
 def language_forms(tag):
     """How each Guest OS names the Lab language tag (ru-RU): {"macos": ("ru-RU", "ru_RU"), i.e.
-    AppleLanguages' first entry and AppleLocale, "linux": "ru_RU.UTF-8", "windows": "ru-RU"}."""
+    AppleLanguages' first entry and AppleLocale, "linux": "ru_RU.UTF-8", "windows": ("ru-RU", "ru-RU"),
+    i.e. the display language (Get-UICulture) and the regional formats (Get-Culture)}."""
     locale = tag.replace("-", "_")
-    return {"macos": (tag, locale), "linux": locale + ".UTF-8", "windows": tag}
+    return {"macos": (tag, locale), "linux": locale + ".UTF-8", "windows": (tag, tag)}
 
 
 def shows_language(os_name, shown, tag):
     """Does shown, a Guest's language in its OS's form (language_forms), show the Lab language tag?"""
     wanted = language_forms(tag)[os_name]
-    if os_name == "macos":
+    if os_name in ("macos", "windows"):
         return tuple(s.lower() for s in shown) == tuple(w.lower() for w in wanted)
     if os_name == "linux":  # the encoding has several spellings: ru_RU.UTF-8, ru_RU.utf8
         return shown.lower().replace("utf-8", "utf8") == wanted.lower().replace("utf-8", "utf8")
