@@ -6,7 +6,7 @@
     {
       "name": "vmlab",
       "description": "Test desktop apps inside macOS, Windows and Linux virtual machines on this Mac.",
-      "source": { "source": "github", "repo": "sanail/vmlab", "ref": "stable" }
+      "source": { "source": "url", "url": "https://github.com/sanail/vmlab.git", "ref": "stable" }
     }
   ]
 }
