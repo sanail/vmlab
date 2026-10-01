@@ -49,8 +49,8 @@ def main(argv=None):
     p.add_argument("--yes", action="store_true", help="delete without asking")
     p.add_argument("--bases", action="store_true", help="also delete unused Base guests (re-creating one downloads its image)")
 
-    p = sub.add_parser("self-update", help="replace the project's vendored vmlab.pyz with a newer one")
-    p.add_argument("--from", dest="source", metavar="PYZ", help="vmlab.pyz to vendor (default: the skill's copy)")
+    p = sub.add_parser("self-update", help="pin the project to the vmlab running this command (the skill's), or to --from")
+    p.add_argument("--from", dest="source", metavar="PYZ", help="vmlab.pyz to pin instead")
 
     p = sub.add_parser("run", help="run Scenarios on Labs and write reports")
     p.add_argument("scenarios", nargs="*", metavar="SCENARIO", help="Scenario names (default: all)")

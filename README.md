@@ -4,54 +4,51 @@ An agent skill plus a host CLI for testing desktop applications inside macOS, Wi
 
 Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests), the VMware Fusion Provider (Linux and Windows Guests) and the UI contract on macOS, Linux (X11 and Wayland) and Windows. UTM and Parallels are stubs. To add a hypervisor, see `docs/adding-a-provider.md`.
 
+## Install
+
+vmlab is an agent skill (`skills/vmlab/`) whose launcher, `scripts/vmlab`, downloads the vmlab release it names from GitHub on first use (about 1 MB, into `~/.vmlab/dist/`). The Host needs `python3` 3.9+ and `curl`. Every install comes from the `stable` branch, the latest release.
+
+**Claude Code**, as a plugin:
+
+```
+/plugin marketplace add sanail/vmlab
+/plugin install vmlab@sanail
+```
+
+`/plugin update vmlab@sanail` moves to a newer release (or turn on auto-update for the `sanail` marketplace in `/plugin`).
+
+**Other agents** that read the open SKILL.md standard (Cursor, Codex, OpenCode, …): `npx skills add https://github.com/sanail/vmlab/tree/stable/skills/vmlab` puts the skill in each agent's skills folder (add `-g` for your home); or copy `skills/vmlab/` from a `git clone -b stable https://github.com/sanail/vmlab` into it yourself.
+
+An agent picks the skill up in a new session and uses it on its own when a request fits ("test my app on Windows"); `/vmlab` in Claude Code asks for it by name. The skill is tested in Claude Code.
+
+A project keeps the vmlab version it was set up with until `SKILL_DIR/scripts/vmlab self-update`, run in the project root, moves it to the skill's.
+
 ## Build and test
 
 Python 3.9+ and the standard library only.
 
 ```sh
-python3 tools/build.py                   # -> dist/vmlab.pyz, and the skill in dist/skill/vmlab/
+python3 tools/build.py                   # -> dist/vmlab.pyz
 python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a subprocess; a few tests load one part
                                          # directly against stand-ins (the Linux UI helper, the Windows ssh Channel)
 # Seam 2, the Provider/Channel contract against a real Lab (docs/adding-a-provider.md):
 VMLAB_CONTRACT_LAB_FILE=my-lab.toml VMLAB_CONTRACT_LAB=mac python3 -m unittest discover -s tests -p 'test_contract.py' -v
 ```
 
+GitHub Actions runs Seam 1 on every push and pull request (`.github/workflows/test.yml`).
+
+To try a local build in Claude Code before it is pushed: `python3 tools/build.py && VMLAB_PYZ=$PWD/dist/vmlab.pyz claude --plugin-dir .` loads the plugin from this checkout for that session, over an installed `vmlab@sanail`, and every launcher runs `VMLAB_PYZ` instead of a release (`/reload-plugins` picks up edits to the skill). In a test project, `SKILL_DIR/scripts/vmlab self-update` with `VMLAB_PYZ` set pins that build.
+
+## Release
+
+1. Bump the version in `src/vmlab/__init__.py`, `skills/vmlab/scripts/vmlab` (`VERSION=`) and `.claude-plugin/plugin.json`; the tests fail until all three agree.
+2. Commit, tag `vX.Y.Z`, push both.
+
+`.github/workflows/release.yml` then runs the tests, checks the tag against the code, publishes a GitHub Release with `vmlab-X.Y.Z.pyz`, and fast-forwards `stable` to the tag. Users get it from `stable`; projects stay on their pinned version.
+
 ## The skill
 
-`skill/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `skill/references/` (setup, Ad-hoc run, regression), and those load on demand the Scenario API, the app recipes (build hooks per stack, cross-building from a Mac, building inside the Guest) and each Guest OS's traps. `tools/build.py` assembles it with the zipapp as `scripts/vmlab.pyz`.
-
-### Install the skill
-
-Build it (`python3 tools/build.py`), then copy `dist/skill/vmlab/` into a skills folder your agent reads: in your home for every project, or in a project for that project alone (commit it to share it). Agents that follow the open SKILL.md standard differ only in which folders they read:
-
-| Agent | project | home |
-| --- | --- | --- |
-| Claude Code | `.claude/skills/` | `~/.claude/skills/` |
-| Cursor | `.cursor/skills/`, `.agents/skills/`, `.claude/skills/` | `~/.cursor/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
-| Codex | `.agents/skills/` (in the working folder and the repository root; never `.claude/skills/`) | `~/.agents/skills/` |
-| OpenCode | `.opencode/skills/`, `.agents/skills/`, `.claude/skills/` | `~/.config/opencode/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
-| Kilo Code | `.kilo/skills/` | `~/.kilo/skills/`, `~/.agents/skills/`, `~/.claude/skills/` |
-
-In your home, `~/.agents/skills/` reaches every agent but Claude Code, and `~/.claude/skills/` every agent but Codex, so one copy and a symlink serve them all:
-
-```sh
-mkdir -p ~/.agents/skills ~/.claude/skills
-cp -R dist/skill/vmlab ~/.agents/skills/
-ln -s ../../.agents/skills/vmlab ~/.claude/skills/vmlab
-```
-
-In a project the same pair serves all but Kilo Code, which reads only `.kilo/skills/` there; add a third link for it:
-
-```sh
-mkdir -p .agents/skills .claude/skills .kilo/skills
-cp -R PATH/TO/dist/skill/vmlab .agents/skills/
-ln -s ../../.agents/skills/vmlab .claude/skills/vmlab
-ln -s ../../.agents/skills/vmlab .kilo/skills/vmlab
-```
-
-An agent picks the skill up in a new session and uses it on its own when a request fits ("test my app on Windows"). To ask for it by name: `/vmlab` in Claude Code, Cursor and Kilo Code, `$vmlab` in Codex; in OpenCode, ask for the vmlab skill and its agent loads it with its `skill` tool. The skill is tested in Claude Code and Cursor; the other agents' folders come from their documentation.
-
-To upgrade, copy the new build over the old folder, then run `python3 .vmlab/vmlab.pyz self-update` in each project that uses vmlab: the project keeps its pinned copy until you do.
+`skills/vmlab/` holds the agent skill: `SKILL.md`, a short router, sends the agent to one workflow in `references/` (setup, Ad-hoc run, regression), and those load on demand the Scenario API, the app recipes (build hooks per stack, cross-building from a Mac, building inside the Guest) and each Guest OS's traps. `.claude-plugin/` makes this repository a Claude Code plugin and its marketplace (ADR 0004).
 
 ## Project layout
 
@@ -60,14 +57,15 @@ To upgrade, copy the new build over the old folder, then run `python3 .vmlab/vml
 ```
 .vmlab/
   vmlab.toml        # Labs; a commented template to start from
-  vmlab.pyz         # the pinned CLI (ADR 0002): run it as `python3 .vmlab/vmlab.pyz ...`
-  run               # runs the Regression suite: `.vmlab/run [NAME...] [--lab LAB]...`, the same as `python3 .vmlab/vmlab.pyz run ...`
+  vmlab             # runs the pinned CLI: `.vmlab/vmlab ...`; names its version and sha256 (ADR 0002, ADR 0004)
+  vmlab.pyz         # the pinned CLI; if git leaves it out, `.vmlab/vmlab` downloads that release and checks its sha256
+  run               # runs the Regression suite: `.vmlab/run [NAME...] [--lab LAB]...`, the same as `.vmlab/vmlab run ...`
   scenarios/*.py    # Scenarios
   .gitignore        # ignores runs/
   runs/             # per invocation and Lab: <UTC timestamp>-<lab>/ with report.json, junit.xml, summary.md, screenshots/<scenario>/
 ```
 
-`vmlab self-update [--from PYZ]` replaces the vendored copy and prints `old -> new`. Run from a skill copy, it vendors itself; run from the vendored copy, it picks the newest `<skill>/scripts/vmlab.pyz` among the `.claude`, `.cursor`, `.agents`, `.codex`, `.opencode` and `.kilo` skill folders in the project and in `~`, and `~/.config/opencode/skills`. It refuses to downgrade.
+`vmlab self-update [--from PYZ]` pins the project to the vmlab running it (the skill's `scripts/vmlab`, or the build `VMLAB_PYZ` names), or to `--from`: it replaces `vmlab.pyz`, rewrites the version and sha256 in `.vmlab/vmlab`, and prints `old -> new`. It refuses to downgrade, and run from the project's own copy it says to run it from the skill.
 
 ```toml
 [labs.mac]
@@ -415,3 +413,7 @@ vmlab version
 Every command that acts on Labs takes `--lab LAB`; `deploy`, `up`, `down`, `status` and `doctor` also take the Labs bare (both together add up), and `exec` takes its Lab bare before the `--`.
 
 `VMLAB_HOME` (default `~/.vmlab`) holds host state: the Base guest registry (`bases.json`), vmlab's SSH key and known_hosts (`ssh/`), `tart run` logs (`tart/`), Fusion VMs, their clone records and Guest credentials (`fusion/`), downloaded installer ISOs (`images/`), Guest locks (`locks/`), and the Fake Provider's Guests (`fake/`, with the Guest user's home at `fs/home`).
+
+## License
+
+MIT, see `LICENSE`. The bundled tomli (`src/vmlab/_vendor/tomli/`) keeps its own MIT license.

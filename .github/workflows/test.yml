@@ -1,0 +1,21 @@
+# Seam 1 on every push and pull request, and before every release. Seam 2 needs real Guests: run it locally.
+name: Test
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+jobs:
+  unit:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9" # the oldest vmlab supports: the Command Line Tools' python3
+      - name: Unit tests, one file per process
+        run: |
+          mkdir -p logs
+          ls tests/test_*.py | xargs -P 4 -I{} sh -c 'f=$(basename {}); python3 -m unittest discover -s tests -p "$f" > "logs/$f.log" 2>&1 || { cat "logs/$f.log"; exit 1; }'
+          grep -h "^Ran " logs/*.log | awk '{n += $2} END {print "Ran " n " tests"}'

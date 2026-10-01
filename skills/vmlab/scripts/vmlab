@@ -1,0 +1,32 @@
+#!/bin/sh
+# Runs vmlab VERSION: ./vmlab.pyz beside this file if there is one, else that release
+# from GitHub, downloaded once into ~/.vmlab/dist/ (ADR 0004). SHA256, when set, is the
+# digest the downloaded file must have. VMLAB_PYZ=PATH runs that zipapp instead: a local build.
+VERSION=0.1.0
+SHA256=
+
+die() { echo "vmlab: $*" >&2; exit 1; }
+digest() { { shasum -a 256 2>/dev/null || sha256sum; } < "$1" | cut -d' ' -f1; }
+
+if [ -n "$VMLAB_PYZ" ]; then
+  pyz=$VMLAB_PYZ
+elif [ -f "$(dirname "$0")/vmlab.pyz" ]; then
+  pyz=$(dirname "$0")/vmlab.pyz
+else
+  pyz=${VMLAB_HOME:-$HOME/.vmlab}/dist/vmlab-$VERSION.pyz
+  if [ ! -f "$pyz" ]; then
+    url=${VMLAB_RELEASES:-https://github.com/sanail/vmlab/releases/download}/v$VERSION/vmlab-$VERSION.pyz
+    mkdir -p "$(dirname "$pyz")" || die "cannot create $(dirname "$pyz")"
+    tmp=$pyz.$$
+    curl -fsSL -o "$tmp" "$url" || { rm -f "$tmp"; die "could not download vmlab $VERSION from $url"; }
+    if [ -n "$SHA256" ] && [ "$(digest "$tmp")" != "$SHA256" ]; then
+      rm -f "$tmp"; die "$url is not the vmlab $VERSION this project pinned (sha256 differs)"
+    fi
+    [ "$(python3 "$tmp" version 2>/dev/null)" = "vmlab $VERSION" ] || { rm -f "$tmp"; die "$url is not a working vmlab $VERSION"; }
+    mv "$tmp" "$pyz"
+  fi
+  if [ -n "$SHA256" ] && [ "$(digest "$pyz")" != "$SHA256" ]; then
+    die "$pyz is not the vmlab $VERSION this project pinned (sha256 differs); delete it to download it again"
+  fi
+fi
+exec python3 "$pyz" "$@"

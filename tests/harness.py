@@ -76,8 +76,8 @@ class Project:
         path.write_text(textwrap.dedent(body))
         return path
 
-    def vmlab(self, *args, cwd=None, timeout=60, pyz=None, env=None, bare=False):
-        proc = self.vmlab_background(*args, cwd=cwd, pyz=pyz, env=env, bare=bare)
+    def vmlab(self, *args, cwd=None, timeout=60, pyz=None, launcher=None, env=None, bare=False):
+        proc = self.vmlab_background(*args, cwd=cwd, pyz=pyz, launcher=launcher, env=env, bare=bare)
         try:
             proc.stdout, proc.stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -94,10 +94,14 @@ class Project:
         inherited = {"PATH": os.environ["PATH"]} if bare else os.environ
         return dict(inherited, VMLAB_HOME=str(self.home), HOME=str(self.fake_user_home), **dict(NO_HYPERVISORS, **(env or {})))
 
-    def vmlab_background(self, *args, cwd=None, pyz=None, env=None, bare=False):
-        """Start vmlab without waiting for it; the caller collects it with communicate()."""
+    def vmlab_background(self, *args, cwd=None, pyz=None, launcher=None, env=None, bare=False):
+        """Start vmlab without waiting for it; the caller collects it with communicate().
+
+        launcher: run this sh launcher (a project's .vmlab/vmlab, the skill's scripts/vmlab) instead of a zipapp.
+        """
+        command = [str(launcher)] if launcher else [sys.executable, str(pyz or zipapp_path())]
         return subprocess.Popen(
-            [sys.executable, str(pyz or zipapp_path())] + [str(a) for a in args],
+            command + [str(a) for a in args],
             cwd=str(cwd or self.root / "app"),
             env=self.environ(env, bare),
             stdin=subprocess.DEVNULL,  # never a terminal: vmlab must not wait for an answer
@@ -109,8 +113,8 @@ class Project:
         )
 
     def vmlab_vendored(self, *args, **kwargs):
-        """Run the project's own copy, .vmlab/vmlab.pyz, as CI would."""
-        return self.vmlab(*args, pyz=self.dir / "vmlab.pyz", **kwargs)
+        """Run the project's own copy through its launcher, .vmlab/vmlab, as CI would."""
+        return self.vmlab(*args, launcher=self.dir / "vmlab", **kwargs)
 
     def run_dirs(self):
         runs = self.dir / "runs"

@@ -1,15 +1,16 @@
-"""The skill package tools/build.py assembles next to the zipapp: what an agent installs.
+"""The skill in skills/vmlab/, and the Claude Code plugin that ships it: what an agent installs.
 
 It must follow the open SKILL.md standard, every document it points to must be in
-it, every vmlab command its documents name must exist, and its bundled zipapp must
-vendor itself into a project.
+it, every vmlab command its documents name must exist, its launcher must vendor the
+vmlab it runs into a project, and it must name the version the code has.
 """
 
+import json
 import re
 import subprocess
 import sys
 
-from harness import VmlabTestCase, zipapp_path
+from harness import REPO, VmlabTestCase, zipapp_path
 
 LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 TOML_BLOCK = re.compile(r"^```toml\n(.*?)^```", re.M | re.S)
@@ -17,7 +18,7 @@ COMMAND = re.compile(r"(?:^|`)vmlab ((?:ui |base )?[a-z][a-z-]*)", re.M)  # in c
 
 
 def skill_dir():
-    return zipapp_path().parent / "skill" / "vmlab"
+    return REPO / "skills" / "vmlab"
 
 
 def frontmatter(text):
@@ -87,15 +88,22 @@ class SkillPackageTest(VmlabTestCase):
 
                 self.assertNotEqual(r.code, 2, "%s: a TOML example does not load:\n%s\n%s" % (doc.name, block, r.err))
 
-    def test_the_bundled_zipapp_vendors_itself_into_a_project(self):
-        pyz = skill_dir() / "scripts" / "vmlab.pyz"
+    def test_the_launcher_vendors_the_vmlab_it_runs_into_a_project(self):
         self.project.dir.rmdir()
-        self.assertExit(self.project.vmlab("init", pyz=pyz), 0)
-        self.assertTrue((self.project.dir / "vmlab.pyz").is_file())
+        r = self.project.vmlab("init", launcher=skill_dir() / "scripts" / "vmlab", env={"VMLAB_PYZ": str(zipapp_path())})
+        self.assertExit(r, 0)
+        self.assertEqual((self.project.dir / "vmlab.pyz").read_bytes(), zipapp_path().read_bytes())
+        self.assertExit(self.project.vmlab_vendored("version"), 0)
+
+    def test_the_launcher_and_the_plugin_name_the_version_the_code_has(self):
+        version = subprocess.run([sys.executable, str(zipapp_path()), "version"], capture_output=True, text=True).stdout.split()[1]
+        launcher = re.search(r"^VERSION=(.*)$", (skill_dir() / "scripts" / "vmlab").read_text(), re.M).group(1)
+        plugin = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
+        self.assertEqual((launcher, plugin["version"]), (version, version), "bump all three together")
 
     def help(self, *command):
         out = subprocess.run(
-            [sys.executable, str(skill_dir() / "scripts" / "vmlab.pyz")] + list(command) + ["--help"],
+            [sys.executable, str(zipapp_path())] + list(command) + ["--help"],
             capture_output=True,
             text=True,
             check=True,

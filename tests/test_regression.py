@@ -1,4 +1,4 @@
-"""The Regression workflow as the skill documents it (skill/references/regression.md).
+"""The Regression workflow as the skill documents it (skills/vmlab/references/regression.md).
 
 A saved Scenario runs through the project's pinned copy with no agent, and the
 measure practice proves a new Check red on a Build artifact without the fix,
@@ -51,7 +51,7 @@ class RegressionTest(VmlabTestCase):
         self.src.write_text(text)
 
     def run_like_ci(self):
-        """`python3 .vmlab/vmlab.pyz run` with nothing of the agent's environment; returns the exit code and new Run folder."""
+        """`.vmlab/vmlab run` with nothing of the agent's environment; returns the exit code and new Run folder."""
         before = set(self.project.run_dirs())
         r = self.project.vmlab_vendored("run", bare=True)
         (run_dir,) = set(self.project.run_dirs()) - before

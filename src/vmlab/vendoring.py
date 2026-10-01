@@ -1,10 +1,14 @@
-"""`vmlab init` and `vmlab self-update`: the project's pinned copy of the CLI (ADR 0002).
+"""`vmlab init` and `vmlab self-update`: the project's pinned copy of the CLI (ADR 0002, ADR 0004).
 
-The vendored copy is .vmlab/vmlab.pyz; the zipapp itself carries its version,
-read by running `<pyz> version`. vmlab never rewrites an existing config.
+The pinned copy is .vmlab/vmlab.pyz, run through the .vmlab/vmlab launcher, which names its
+version and sha256 and downloads that release when the project leaves the zipapp out of git.
+The zipapp itself carries its version, read by running `<pyz> version`. vmlab never rewrites
+an existing config.
 """
 
+import hashlib
 import os
+import pkgutil
 import re
 import shutil
 import subprocess
@@ -16,19 +20,15 @@ from vmlab import __version__
 from vmlab.config import CONFIG_DIR, CONFIG_NAME, ConfigError
 
 PYZ_NAME = "vmlab.pyz"
+LAUNCHER_NAME = "vmlab"
 RUNS_IGNORE = "runs/"
 RUN_NAME = "run"
-# Where agents install the vmlab skill; the zipapp ships as scripts/vmlab.pyz inside it.
-PROJECT_SKILL_DIRS = tuple(
-    "%s/skills/vmlab" % d for d in (".claude", ".cursor", ".agents", ".codex", ".opencode", ".kilo")
-)
-HOME_SKILL_DIRS = PROJECT_SKILL_DIRS + (".config/opencode/skills/vmlab",)  # OpenCode's own home folder
 
 RUN_SCRIPT = """\
 #!/bin/sh
 # The Regression suite: every saved Scenario on every Lab, or what the arguments name.
 # Takes what `vmlab run` takes (see `--help`). Created by `vmlab init`.
-exec python3 "$(dirname "$0")/vmlab.pyz" run "$@"
+exec "$(dirname "$0")/vmlab" run "$@"
 """
 
 TEMPLATE = """\
@@ -119,14 +119,31 @@ def init(root, out):
         _install(_running_zipapp(), pyz)
         out("vendored  %s (vmlab %s)" % (pyz, __version__))
 
+    launcher = vmlab_dir / LAUNCHER_NAME
+    if launcher.exists():
+        out("kept      %s" % launcher)
+    else:
+        out("created   %s (vmlab %s)" % (launcher, _pin(launcher, pyz)))
+
 
 def self_update(start, source, out):
-    """Replace the project's vendored copy with source, or with the newest skill copy found."""
+    """Pin the project to source, or to the vmlab running this command (the skill's, or VMLAB_PYZ)."""
     vmlab_dir = _find_vmlab_dir(start)
-    pyz = vmlab_dir / PYZ_NAME
-    source = Path(source).resolve() if source else _default_source(pyz, vmlab_dir.parent)
+    pyz, launcher = vmlab_dir / PYZ_NAME, vmlab_dir / LAUNCHER_NAME
+    if source:
+        source = Path(source).resolve()
+    else:
+        source = _running_zipapp()
+        if pyz.exists() and source == pyz.resolve():
+            raise ConfigError(
+                pyz,
+                None,
+                "is the project's own copy, which self-update replaces",
+                "run it from the skill: `SKILL_DIR/scripts/vmlab self-update`, or pass --from PATH/TO/vmlab.pyz",
+            )
 
-    old = _version_of(pyz) if pyz.exists() else None
+    template = _launcher_template()  # before _install: the running zipapp may be the file it replaces
+    old = _version_of(pyz) if pyz.exists() else _pinned_version(launcher)
     new = _version_of(source)
     if old and _parse(new) < _parse(old):
         raise ConfigError(
@@ -137,7 +154,29 @@ def self_update(start, source, out):
         )
     if source != pyz.resolve():
         _install(source, pyz)
+    _pin(launcher, pyz, template)
     out("%s: %s -> %s (from %s)" % (pyz, old or "none", new, source))
+
+
+def _launcher_template():
+    return pkgutil.get_data("vmlab", "launcher").decode("utf-8")
+
+
+def _pin(launcher, pyz, template=None):
+    """Write the launcher that runs pyz, or downloads its release with its digest when pyz is gone; returns the version."""
+    version = _version_of(pyz)
+    text = re.sub(r"^VERSION=.*$", "VERSION=" + version, template or _launcher_template(), count=1, flags=re.M)
+    text = re.sub(r"^SHA256=.*$", "SHA256=" + hashlib.sha256(pyz.read_bytes()).hexdigest(), text, count=1, flags=re.M)
+    tmp = launcher.with_name(launcher.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.chmod(0o755)
+    os.replace(str(tmp), str(launcher))
+    return version
+
+
+def _pinned_version(launcher):
+    match = launcher.exists() and re.search(r"^VERSION=(\S+)$", launcher.read_text(encoding="utf-8"), re.M)
+    return match.group(1) if match else None
 
 
 def _install(source, pyz):
@@ -152,26 +191,9 @@ def _find_vmlab_dir(start):
     start = Path(start).resolve()
     for directory in (start,) + tuple(start.parents):
         candidate = directory / CONFIG_DIR
-        if (candidate / CONFIG_NAME).is_file() or (candidate / PYZ_NAME).is_file():
+        if any((candidate / name).is_file() for name in (CONFIG_NAME, PYZ_NAME, LAUNCHER_NAME)):
             return candidate
     raise ConfigError(start / CONFIG_DIR, None, "not a vmlab project", "run `vmlab init` in the project root first")
-
-
-def _default_source(pyz, project_root):
-    running = _running_zipapp(required=False)
-    if running and (not pyz.exists() or running != pyz.resolve()):
-        return running
-    candidates = [project_root / d / "scripts" / PYZ_NAME for d in PROJECT_SKILL_DIRS]
-    candidates += [Path.home() / d / "scripts" / PYZ_NAME for d in HOME_SKILL_DIRS]
-    found = [c for c in candidates if c.is_file()]
-    if not found:
-        raise ConfigError(
-            pyz,
-            None,
-            "no vmlab skill copy found to update from; looked in:\n    " + "\n    ".join(map(str, candidates)),
-            "install or update the vmlab skill, or pass --from PATH/TO/vmlab.pyz",
-        )
-    return max(found, key=lambda p: _parse(_version_of(p)))
 
 
 def _running_zipapp(required=True):
@@ -192,7 +214,7 @@ def _version_of(pyz):
     proc = subprocess.run([sys.executable, str(pyz), "version"], capture_output=True, text=True, timeout=60)
     match = re.match(r"vmlab (\d+(?:\.\d+)*)\s*$", proc.stdout)
     if proc.returncode != 0 or not match:
-        raise ConfigError(pyz, None, "is not a working vmlab zipapp", "replace it with a vmlab.pyz from the skill")
+        raise ConfigError(pyz, None, "is not a working vmlab zipapp", "delete it, then run `SKILL_DIR/scripts/vmlab self-update` from the skill")
     return match.group(1)
 
 

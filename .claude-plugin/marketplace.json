@@ -1,0 +1,12 @@
+{
+  "name": "sanail",
+  "owner": { "name": "Nail Samatov" },
+  "description": "Nail Samatov's Claude Code plugins",
+  "plugins": [
+    {
+      "name": "vmlab",
+      "description": "Test desktop apps inside macOS, Windows and Linux virtual machines on this Mac.",
+      "source": { "source": "github", "repo": "sanail/vmlab", "ref": "stable" }
+    }
+  ]
+}

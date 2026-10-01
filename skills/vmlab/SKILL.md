@@ -9,7 +9,7 @@ This skill runs a desktop app inside **Guests** (virtual machines) on this **Hos
 
 ## The CLI
 
-In a project, `vmlab` means `python3 .vmlab/vmlab.pyz`, run from the project root: the copy pinned in the project. Before `.vmlab/` exists, the only copy is `scripts/vmlab.pyz` in this skill's folder. Every command has `--help`.
+In a project, `vmlab` means `.vmlab/vmlab`, run from the project root: the version pinned in the project. Before `.vmlab/` exists, it is `scripts/vmlab` in this skill's folder, which downloads its vmlab release on first use. Every command has `--help`.
 
 ## Route
 

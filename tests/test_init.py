@@ -1,5 +1,7 @@
+import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -27,6 +29,16 @@ def pyz_version(path):
     return proc.stdout.strip()
 
 
+def pinned(launcher):
+    """The VERSION and SHA256 a launcher names."""
+    text = launcher.read_text()
+    return tuple(re.search(r"^%s=(.*)$" % key, text, re.M).group(1) for key in ("VERSION", "SHA256"))
+
+
+def sha256(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 class InitTest(VmlabTestCase):
     def test_init_creates_the_layout_in_an_empty_project(self):
         r = self.project.vmlab("init")
@@ -36,6 +48,8 @@ class InitTest(VmlabTestCase):
         self.assertTrue((d / "scenarios").is_dir())
         self.assertIn("runs/", (d / ".gitignore").read_text().splitlines())
         self.assertEqual(pyz_version(d / "vmlab.pyz"), pyz_version(zipapp_path()))
+        self.assertTrue(os.access(str(d / "vmlab"), os.X_OK))
+        self.assertEqual(pinned(d / "vmlab"), (pyz_version(zipapp_path()).split()[1], sha256(d / "vmlab.pyz")))
         config = self.project.config_path.read_text()
         self.assertTrue(all(l.startswith("#") or not l.strip() for l in config.splitlines()), config)
         self.assertIn("[labs.", config)
@@ -92,6 +106,7 @@ class InitTest(VmlabTestCase):
         self.assertExit(r, 0)
         self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), "vmlab 0.0.1")
         self.assertIn("self-update", r.out)
+        self.assertEqual(pinned(self.project.dir / "vmlab")[0], "0.0.1")  # an older project gets the launcher of its copy
 
     def test_init_creates_an_executable_run_script(self):
         self.assertExit(self.project.vmlab("init"), 0)
@@ -156,32 +171,7 @@ class SelfUpdateTest(VmlabTestCase):
         self.assertExit(r, 0)
         self.assertIn("0.0.1 -> %s" % current, r.out)
         self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), "vmlab %s" % current)
-
-    def test_self_update_run_from_the_vendored_copy_finds_the_installed_skill(self):
-        self.assertExit(self.project.vmlab("init"), 0)
-        fake_zipapp(self.project.fake_user_home / ".claude" / "skills" / "vmlab" / "scripts" / "vmlab.pyz", "9.0.0")
-
-        r = self.project.vmlab_vendored("self-update")
-
-        self.assertExit(r, 0)
-        self.assertIn("-> 9.0.0", r.out)
-        self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), "vmlab 9.0.0")
-
-    def test_self_update_finds_the_skill_where_opencode_and_kilo_install_it(self):
-        app, home = self.project.dir.parent, self.project.fake_user_home
-        for base, skills in ((app, ".opencode"), (app, ".kilo"), (home, ".opencode"), (home, ".kilo"), (home, ".config/opencode")):
-            with self.subTest(skills=base / skills):
-                (self.project.dir / "vmlab.pyz").unlink(missing_ok=True)
-                self.assertExit(self.project.vmlab("init"), 0)  # the current version
-                skill = fake_zipapp(base / skills / "skills" / "vmlab" / "scripts" / "vmlab.pyz", "9.0.0")
-                try:
-                    r = self.project.vmlab_vendored("self-update")
-
-                    self.assertExit(r, 0)
-                    self.assertIn("-> 9.0.0 (from ", r.out)
-                    self.assertTrue(r.out.rstrip().endswith("%s/skills/vmlab/scripts/vmlab.pyz)" % skills), r.out)
-                finally:
-                    skill.unlink()  # the next location must not see this one
+        self.assertEqual(pinned(self.project.dir / "vmlab"), (current, sha256(self.project.dir / "vmlab.pyz")))
 
     def test_self_update_from_an_explicit_path(self):
         self.assertExit(self.project.vmlab("init"), 0)
@@ -191,6 +181,18 @@ class SelfUpdateTest(VmlabTestCase):
 
         self.assertExit(r, 0)
         self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), "vmlab 9.1.0")
+        self.assertEqual(pinned(self.project.dir / "vmlab"), ("9.1.0", sha256(newer)))
+
+    def test_self_update_through_the_launcher_with_vmlab_pyz_pins_that_local_build(self):
+        self.assertExit(self.project.vmlab("init"), 0)
+        build = self.project.root / "dist" / "vmlab.pyz"
+        build.parent.mkdir()
+        build.write_bytes(zipapp_path().read_bytes())
+
+        r = self.project.vmlab_vendored("self-update", env={"VMLAB_PYZ": str(build)})
+
+        self.assertExit(r, 0)
+        self.assertTrue(r.out.rstrip().endswith("(from %s)" % build.resolve()), r.out)
 
     def test_self_update_refuses_to_downgrade(self):
         self.assertExit(self.project.vmlab("init"), 0)
@@ -202,14 +204,65 @@ class SelfUpdateTest(VmlabTestCase):
         self.assertIn("0.0.1", r.err)
         self.assertEqual(pyz_version(self.project.dir / "vmlab.pyz"), pyz_version(zipapp_path()))
 
-    def test_self_update_without_a_skill_copy_says_where_it_looked(self):
+    def test_self_update_run_from_the_projects_own_copy_sends_you_to_the_skill(self):
         self.assertExit(self.project.vmlab("init"), 0)
         r = self.project.vmlab_vendored("self-update")
         self.assertExit(r, 2)
-        self.assertIn(".claude/skills/vmlab/scripts/vmlab.pyz", r.err)
+        self.assertIn("SKILL_DIR/scripts/vmlab self-update", r.err)
         self.assertIn("--from", r.err)
 
     def test_self_update_needs_an_initialised_project(self):
         r = self.project.vmlab("self-update")
         self.assertExit(r, 2)
         self.assertIn("vmlab init", r.err)
+
+
+class LauncherTest(VmlabTestCase):
+    """`.vmlab/vmlab` runs the project's copy, or downloads the release it pins when git left the copy out."""
+
+    def setUp(self):
+        super().setUp()
+        self.assertExit(self.project.vmlab("init"), 0)
+        self.version, self.digest = pinned(self.project.dir / "vmlab")
+        self.releases = self.project.root / "releases"
+        self.cache = self.project.home / "dist" / ("vmlab-%s.pyz" % self.version)
+        (self.project.dir / "vmlab.pyz").unlink()  # the project keeps it out of git
+
+    def publish(self, pyz):
+        release = self.releases / ("v" + self.version) / ("vmlab-%s.pyz" % self.version)
+        release.parent.mkdir(parents=True)
+        release.write_bytes(pyz.read_bytes())
+
+    def launch(self, *args):
+        return self.project.vmlab_vendored(*args, env={"VMLAB_RELEASES": self.releases.as_uri()})
+
+    def test_it_downloads_the_pinned_release_once_and_runs_it(self):
+        self.publish(zipapp_path())
+
+        r = self.launch("version")
+
+        self.assertExit(r, 0)
+        self.assertEqual(r.out.strip(), "vmlab " + self.version)
+        self.assertEqual(sha256(self.cache), self.digest)
+        shutil.rmtree(str(self.releases))
+        self.assertExit(self.launch("version"), 0)  # from the cache, offline
+
+    def test_it_refuses_a_release_that_is_not_the_pinned_file(self):
+        self.publish(fake_zipapp(self.project.root / "other.pyz", self.version))
+
+        r = self.launch("version")
+
+        self.assertExit(r, 1)
+        self.assertIn("sha256 differs", r.err)
+        self.assertFalse(self.cache.exists())
+
+    def test_it_says_what_it_could_not_download(self):
+        r = self.launch("version")
+        self.assertExit(r, 1)
+        self.assertIn("could not download vmlab %s" % self.version, r.err)
+
+    def test_vmlab_pyz_runs_a_local_build_instead(self):
+        build = fake_zipapp(self.project.root / "dist" / "vmlab.pyz", "9.9.9")
+        r = self.project.vmlab_vendored("version", env={"VMLAB_PYZ": str(build)})
+        self.assertExit(r, 0)
+        self.assertEqual(r.out.strip(), "vmlab 9.9.9")

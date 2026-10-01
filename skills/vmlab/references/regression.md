@@ -1,6 +1,6 @@
 # Regression suite
 
-Saved Scenarios in `.vmlab/scenarios/*.py` form the project's Regression suite: they run from a terminal, cron or CI through the pinned copy, with no agent: `.vmlab/run` (the same as `python3 .vmlab/vmlab.pyz run`) runs them all. API: [scenarios.md](scenarios.md).
+Saved Scenarios in `.vmlab/scenarios/*.py` form the project's Regression suite: they run from a terminal, cron or CI through the pinned copy, with no agent: `.vmlab/run` (the same as `.vmlab/vmlab run`) runs them all. API: [scenarios.md](scenarios.md).
 
 The loop for a new or changed Scenario: write → run as CI would → measure → report.
 

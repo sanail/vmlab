@@ -1,0 +1,30 @@
+# Push a tag vX.Y.Z on the commit that bumps the version (src/vmlab/__init__.py, the skill's
+# scripts/vmlab, .claude-plugin/plugin.json): tests, a GitHub Release with vmlab-X.Y.Z.pyz,
+# and the stable branch, which the plugin marketplace and `npx skills` install from, moved to it.
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    uses: ./.github/workflows/test.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build, and check the tag names the version the code has
+        run: |
+          v=${GITHUB_REF_NAME#v}
+          python3 tools/build.py --out "dist/vmlab-$v.pyz"
+          test "$(python3 "dist/vmlab-$v.pyz" version)" = "vmlab $v" || { echo "tag $GITHUB_REF_NAME, but the code is $(python3 "dist/vmlab-$v.pyz" version)"; exit 1; }
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "dist/vmlab-${GITHUB_REF_NAME#v}.pyz" --title "vmlab ${GITHUB_REF_NAME#v}" --generate-notes
+      - name: Move stable to the release (fast-forward only)
+        run: git push origin "$GITHUB_SHA:refs/heads/stable"
