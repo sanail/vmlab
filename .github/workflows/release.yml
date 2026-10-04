@@ -17,6 +17,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the stable push checks it is a fast-forward, which takes stable's commit
       - name: Build, and check the tag names the version the code has
         run: |
           v=${GITHUB_REF_NAME#v}
