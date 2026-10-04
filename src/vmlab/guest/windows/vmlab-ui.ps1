@@ -130,6 +130,10 @@ public static class Helper {
     // Between typed characters. Faster, Notepad (WinUI) lost characters now and then: 5 ms
     // dropped some in one call of three, 15 and 30 ms none in eleven.
     const int TYPE_PAUSE_MS = 20;
+    // Between the key events of a chord, as a keyboard sends them. Sent in one SendInput, the first
+    // Ctrl+A into a Staged document while another app was starting typed "a" in about one Run in five,
+    // the foreground and focus unchanged throughout; 30 ms apart, none in 25.
+    const int KEY_PAUSE_MS = 30;
     const string STAGE = "vmlab-stage-";  // + 8 hex digits: the name of every file stage-text opens
     static Regex STAGED = new Regex("^" + STAGE + "[0-9a-fA-F]{8}\\.txt$", RegexOptions.IgnoreCase);
     const double CLOSE_WAIT = 5;  // s for one staged document to close
@@ -700,7 +704,10 @@ public static class Helper {
         inputs.Add(VirtualKey(key, false));
         inputs.Add(VirtualKey(key, true));
         for (int i = modifiers.Count - 1; i >= 0; i--) inputs.Add(VirtualKey(modifiers[i], true));
-        Send(inputs);
+        foreach (Native.INPUT one in inputs) {
+            Send(new List<Native.INPUT> { one });
+            Thread.Sleep(KEY_PAUSE_MS);
+        }
         Thread.Sleep(100);  // let the target handle it before the next call looks
     }
 
