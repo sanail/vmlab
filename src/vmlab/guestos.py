@@ -90,6 +90,9 @@ class MacOS(Posix):
     def ui_helper(self, provider):
         return uihelpers.MacHelper(provider)
 
+    def probes(self):
+        return ui.MacProbes()  # LaunchServices lets go of a quit app after its process has gone
+
 
 class Linux(Posix):
     stage_app = "gnome-text-editor"

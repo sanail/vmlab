@@ -622,6 +622,17 @@ class PosixProbes:
         return result
 
 
+# On macOS, $3 is the process's name: LaunchServices still lists an app for a moment after its
+# process has gone (a fraction of a second on a busy Guest), and `open -a` then fails with -600.
+# So an app is running until neither the kernel nor LaunchServices knows it.
+MACOS_PROCESS = POSIX_PROCESS + r""" || lsappinfo list | grep -F 'executable path="' | grep -qF "/$3\"" """
+
+
+class MacProbes(PosixProbes):
+    def process_argv(self, provider, name):
+        return self._answered(MACOS_PROCESS, ["^%s$" % _ere(name), "", name])
+
+
 class LinuxProbes(PosixProbes):
     def process_argv(self, provider, name):
         """Linux keeps only the first 15 bytes of a longer name: those match, then the full name

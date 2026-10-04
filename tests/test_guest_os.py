@@ -155,7 +155,25 @@ class ProcessProbeTest(unittest.TestCase):
 
     def test_macos_matches_the_whole_name(self):
         argv = guestos.for_os("macos").probes().process_argv(None, self.LONG)
-        self.assertEqual(argv[-2:], ["^a-very-long-process-name$", ""])
+        self.assertEqual(argv[-3:], ["^a-very-long-process-name$", "", self.LONG])
+
+    def test_macos_counts_an_app_launch_services_still_lists(self):
+        # Just after an app's process has gone, LaunchServices still lists it for a moment, and
+        # `open -a` then fails with -600: the process is running until neither knows it.
+        listing = 'executable path="/Applications/My App.app/Contents/MacOS/%s"\n' % self.LONG
+        with tempfile.TemporaryDirectory() as bin:
+            fake = Path(bin) / "lsappinfo"
+            fake.write_text('#!/bin/sh\nprintf "%s" "$LISTING"\n')
+            fake.chmod(0o755)
+            env = dict(os.environ, PATH=bin + os.pathsep + os.environ["PATH"])
+
+            def running(name, shown):
+                argv = guestos.for_os("macos").probes().process_argv(None, name)
+                return subprocess.run(argv, env=dict(env, LISTING=shown), capture_output=True).returncode == 0
+
+            self.assertTrue(running(self.LONG, listing))
+            self.assertFalse(running(self.LONG, ""))
+            self.assertFalse(running(self.LONG[2:], listing))  # the whole name, not its end
 
     def test_a_short_name_is_matched_whole_on_linux_too(self):
         argv = guestos.for_os("linux").probes().process_argv(None, "myapp.bin")
