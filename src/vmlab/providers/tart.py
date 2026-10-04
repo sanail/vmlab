@@ -116,10 +116,23 @@ def tart_ok(args, timeout):
     return out
 
 
+LIST_RETRY = 30  # s to ask `tart list` again while another VM's clone is under way
+
+
 def list_vms(source=None):
-    """{name: row} of Tart's VMs; source is "local", "oci" or None for both."""
-    out = tart_ok(["list", "--format", "json"] + (["--source", source] if source else []), CALL_TIMEOUT)
-    return {row["Name"]: row for row in json.loads(out or "[]")}
+    """{name: row} of Tart's VMs; source is "local", "oci" or None for both.
+
+    While a VM is being cloned (by another vmlab, or a --parallel Lab), its folder has no disk.img
+    yet and `tart list` fails on it: asked again until the clone has its disk."""
+    args = ["list", "--format", "json"] + (["--source", source] if source else [])
+    deadline = time.monotonic() + LIST_RETRY
+    while True:
+        code, out, err = tart(args, CALL_TIMEOUT)
+        if not code:
+            return {row["Name"]: row for row in json.loads(out or "[]")}
+        if "disk.img" not in err or time.monotonic() >= deadline:
+            raise GuestError("`tart %s` failed: %s" % (" ".join(args), (err or out).strip()), "run it by hand to see why")
+        time.sleep(1)
 
 
 def _tail(text, lines=15):

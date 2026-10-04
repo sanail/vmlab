@@ -24,6 +24,11 @@ FAKE_TART = textwrap.dedent(
     args = sys.argv[1:]
     if args == ["--version"]:
         print("2.37.0")
+    elif args[:1] == ["list"] and state.get("list_fails"):
+        # As Tart does while another VM is being cloned: its folder has no disk.img yet.
+        state["list_fails"] -= 1
+        json.dump(state, open(state_path, "w"))
+        sys.exit("Error: The file \u201cdisk.img\u201d couldn\u2019t be opened because there is no such file.")
     elif args[:1] == ["list"]:
         source = args[args.index("--source") + 1] if "--source" in args else None
         rows = [
@@ -200,6 +205,16 @@ class TartDoctorTest(TartTestCase):
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"ok\s+mac: Base guest macos-tahoe: provisioned \(v13\)")
         self.assertRegex(r.out, r"info\s+mac: Clone: none yet")
+
+    def test_a_list_during_another_vms_clone_is_asked_again(self):
+        self.project.config(TART_LAB)
+        self.ready_base()
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[], list_fails=2)
+
+        r = self.vmlab("doctor")
+
+        self.assertExit(r, 0)
+        self.assertRegex(r.out, r"ok\s+mac: Base guest macos-tahoe: provisioned")
 
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
         self.project.config(TART_LAB)
