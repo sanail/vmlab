@@ -33,6 +33,19 @@ def scenario(g):
     g.check("the palette closes", n not in %r.get(g.lab, ()), detail="repetition %%d" %% n)
 """
 
+# Fails on ubuntu; on mac, first waits until ubuntu's failed repetition is reported, by which point
+# --until-fail has been told to stop: mac can then never finish its repetitions first.
+AFTER_UBUNTU_FAILS = """
+import glob, time
+
+def scenario(g):
+    if g.lab == "mac":
+        deadline = time.time() + 60
+        while not glob.glob(%r) and time.time() < deadline:
+            time.sleep(0.05)
+    g.check("the palette closes", g.lab != "ubuntu")
+"""
+
 
 class RepeatTest(VmlabTestCase):
     def setUp(self):
@@ -176,14 +189,14 @@ crashing_restores = [2]
 
     def test_until_fail_stops_every_lab_in_parallel(self):
         self.project.config(TWO_LABS)
-        self.flaky({"ubuntu": [1]})
+        self.project.scenario("flaky.py", AFTER_UBUNTU_FAILS % str(self.project.dir / "runs" / "*-ubuntu" / "report.json"))
 
         r = self.project.vmlab("run", "--repeat", "5", "--until-fail", "--parallel", env={"VMLAB_FREE_MEMORY_GB": "64"})
 
         self.assertExit(r, 1)
         reports = [self.project.report(d) for d in self.project.run_dirs()]
         self.assertEqual([rep["status"] for rep in reports if rep["lab"] == "ubuntu"], ["failed"])
-        self.assertLess(len([rep for rep in reports if rep["lab"] == "mac"]), 5)
+        self.assertEqual(len([rep for rep in reports if rep["lab"] == "mac"]), 1)
         self.assertIn("Kept running: ", r.out)
         self.assertEqual(self.status(), {"mac": True, "ubuntu": True})
 
