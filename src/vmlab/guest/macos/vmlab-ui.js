@@ -23,6 +23,7 @@ const KEY_CODES = {
   down: 125, up: 126,
 };
 const STAGE = "vmlab-stage-"; // + 8 hex digits: the name of every file stage-text opens
+const SELECT_WAIT = 2; // s for a select-all to select a Staged document's text, before it is pressed again
 const USING = { cmd: "command down", ctrl: "control down", alt: "option down", shift: "shift down" };
 
 const events = Application("System Events");
@@ -280,11 +281,17 @@ function stageText(params) {
   });
   if (!proc) fail(params.app + " showed no window for " + stem + ".txt in time");
   const pid = proc.unixId();
-  if (!waitFor(deadline, () => { if (frontmostPid() === pid) return true; proc.frontmost = true; return false; })) {
-    fail(params.app + " did not come to the front in time");
+  // A select-all that selects nothing is pressed again. (The Swift helper also checks who has the keys.)
+  let selected = null;
+  while (true) {
+    if (!waitFor(deadline, () => { if (frontmostPid() === pid) return true; proc.frontmost = true; return false; })) {
+      fail(params.app + " did not come to the front in time");
+    }
+    press("a", ["cmd"]);
+    if (waitFor(Math.min(deadline, Date.now() + SELECT_WAIT * 1000), () => selectedText(proc) === params.text)) selected = params.text;
+    if (selected !== null || Date.now() >= deadline) break;
   }
-  press("a", ["cmd"]);
-  const selected = waitFor(deadline, () => (selectedText(proc) === params.text ? params.text : null)) || selectedText(proc);
+  if (selected === null) selected = selectedText(proc);
   const front = $.NSWorkspace.sharedWorkspace.frontmostApplication;
   const frontmost = front.isNil() ? "" : ObjC.unwrap(front.localizedName);
   let pressed = null;

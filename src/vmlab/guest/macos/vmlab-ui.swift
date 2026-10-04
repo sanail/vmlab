@@ -40,6 +40,7 @@ import SQLite3
 let VERSION = 1
 let MAX_NODES = 5000
 let STAGE = "vmlab-stage-"  // + 8 hex digits: the name of every file stage-text opens
+let SELECT_WAIT = 2.0  // s for a select-all to select a Staged document's text, before it is pressed again
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write("vmlab-ui: \(message)\n".data(using: .utf8)!)
@@ -367,6 +368,17 @@ func focusedSelection(_ app: NSRunningApplication) -> String? {
     return text(focused as! AXUIElement, kAXSelectedTextAttribute as String)
 }
 
+/// The app whose window has the keyboard focus, which need not be the frontmost app; nil if unknown.
+func keyboardFocusApp() -> NSRunningApplication? {
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 3)
+    guard let focused = attribute(system, kAXFocusedApplicationAttribute as String), CFGetTypeID(focused) == AXUIElementGetTypeID()
+    else { return nil }
+    var pid: pid_t = 0
+    guard AXUIElementGetPid(focused as! AXUIElement, &pid) == .success else { return nil }
+    return NSRunningApplication(processIdentifier: pid)
+}
+
 func bringToFront(_ app: NSRunningApplication, _ appName: String, _ deadline: Date) {
     guard waitFor(deadline, { () -> Bool? in
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier { return true }
@@ -416,6 +428,17 @@ func documentWindow(_ ax: AXUIElement, _ file: URL) -> AXUIElement? {
     }
 }
 
+/// Press the close button of file's window until it has gone; false if it is still there at the deadline.
+func closeDocument(_ ax: AXUIElement, _ file: URL, _ deadline: Date) -> Bool {
+    waitFor(deadline) { () -> Bool? in
+        guard let window = documentWindow(ax, file) else { return true }
+        if let button = attribute(window, kAXCloseButtonAttribute as String), CFGetTypeID(button) == AXUIElementGetTypeID() {
+            AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
+        }
+        return nil
+    } != nil
+}
+
 /// Close the Staged document params["file"] in params["app"]; the app's other documents stay. Its
 /// window's close button asks the app to close it: TextEdit saves a document itself, even one a
 /// Scenario typed into, so nothing asks about saving. Pressing it leaves the other windows' order.
@@ -427,14 +450,7 @@ func closeStaged(_ params: [String: Any]) {
     let ax = AXUIElementCreateApplication(app.processIdentifier)
     AXUIElementSetMessagingTimeout(ax, 3)
     guard documentWindow(ax, file) != nil else { return emit(["file": path, "closed": false]) }
-    let closed = waitFor(deadline) { () -> Bool? in
-        guard let window = documentWindow(ax, file) else { return true }
-        if let button = attribute(window, kAXCloseButtonAttribute as String), CFGetTypeID(button) == AXUIElementGetTypeID() {
-            AXUIElementPerformAction(button as! AXUIElement, kAXPressAction as CFString)
-        }
-        return nil
-    }
-    if closed == nil {
+    if !closeDocument(ax, file, deadline) {
         let windows = attribute(ax, kAXWindowsAttribute as String) as? [AXUIElement] ?? []
         fail("\(appName) did not close \(file.lastPathComponent) in time; its windows: \(windows.map { text($0, kAXTitleAttribute as String) ?? "" })")
     }
@@ -466,13 +482,31 @@ func stageText(_ params: [String: Any]) {
         return titles.contains { $0.contains(stem) } ? a : nil
     }) else { fail("\(appName) showed no window for \(file.lastPathComponent) in time; its windows: \(titles)") }
 
-    bringToFront(app, appName, deadline)
-
-    press("a", ["cmd"])
-    let selected = waitFor(deadline) { () -> String? in
-        let sel = focusedSelection(app)
-        return sel == s ? sel : nil
-    } ?? focusedSelection(app)
+    // Another app's panel that does not activate its app (a launcher's) keeps the keys while the
+    // editor is frontmost: a select-all and the chord would go to it, so stage-text waits for it to
+    // go, or fails. A select-all that selects nothing is pressed again until the text is selected.
+    var selected: String?
+    var keys: NSRunningApplication?
+    while true {
+        bringToFront(app, appName, deadline)
+        keys = keyboardFocusApp()
+        if keys == nil || keys!.processIdentifier == app.processIdentifier {
+            press("a", ["cmd"])
+            selected = waitFor(min(deadline, Date().addingTimeInterval(SELECT_WAIT))) { focusedSelection(app) == s ? s : nil }
+        } else {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        if selected != nil || Date() >= deadline { break }
+    }
+    if let keys = keys, keys.processIdentifier != app.processIdentifier {
+        // The Host never learns of a document whose stage-text fails: it is closed and deleted here.
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 3)
+        _ = closeDocument(ax, file.resolvingSymlinksInPath(), Date().addingTimeInterval(10))
+        try? FileManager.default.removeItem(at: file)
+        fail("\(keys.localizedName ?? "pid \(keys.processIdentifier)") has the keyboard focus, though \(appName) is frontmost (a window of it that does not activate it, such as a panel, is open): a select-all and the chord would go to it")
+    }
+    selected = selected ?? focusedSelection(app)
     let frontmost = frontmostName()  // what the trigger lands on, recorded before it is pressed
     var pressed: Any = NSNull()
     if let then = params["then"] as? [String: Any], let key = then["key"] as? String {
