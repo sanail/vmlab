@@ -15,6 +15,13 @@ from pathlib import Path
 
 from harness import FAKE_LAB, VmlabTestCase
 
+
+def write_whole(path, text):
+    """Write path whole or not at all: a command polling the file must never read it half-written."""
+    part = path.with_suffix(".part")
+    part.write_text(text)
+    os.replace(part, path)
+
 TREE = {
     "role": "desktop",
     "children": [
@@ -73,7 +80,7 @@ class UiTestCase(VmlabTestCase):
         tree = json.loads(json.dumps(TREE))
         if covered_by:
             palette(tree)[1]["covered_by"] = covered_by
-        (self.project.dir / "tree.json").write_text(json.dumps(tree))
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
 
     def later(self, seconds, fn):
         """fn in seconds, on a thread of its own; cancelled at cleanup if it has not run yet."""
@@ -150,7 +157,7 @@ class UiCliTest(UiTestCase):
     def test_click_with_a_timeout_waits_for_the_element_to_appear(self):
         tree = json.loads(json.dumps(TREE))
         palette(tree).append({"role": "button", "name": "Later", "bounds": {"x": 300, "y": 350, "w": 40, "h": 20}})
-        self.later(1, lambda: (self.project.dir / "tree.json").write_text(json.dumps(tree)))
+        self.later(1, lambda: write_whole(self.project.dir / "tree.json", json.dumps(tree)))
         self.assertEqual(self.ui("click", "--text", "Later", "--timeout", "10")["element"]["name"], "Later")
 
     def test_click_with_a_timeout_waits_for_the_element_to_be_uncovered(self):
@@ -433,7 +440,7 @@ class TrayTest(UiTestCase):
         tree = json.loads(json.dumps(TREE))
         if icon:
             tree["children"][0]["children"].append(icon)
-        (self.project.dir / "tree.json").write_text(json.dumps(tree))
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
 
     def tray(self, *args):
         """(exit code, JSON printed, stderr) of `vmlab ui tray ARGS`."""
@@ -590,7 +597,7 @@ class TrayWaitTest(TrayTest):
     def test_a_guest_that_shows_no_tray_icons_is_never_met_and_says_why(self):
         tree = json.loads(json.dumps(TREE))
         tree["tray_detail"] = "the Desktop session has no StatusNotifierWatcher"
-        (self.project.dir / "tree.json").write_text(json.dumps(tree))
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
         for gone in ([], ["--gone"]):  # it cannot tell, so the icon is neither there nor gone
             waited = json.loads(self.ui("wait-for", "--tray", "MyApp", "--timeout", "1", *gone, code=1).out)
             self.assertEqual(waited["detail"], "the Desktop session has no StatusNotifierWatcher")
@@ -656,7 +663,7 @@ class NotificationsTest(VmlabTestCase):
         self.project.config(FAKE_LAB + app + '[labs.mac.fake]\nnotifications = "notifications.json"\n')
 
     def write(self, notifications):
-        self.notifications.write_text(json.dumps(notifications))
+        write_whole(self.notifications, json.dumps(notifications))
 
     def post(self, title, body, app="com.example.myapp"):
         """Add a Notification posted now to the scripted ones."""
@@ -736,7 +743,9 @@ class NotificationsTest(VmlabTestCase):
             def post():
                 path = pathlib.Path(%r)
                 now = datetime.now(timezone.utc).isoformat()
-                path.write_text(json.dumps(json.loads(path.read_text()) + [{"app": "com.example.myapp", "title": "Done", "body": "nonce 7", "time": now}]))
+                part = path.with_suffix(".part")
+                part.write_text(json.dumps(json.loads(path.read_text()) + [{"app": "com.example.myapp", "title": "Done", "body": "nonce 7", "time": now}]))
+                part.replace(path)
             def scenario(g):
                 g.check("none from earlier Runs", g.notifications() == {"notifications": []})
                 threading.Timer(1, post).start()
@@ -1043,7 +1052,9 @@ class UiScenarioTest(UiTestCase):
                 tree = pathlib.Path(%r)
                 uncovered = json.loads(tree.read_text())
                 del uncovered["children"][0]["children"][0]["children"][1]["covered_by"]
-                threading.Timer(1, lambda: tree.write_text(json.dumps(uncovered))).start()
+                part = tree.with_suffix(".part")
+                part.write_text(json.dumps(uncovered))
+                threading.Timer(1, lambda: part.replace(tree)).start()
                 g.check("clicked once uncovered", g.click(text="Run", app="MyApp", timeout=10)["x"] == 250)
         """ % str(self.project.dir / "tree.json"))
         self.assertExit(self.project.vmlab("run"), 0)
