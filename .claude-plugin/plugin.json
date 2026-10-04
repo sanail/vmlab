@@ -1,6 +1,6 @@
 {
   "name": "vmlab",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Test desktop apps inside macOS, Windows and Linux virtual machines on this Mac: click through them, check what appears, save the steps as a regression suite.",
   "author": { "name": "Nail Samatov" },
   "homepage": "https://github.com/sanail/vmlab",
