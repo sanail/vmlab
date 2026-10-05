@@ -54,6 +54,7 @@ import re
 import secrets
 import shlex
 import shutil
+import struct
 import subprocess
 import tarfile
 import tempfile
@@ -93,6 +94,7 @@ BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
 RUNNING_TTL = 1.0  # s a VM found running counts as running without asking vmrun again
+SCREEN_WAIT = 30  # s after a boot for Fusion to get a picture of the Guest's screen
 DISK_OP_TIMEOUT = 600  # s for clone, snapshot, revert and delete while creating a Base guest
 CLEAN_SNAPSHOT = "vmlab-clean"
 MERGE_TIMEOUT = 3600  # s to delete a snapshot, whose changes Fusion merges into the next one's disk (GBs on Windows)
@@ -454,6 +456,12 @@ class FusionVM:
             raise GuestTimeout("screenshot of %s did not finish within %ss" % (self.name, timeout))
         if code or not dest.exists() or not dest.read_bytes()[:4] == b"\x89PNG":
             raise GuestError("screenshot of %s failed: %s" % (self.name, _without_noise(out + err).strip() or "no PNG written"), "check that the Guest is running: vmlab status")
+        width, height = struct.unpack(">II", dest.read_bytes()[16:24])
+        if width <= 1 or height <= 1:
+            raise GuestError(
+                "screenshot of %s is %dx%d pixels: Fusion gets no picture of the Guest's screen" % (self.name, width, height),
+                "boot the Guest again (vmlab down and vmlab up its Lab); seen on a Host running six Guests at once",
+            )
 
 
 def sound_off(vm, out):
@@ -1247,14 +1255,35 @@ class FusionProvider(Provider):
             )
 
     def up(self):
+        booted = self._booting
         super().up()
         self._booting = False
+        if booted:
+            self._screen_shown()
         if self.session and self._seen_session != self.session:
             raise GuestError(
                 "Lab %s asks for the %s session, but its Guest logged into %s" % (self.lab.name, SESSION_NAMES[self.session], SESSION_NAMES.get(self._seen_session, self._seen_session or "no known session")),
                 "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again"
                 % (self.lab.name, self.lab.name, self.lab.name),
             )
+
+    def _screen_shown(self):
+        """A Guest that just booted must show Fusion its screen. Once, every screenshot of a Linux Guest
+        was 1x1 for a whole Run, while its Scenarios failed each in its own way (no selection, an editor
+        that would not start): one error that says so, instead."""
+        deadline = hostpower.awake_time() + SCREEN_WAIT
+        with tempfile.TemporaryDirectory(prefix="vmlab-screen-") as tmp:
+            while True:
+                try:
+                    return self.vm.screenshot(Path(tmp) / "screen.png", self.lab.step_timeout)
+                except GuestError as exc:
+                    if hostpower.awake_time() >= deadline:
+                        name = self.lab.name
+                        raise GuestError(
+                            "Guest %s booted, but its screen did not show within %ss: %s" % (name, SCREEN_WAIT, exc.message),
+                            "`vmlab down %s && vmlab up %s` boots it again; on a busy Host, run fewer Labs at once" % (name, name),
+                        )
+                time.sleep(2)
 
     def wrap_argv(self, argv, env):
         if self.lab.os != "linux":
