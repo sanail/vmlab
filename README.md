@@ -42,9 +42,9 @@ To try a local build in Claude Code before it is pushed: `python3 tools/build.py
 ## Release
 
 1. Bump the version in `src/vmlab/__init__.py`, `skills/vmlab/scripts/vmlab` (`VERSION=`) and `.claude-plugin/plugin.json`; the tests fail until all three agree.
-2. Commit, tag `vX.Y.Z`, push both.
+2. Commit with the subject `vmlab X.Y.Z: <summary>` and a body of `- ` bullets, one per change a user sees (and what they must do, such as re-provisioning): the body becomes the release notes. Tag `vX.Y.Z`, push both.
 
-`.github/workflows/release.yml` then runs the tests, checks the tag against the code, publishes a GitHub Release with `vmlab-X.Y.Z.pyz`, and fast-forwards `stable` to the tag. Users get it from `stable`; projects stay on their pinned version.
+`.github/workflows/release.yml` then runs the tests, checks the tag against the code, publishes a GitHub Release with `vmlab-X.Y.Z.pyz` and the commit's body as its notes (it fails before publishing when the body is empty), and fast-forwards `stable` to the tag. Users get it from `stable`; projects stay on their pinned version.
 
 ## The skill
 

@@ -1,5 +1,6 @@
 # Push a tag vX.Y.Z on the commit that bumps the version (src/vmlab/__init__.py, the skill's
-# scripts/vmlab, .claude-plugin/plugin.json): tests, a GitHub Release with vmlab-X.Y.Z.pyz,
+# scripts/vmlab, .claude-plugin/plugin.json): tests, a GitHub Release with vmlab-X.Y.Z.pyz whose notes
+# are that commit's body,
 # and the stable branch, which the plugin marketplace and `npx skills` install from, moved to it.
 name: Release
 on:
@@ -24,9 +25,12 @@ jobs:
           v=${GITHUB_REF_NAME#v}
           python3 tools/build.py --out "dist/vmlab-$v.pyz"
           test "$(python3 "dist/vmlab-$v.pyz" version)" = "vmlab $v" || { echo "tag $GITHUB_REF_NAME, but the code is $(python3 "dist/vmlab-$v.pyz" version)"; exit 1; }
-      - name: Publish the release
+      - name: Publish the release, its notes the tagged commit's body (the Full Changelog link appended)
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "dist/vmlab-${GITHUB_REF_NAME#v}.pyz" --title "vmlab ${GITHUB_REF_NAME#v}" --generate-notes
+        run: |
+          notes=$(git log -1 --format=%b "$GITHUB_SHA")
+          test -n "$notes" || { echo "the commit $GITHUB_SHA has no body to make the release notes: commit one (--allow-empty) on it and move the tag"; exit 1; }
+          gh release create "$GITHUB_REF_NAME" "dist/vmlab-${GITHUB_REF_NAME#v}.pyz" --title "vmlab ${GITHUB_REF_NAME#v}" --notes "$notes" --generate-notes
       - name: Move stable to the release (fast-forward only)
         run: git push origin "$GITHUB_SHA:refs/heads/stable"
