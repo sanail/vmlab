@@ -58,6 +58,8 @@ EXTENSION_VERSION = 1  # of shell-extension/, installed at provisioning
 MAX_NODES = 5000
 MAX_TEXT = 100000  # characters of an element's text
 ATSPI_TIMEOUT_MS = 500
+# Roles with a tick state whatever their states say; another element has one when it is CHECKABLE.
+CHECKABLE_ROLES = ("check box", "radio button", "toggle button", "switch", "check menu item", "radio menu item")
 POLL = 0.1
 SESSION_KEYS = ("DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP")
 REPROVISION = "re-provision the Base guest: vmlab base create NAME --reprovision"
@@ -636,6 +638,15 @@ class UI:
         count = Text.get_character_count(accessible)
         return Text.get_text(accessible, 0, min(count, MAX_TEXT)).replace("￼", "") if count else ""
 
+    def checked(self, native, states):
+        """The tick state: True, False, "mixed" or None (no such state)."""
+        S = self.S
+        if native not in CHECKABLE_ROLES and not states.contains(S.CHECKABLE) and not states.contains(S.CHECKED):
+            return None
+        if states.contains(S.INDETERMINATE):
+            return "mixed"
+        return states.contains(S.CHECKED) or (native == "toggle button" and states.contains(S.PRESSED))
+
     def node(self, accessible, placement, depth, max_depth):
         self.nodes += 1
         S = self.S
@@ -650,7 +661,7 @@ class UI:
         node = {
             "native_role": native, "name": name, "value": None, "description": description,
             "bounds": self.bounds(accessible, placement), "focused": states.contains(S.FOCUSED),
-            "enabled": states.contains(S.ENABLED), "children": [],
+            "enabled": states.contains(S.ENABLED), "checked": self.checked(native, states), "children": [],
         }  # fmt: skip
         try:
             if "Text" in interfaces and native != "password text":

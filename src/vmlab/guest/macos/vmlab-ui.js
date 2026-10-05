@@ -55,6 +55,18 @@ function str(value) {
   return null;
 }
 
+// The tick state, as the Swift helper's checked() reads it.
+function checked(element, p) {
+  if (p.role === "AXMenuItem") {
+    let mark = null;
+    try { mark = str(element.attributes.byName("AXMenuItemMarkChar").value()); } catch (e) {}
+    return mark === "\u2713" ? true : mark === "-" ? "mixed" : null;
+  }
+  if (!["AXCheckBox", "AXRadioButton"].includes(p.role) && !["AXSwitch", "AXToggle"].includes(p.subrole)) return null;
+  const n = Number(p.value);
+  return p.value === null || p.value === undefined || isNaN(n) ? null : n === 2 ? "mixed" : n !== 0;
+}
+
 function walker(maxDepth) {
   const walk = { nodes: 0, truncated: false };
   walk.node = function (element, depth) {
@@ -70,6 +82,7 @@ function walker(maxDepth) {
       bounds: pos && size ? { x: Math.round(pos[0]), y: Math.round(pos[1]), w: Math.round(size[0]), h: Math.round(size[1]) } : null,
       focused: p.focused === true,
       enabled: p.enabled !== false,
+      checked: checked(element, p),
       children: [],
     };
     let kids = [];

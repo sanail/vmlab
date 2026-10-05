@@ -74,8 +74,8 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | Scenario | CLI | Result |
 | --- | --- | --- |
 | `g.tree(app=None)` | `ui tree [--app APP]` | node tree |
-| `g.find(text=, role=, app=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
-| `g.click(text=, role=, app=, index=0, timeout=None)`, `g.click(at=(x, y))` | `ui click [--timeout S]` | `{"x", "y", "element", "under"}` |
+| `g.find(text=, role=, app=, checked=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
+| `g.click(text=, role=, app=, checked=, index=0, timeout=None)`, `g.click(at=(x, y))` | `ui click [--timeout S]` | `{"x", "y", "element", "under"}` |
 | `g.press("cmd+shift+space")` | `ui press CHORD` | `{"chord"}` |
 | `g.type(text)` | `ui type TEXT` | `{"typed": n}` |
 | `g.focus(app, window=None)` | `ui focus --app APP [--window T]` | `{"app", "window", "frontmost"}` |
@@ -84,10 +84,16 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.close_staged(staged)` | `ui close-staged --file PATH [--app]` | `{"file", "closed"}` |
 | `g.tray(app, choose=None, timeout=None)` | `ui tray --app APP [--choose LABEL]... [--timeout S]` | `{"items": [{"name", "enabled", "checked", "children"}], "chosen"}` |
 | `g.notifications(app=None, text=None, since=None)` | `ui notifications [--app ID] [--text PATTERN] [--since TIME]` | `{"notifications": [{"app", "title", "body", "time"}]}` |
-| `g.wait_for(text=, role=, app=, process=, file=, log=, exec=, pattern=, notification=, since=, tray=, gone=False, timeout=None)` | `ui wait-for` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "notifications"][, "detail"][, "error"]}` |
+| `g.wait_for(text=, role=, app=, checked=, process=, file=, log=, exec=, pattern=, notification=, since=, tray=, gone=False, timeout=None)` | `ui wait-for` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "notifications"][, "detail"][, "error"]}` |
 | `g.screenshot(name)` | `ui screenshot` | `{"path"}` |
 
-- A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`, `enabled`, `native_role` and `children`. Applications carry `pid`.
+- A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`, `enabled`, `checked`, `native_role` and `children`. Applications carry `pid`.
+- `checked` is a checkbox's, radio button's, toggle button's, switch's or checkable menu item's tick state: `True`, `False` or `"mixed"`, and `None` for an element without one (an unticked menu item may read `None`: always on macOS, and on Windows in menus without TogglePattern). `find`, `click` and `wait_for` take `checked=` to match it exactly. To check that a click ticked a box, wait for it rather than reading once:
+
+      g.click(text="Pictures", role="checkbox", app="MyApp")
+      ticked = g.wait_for(text="Pictures", role="checkbox", app="MyApp", checked=True, timeout=5)
+      g.check("Pictures is ticked", ticked["met"], detail=ticked)
+
 - `stage_text` closes nothing: every call opens one more Staged document (its `"file"`). Close each with `g.close_staged(staged)` (the `stage_text` result or its `"file"`) once the Check that needed it is done, so an old selection cannot answer an app that reads "the selection". It saves the document (changes typed into it too), closes just it and deletes its file; the editor's other documents, and the one in front, stay. `"closed"` is false when it was already gone, and a path that is not a Staged document raises. What a Scenario leaves open is closed at the end of its Run, however it ends; one vmlab cannot close is a warning in the report.
 - `tray` reads the app's Tray menu (its items in order, without separators; a submenu's items in `children` on every OS, `[]` for an item without one) and, with `choose`, chooses an item: a label, or a list of labels, one per menu level (`choose=["Settings", "Advanced"]`), matched exactly without mnemonics. It raises when the app has no Tray icon, no item has a label, the item is disabled, or it opens a submenu (choose one of its items), naming the items there. `timeout=` waits for the Tray icon to appear (on the Scenario's clock), since tray apps put it up after their launch, and for the item to choose to be there (apps fill or rebuild their menu after the icon is up); `wait_for(tray=APP)` or the Lab's `ready = { tray = "APP" }` waits for it without reading the menu. Nothing is left open. Use it instead of clicking the tray: panels keep Linux Tray menus out of the tree, and a Windows menu opens only on a click on the icon.
 - `notifications` lists the Notifications the Guest's OS recorded, oldest first, shown on screen or not. `app` is the OS's id for the sender: the macOS bundle id, the Windows AppUserModelID, the `app_name` a Linux app gives the notification server; it defaults to the Lab's `app.notification_id`, and with neither every app's come back, each with its `"app"` (which is how to find the id). `text` is a Python regex searched for in title and body. `time` is ISO 8601 UTC on the Guest's clock, and so is `since`; in a Scenario `since` defaults to the Run's start, so Notifications of earlier Runs never show up (`since="all"`: the whole history). The CLI lists everything unless given `--since`. Put a nonce in what the app sends. Windows records an app's Notifications only under the AppUserModelID its installer gave its Start menu shortcut: a bare `.exe` has none, and its list stays empty.

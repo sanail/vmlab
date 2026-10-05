@@ -9,8 +9,13 @@ Every node, on every OS:
 
     {"role": "button", "name": "Run", "value": null, "description": null,
      "bounds": {"x": 220, "y": 350, "w": 60, "h": 20} or null,
-     "focused": false, "enabled": true, "native_role": "AXButton",
+     "focused": false, "enabled": true, "checked": null, "native_role": "AXButton",
      "children": [...]}
+
+"checked" is a checkbox's, radio button's, toggle button's, switch's or checkable menu item's tick
+state: true, false or "mixed" (a tri-state box in its middle state); null where the element
+has none. An unticked menu item may read null where the OS does not tell a checkable one
+apart: always on macOS, and on Windows in menus without UI Automation's TogglePattern.
 
 The root has role "desktop" and "truncated" (true when a size limit cut the
 tree short); its children are applications (with "pid"), whose children are
@@ -26,7 +31,7 @@ from vmlab import hostpower
 from vmlab.config import UsageError, is_argv
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout, ps_path, ps_quote, sh_expand_tilde
 
-NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True}
+NODE_DEFAULTS = {"name": "", "value": None, "description": None, "bounds": None, "focused": False, "enabled": True, "checked": None}
 POLL_SECONDS = 0.25  # between checks of a wait_for condition or tries of a click with a timeout; they and the timeout decide when it ends
 EXTRA_KEYS = ("native_subrole", "bundle_id")
 STAGE_MARGIN = 5  # s a helper that waits (focus, stage-text, close-staged) gives up before its call would be killed
@@ -210,6 +215,11 @@ def closed_menu(node, native_roles):
     return role == "menu" and bool(b) and (b["w"] <= 0 or b["h"] <= 0)
 
 
+def same_tick(a, b):
+    """Tick states (True, False, "mixed" or None) equal, without True == 1."""
+    return a is b or a == b == "mixed"
+
+
 def texts(node):
     return [t for t in (node["name"], node["value"], node["description"]) if isinstance(t, str) and t]
 
@@ -221,13 +231,16 @@ def label(node):
 
 class Query:
     """Which elements: by text (name, value or description; exact matches win,
-    otherwise substrings), by role (cross-OS or native), inside app. Any may be None.
+    otherwise substrings), by role (cross-OS or native), inside app, with a tick state (checked:
+    True, False or "mixed", matched exactly). Any may be None.
 
     The Guest's helper chooses the app (by name, bundle id or process name, per OS):
     matches takes the tree tree(app) returns and does not filter by app again."""
 
-    def __init__(self, text=None, role=None, app=None):
-        self.text, self.role, self.app = text, role, app
+    def __init__(self, text=None, role=None, app=None, checked=None):
+        if not any(same_tick(checked, s) for s in (None, True, False, "mixed")):
+            raise UsageError('checked must be True, False or "mixed" (or None for any), not %r' % (checked,))
+        self.text, self.role, self.app, self.checked = text, role, app, checked
 
     def require(self, command):
         if self.text is None and self.role is None:
@@ -235,7 +248,10 @@ class Query:
         return self
 
     def __str__(self):
-        return ", ".join("%s=%r" % kv for kv in (("text", self.text), ("role", self.role), ("app", self.app)) if kv[1] is not None)
+        return ", ".join("%s=%r" % kv for kv in self.fields().items())
+
+    def fields(self):
+        return {k: v for k, v in (("text", self.text), ("role", self.role), ("app", self.app), ("checked", self.checked)) if v is not None}
 
     def matches(self, tree):
         """Matching elements of tree (as tree(self.app) returns it) in tree order, without their children, each with its app's name as "app"."""
@@ -245,7 +261,7 @@ class Query:
             if node["role"] == "application":
                 app_name = node["name"]
             if node["role"] != "desktop":
-                if self.role is None or self.role in (node["role"], node["native_role"]):
+                if self.role in (None, node["role"], node["native_role"]) and (self.checked is None or same_tick(node["checked"], self.checked)):
                     candidates.append((node, app_name))
             for child in node["children"]:
                 visit(child, app_name)
@@ -381,7 +397,7 @@ class ElementCondition:
         self.query = query
 
     def describe(self):
-        return {k: v for k, v in (("text", self.query.text), ("role", self.query.role), ("app", self.query.app)) if v is not None}
+        return self.query.fields()
 
     def poll(self, ui, timeout):
         matches = self.query.matches(ui.tree(self.query.app, timeout=timeout))
@@ -520,13 +536,14 @@ def flag(key):
     return "--" + key
 
 
-def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, notification=None, since=None, tray=None,
+def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, notification=None, since=None, tray=None, checked=None,
               named=flag):  # fmt: skip
     """The one wait_for condition these arguments describe; ConditionError unless there is exactly one.
 
-    gone=True inverts it. exec is an argv. notification is a pattern; since (a Guest time in ISO
-    8601, or a HostTime) goes with it, and None counts every Notification. tray is an app, as
-    g.tray takes it. named(key) spells an argument in errors (default: its flag)."""
+    checked (True, False or "mixed") goes with an element. gone=True inverts it. exec is an
+    argv. notification is a pattern; since (a Guest time in ISO 8601, or a HostTime) goes with
+    it, and None counts every Notification. tray is an app, as g.tray takes it. named(key)
+    spells an argument in errors (default: its flag)."""
     element = text is not None or role is not None
     given = [element, process is not None, file is not None, log is not None, exec is not None, notification is not None, tray is not None]
     if sum(given) != 1:
@@ -540,6 +557,8 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
         raise ConditionError("tray", "needs the app whose Tray icon to wait for", named)
     if app is not None and not element and notification is None:
         raise ConditionError("app", "goes with %s or %s (an element in one app) or %s (one app's)" % (named("text"), named("role"), named("notification")), named)
+    if checked is not None and not element:
+        raise ConditionError("checked", "goes with %s or %s (an element's tick state)" % (named("text"), named("role")), named)
     if notification is not None:
         if gone:
             raise ConditionError("gone", "does not go with %s: a Notification, once posted, stays posted" % named("notification"), named)
@@ -566,7 +585,7 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
         except re.error as exc:
             raise ConditionError("pattern", "%r is not a valid regular expression: %s" % (pattern, exc), named)
     if element:
-        found = ElementCondition(Query(text, role, app))
+        found = ElementCondition(Query(text, role, app, checked))
     elif process is not None:
         found = ProcessCondition(process)
     elif file is not None:

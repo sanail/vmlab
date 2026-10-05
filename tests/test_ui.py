@@ -45,7 +45,7 @@ TREE = {
         {"role": "application", "name": "Other", "children": [{"role": "button", "name": "Run"}]},
     ],
 }
-NODE_KEYS = {"role", "name", "value", "description", "bounds", "focused", "enabled", "native_role", "children"}
+NODE_KEYS = {"role", "name", "value", "description", "bounds", "focused", "enabled", "checked", "native_role", "children"}
 
 
 def palette(tree):
@@ -96,6 +96,9 @@ class UiCliTest(UiTestCase):
         for node in walk(tree):
             self.assertLessEqual(NODE_KEYS, set(node), node)
         self.assertEqual([a["name"] for a in tree["children"]], ["MyApp", "Other"])
+
+    def test_a_node_the_helper_gives_no_tick_state_reads_checked_null(self):
+        self.assertEqual({node["checked"] for node in walk(self.ui("tree"))}, {None})
 
     def test_tree_of_one_app(self):
         tree = self.ui("tree", "--app", "myapp")
@@ -1003,6 +1006,106 @@ class WindowsUiTest(VmlabTestCase):
         r = self.project.vmlab("ui", "stage-text", "Ohm law")
         self.assertExit(r, 0)
         self.assertEqual(json.loads(r.out)["app"], "Notepad")
+
+
+SETTINGS = {
+    "role": "desktop",
+    "children": [
+        {
+            "role": "application",
+            "name": "MyApp",
+            "children": [
+                {
+                    "role": "window",
+                    "name": "Settings",
+                    "bounds": {"x": 0, "y": 0, "w": 400, "h": 300},
+                    "children": [
+                        {"role": "checkbox", "name": "Pictures", "checked": True, "bounds": {"x": 10, "y": 10, "w": 100, "h": 20}},
+                        {"role": "checkbox", "name": "Music", "checked": False, "bounds": {"x": 10, "y": 40, "w": 100, "h": 20}},
+                        {"role": "checkbox", "name": "Some", "checked": "mixed", "bounds": {"x": 10, "y": 70, "w": 100, "h": 20}},
+                        {"role": "radiobutton", "name": "Light", "checked": True, "bounds": {"x": 10, "y": 100, "w": 100, "h": 20}},
+                        {"role": "radiobutton", "name": "Dark", "checked": False, "bounds": {"x": 10, "y": 130, "w": 100, "h": 20}},
+                        {"role": "button", "name": "Save", "bounds": {"x": 10, "y": 160, "w": 100, "h": 20}},
+                    ],
+                }
+            ],
+        }
+    ],
+}
+
+
+class CheckedTest(UiTestCase):
+    """A node's tick state ("checked") and the queries that match on it."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_settings()
+
+    def write_settings(self, music=False):
+        tree = json.loads(json.dumps(SETTINGS))
+        tree["children"][0]["children"][0]["children"][1]["checked"] = music
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
+
+    def names(self, *args):
+        return [m["name"] for m in self.ui("find", *args)["matches"]]
+
+    def test_every_node_says_its_tick_state(self):
+        states = {m["name"]: m["checked"] for m in self.ui("find", "--app", "MyApp", "--text", "")["matches"]}
+        self.assertEqual(
+            states, {"MyApp": None, "Settings": None, "Pictures": True, "Music": False, "Some": "mixed", "Light": True, "Dark": False, "Save": None}
+        )
+
+    def test_find_matches_the_tick_state_exactly(self):
+        self.assertEqual(self.names("--role", "checkbox", "--checked"), ["Pictures"])
+        self.assertEqual(self.names("--role", "checkbox", "--unchecked"), ["Music"])
+        self.assertEqual(self.names("--role", "checkbox", "--mixed"), ["Some"])
+        self.assertEqual(self.names("--role", "radiobutton", "--unchecked"), ["Dark"])
+        self.assertEqual(self.names("--text", "Save", "--unchecked"), [])
+
+    def test_the_tick_flags_exclude_each_other(self):
+        r = self.ui("find", "--role", "checkbox", "--checked", "--unchecked", code=2)
+        self.assertIn("not allowed with argument", r.err)
+
+    def test_a_tick_state_alone_is_not_a_query(self):
+        r = self.ui("find", "--checked", code=2)
+        self.assertIn("needs --text or --role", r.err)
+
+    def test_a_tick_state_goes_with_an_element_in_wait_for(self):
+        r = self.ui("wait-for", "--process", "MyApp", "--checked", code=2)
+        self.assertIn("--checked goes with --text or --role", r.err)
+
+    def test_click_takes_the_tick_state(self):
+        clicked = self.ui("click", "--role", "checkbox", "--unchecked")
+        self.assertEqual((clicked["element"]["name"], clicked["y"]), ("Music", 50))
+
+    def test_wait_for_a_box_to_be_ticked(self):
+        r = self.ui("wait-for", "--text", "Music", "--role", "checkbox", "--checked", "--timeout", "0.5", code=1)
+        self.assertEqual(json.loads(r.out)["condition"], {"text": "Music", "role": "checkbox", "checked": True})
+        self.later(1, lambda: self.write_settings(music=True))
+        waited = self.ui("wait-for", "--text", "Music", "--role", "checkbox", "--checked", "--timeout", "10")
+        self.assertEqual([m["name"] for m in waited["matches"]], ["Music"])
+
+    def test_scenario_api(self):
+        self.later(1, lambda: self.write_settings(music=True))
+        self.project.scenario("ticks.py", """
+            def scenario(g):
+                g.check("find", [m["name"] for m in g.find(role="checkbox", checked=False)["matches"]] == ["Music"])
+                g.check("click", g.click(role="checkbox", checked="mixed")["element"]["name"] == "Some")
+                waited = g.wait_for(text="Music", role="checkbox", checked=True, timeout=10)
+                g.check("ticked", waited["met"], detail=waited)
+                try:
+                    g.click(text="Dark", checked=True)
+                    g.check("named", False)
+                except Exception as exc:
+                    g.check("named", "checked=True" in str(exc), detail=str(exc))
+                try:
+                    g.find(role="checkbox", checked="yes")
+                    g.check("bad state", False)
+                except Exception as exc:
+                    g.check("bad state", "checked" in str(exc), detail=str(exc))
+        """)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
 
 
 class UiScenarioTest(UiTestCase):

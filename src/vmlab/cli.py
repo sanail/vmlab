@@ -281,6 +281,10 @@ def _ui_parser(sub):
     element.add_argument("--text", help="name, value or description: exact matches win, else substring")
     element.add_argument("--role", help="cross-OS role (button, textfield, window, ...) or native role")
     element.add_argument("--app", help="only inside this application")
+    tick = element.add_mutually_exclusive_group()
+    tick.add_argument("--checked", action="store_const", const=True, help="only ticked checkboxes, radio buttons, toggles and menu items")
+    tick.add_argument("--unchecked", dest="checked", action="store_const", const=False, help="only unticked ones")
+    tick.add_argument("--mixed", dest="checked", action="store_const", const="mixed", help="only tri-state ones in their middle state")
 
     p = sub.add_parser("ui", help="read and drive a running Guest's UI; prints JSON (the same shapes on every OS)")
     ui_sub = p.add_subparsers(dest="ui_command", metavar="UI_COMMAND")
@@ -414,10 +418,10 @@ def _ui(project, args):
     if c == "tree":
         result = contract.tree(args.app)
     elif c == "find":
-        result = contract.find(ui.Query(args.text, args.role, args.app))
+        result = contract.find(ui.Query(args.text, args.role, args.app, args.checked))
     elif c == "click":
         at = tuple(args.at) if args.at else None
-        result = contract.click(ui.Query(args.text, args.role, args.app), index=args.index, at=at, timeout=args.timeout)
+        result = contract.click(ui.Query(args.text, args.role, args.app, args.checked), index=args.index, at=at, timeout=args.timeout)
     elif c == "press":
         result = contract.press(args.chord)
     elif c == "type":
@@ -428,7 +432,7 @@ def _ui(project, args):
             app = app or lab.app.notification_id
             since = since or ui.HostTime(time.time())
         condition = ui.condition(
-            text=args.text, role=args.role, app=app, gone=args.gone, process=args.process, file=args.file,
+            text=args.text, role=args.role, app=app, checked=args.checked, gone=args.gone, process=args.process, file=args.file,
             log=args.log, pattern=args.pattern, exec=args.exec, notification=args.notification, since=since, tray=args.tray,
         )  # fmt: skip
         result = contract.wait_for(condition, timeout=args.timeout)

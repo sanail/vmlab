@@ -102,6 +102,21 @@ func label(_ element: AXUIElement) -> String {
     return ""
 }
 
+/// The tick state: a checkbox's, radio button's or switch's AXValue (0, 1, 2 for mixed), a menu item's
+/// mark (a check mark, "-" for mixed; none reads null: macOS does not tell a checkable item apart).
+func checked(_ element: AXUIElement, role: String, subrole: String?) -> Any {
+    if role == "AXMenuItem" {
+        switch text(element, "AXMenuItemMarkChar") {
+        case "\u{2713}"?: return true
+        case "-"?: return "mixed"
+        default: return NSNull()
+        }
+    }
+    guard ["AXCheckBox", "AXRadioButton"].contains(role) || ["AXSwitch", "AXToggle"].contains(subrole ?? ""),
+          let n = attribute(element, kAXValueAttribute as String) as? NSNumber else { return NSNull() }
+    return n.intValue == 2 ? "mixed" : n.intValue != 0
+}
+
 final class Walk {
     let maxDepth: Int
     var nodes = 0
@@ -122,7 +137,9 @@ final class Walk {
             "focused": (attribute(element, kAXFocusedAttribute as String) as? Bool) ?? false,
             "enabled": (attribute(element, kAXEnabledAttribute as String) as? Bool) ?? true,
         ]
-        if let sub = text(element, kAXSubroleAttribute as String) { out["native_subrole"] = sub }
+        let sub = text(element, kAXSubroleAttribute as String)
+        if let sub = sub { out["native_subrole"] = sub }
+        out["checked"] = checked(element, role: role, subrole: sub)
         var list: [[String: Any]] = []
         if depth < maxDepth {
             for child in kids {

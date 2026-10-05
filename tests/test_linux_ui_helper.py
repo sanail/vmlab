@@ -28,7 +28,7 @@ def load_helper():
 
 
 class State:
-    VISIBLE, SHOWING, FOCUSED, ENABLED, MULTI_LINE, SINGLE_LINE = range(6)
+    VISIBLE, SHOWING, FOCUSED, ENABLED, MULTI_LINE, SINGLE_LINE, CHECKED, CHECKABLE, PRESSED, INDETERMINATE = range(10)
 
 
 class States:
@@ -153,6 +153,43 @@ class TreeWalkTest(unittest.TestCase):
     def test_a_point_on_the_page_hits_its_element(self):
         chain = self.ui.under(50, 70)
         self.assertEqual(chain[0][0], "Run", chain)
+
+
+class TickStateTest(unittest.TestCase):
+    """How AT-SPI states become a node's "checked"."""
+
+    def setUp(self):
+        helper = load_helper()
+        ui = helper.UI.__new__(helper.UI)
+        ui.Atspi, ui.S, ui.nodes = Atspi, State, 0
+        self.ui = ui
+
+    def checked(self, role, *states):
+        return self.ui.node(Node(role, states=(State.VISIBLE, State.SHOWING) + states), (Atspi.CoordType.SCREEN, (0, 0)), 1, 60)["checked"]
+
+    def test_a_checkbox_reads_ticked_unticked_or_mixed(self):
+        self.assertIs(self.checked("check box", State.CHECKED), True)
+        self.assertIs(self.checked("check box"), False)
+        self.assertEqual(self.checked("check box", State.INDETERMINATE), "mixed")
+
+    def test_a_radio_button_and_a_switch_read_like_a_checkbox(self):
+        self.assertIs(self.checked("radio button", State.CHECKED), True)
+        self.assertIs(self.checked("radio button"), False)
+        self.assertIs(self.checked("switch", State.CHECKED), True)
+
+    def test_a_toggle_button_is_ticked_when_pressed(self):
+        self.assertIs(self.checked("toggle button", State.PRESSED), True)
+        self.assertIs(self.checked("toggle button"), False)
+
+    def test_a_menu_item_is_checkable_when_its_role_or_state_says_so(self):
+        self.assertIs(self.checked("check menu item"), False)
+        self.assertIs(self.checked("menu item", State.CHECKABLE), False)
+        self.assertIs(self.checked("menu item", State.CHECKABLE, State.CHECKED), True)
+        self.assertIsNone(self.checked("menu item"))
+
+    def test_an_element_with_no_tick_state_reads_null(self):
+        self.assertIsNone(self.checked("push button"))
+        self.assertIsNone(self.checked("progress bar", State.INDETERMINATE))
 
 
 class Editor:

@@ -126,7 +126,7 @@ UI = COMMANDS + """
 import os
 import uuid
 
-NODE_KEYS = {"role", "name", "value", "description", "bounds", "focused", "enabled", "native_role", "children"}
+NODE_KEYS = {"role", "name", "value", "description", "bounds", "focused", "enabled", "checked", "native_role", "children"}
 
 def walk(node):
     yield node
@@ -301,6 +301,47 @@ def scenario(g):
     fixture.stop()
     gone = g.wait_for(tray=NAME, gone=True, timeout=30)
     g.check("wait_for(tray=, gone=True) is met once the app quits", gone["met"], detail=gone)
+'''
+
+
+# Tick states, against a window of the Guest's own making (checks_fixture_*), started as TRAY's fixture is
+# under a name of its own, which is the app's name and its window's title. SOURCE is its source.
+CHECKS_FIXTURES = {"linux": "checks_fixture_linux.py", "macos": "checks_fixture_macos.swift", "windows": "checks_fixture_windows.ps1"}
+CHECKS = r'''
+NAME = "vmlab-chk-" + uuid.uuid4().hex[:4]  # within the 15 characters of a Linux process's name
+EXPECTED = [("Pictures", "checkbox", True), ("Music", "checkbox", False), ("Some", "checkbox", "mixed"),
+            ("Light", "radiobutton", True), ("Dark", "radiobutton", False), ("Save", "button", None)]
+
+def start(g):
+    if g.os == "windows":
+        script = g.put("%TEMP%\\" + NAME + ".ps1", SOURCE)
+        exe = g.exec(cmd(g, "", "$p = Join-Path $env:TEMP '%s.exe'; Copy-Item -Force (Get-Command powershell.exe).Source $p; $p" % NAME)).stdout.strip()
+        return g.spawn([exe, "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", script, NAME])
+    exe = "/tmp/" + NAME
+    if g.os == "macos":
+        built = g.exec(["swiftc", "-o", exe, g.put("~/%s.swift" % NAME, SOURCE)], timeout=300)
+        g.check("the fixture builds with the Guest's swiftc", built.ok, detail=built.stderr[-2000:])
+        return g.spawn([exe, NAME])
+    g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
+    return g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), NAME])
+
+def scenario(g):
+    fixture = start(g)
+    up = g.wait_for(text="Save", role="button", app=NAME, timeout=60)
+    g.check("the fixture's window is up", up["met"], detail=up)
+    for name, role, checked in EXPECTED:
+        found = g.find(text=name, role=role, app=NAME)["matches"]
+        g.check("%s reads checked %r" % (name, checked), [m["checked"] for m in found] == [checked], detail=found)
+    for checked, names in ((True, ["Pictures"]), (False, ["Music"]), ("mixed", ["Some"])):
+        found = g.find(role="checkbox", app=NAME, checked=checked)["matches"]
+        g.check("find(checked=%r) finds just those" % checked, [m["name"] for m in found] == names, detail=found)
+    unmet = g.wait_for(text="Music", role="checkbox", app=NAME, checked=True, timeout=2)
+    g.check("wait_for(checked=True) is not met while the box is unticked",
+            not unmet["met"] and unmet["condition"] == {"text": "Music", "role": "checkbox", "app": NAME, "checked": True}, detail=unmet)
+    g.click(text="Music", role="checkbox", app=NAME, checked=False, timeout=10)
+    ticked = g.wait_for(text="Music", role="checkbox", app=NAME, checked=True, timeout=10)
+    g.check("and is met once a click ticked it", ticked["met"], detail=ticked)
+    fixture.stop()
 '''
 
 
@@ -1105,6 +1146,13 @@ def scenario(g):
             self.skipTest("the Fake's Tray menus are scripted: tests/test_ui.py covers them")
         source = (Path(__file__).resolve().parent / TRAY_FIXTURES[self.target.os]).read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_tray.py", UI + "SOURCE = %r\n" % source + TRAY))
+
+    @ui
+    def test_09c2_ui_checkboxes_and_radio_buttons_say_whether_they_are_ticked(self):
+        if self.target.provider == "fake":
+            self.skipTest("the Fake's tick states are scripted: tests/test_ui.py covers them")
+        source = (Path(__file__).resolve().parent / CHECKS_FIXTURES[self.target.os]).read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_checks.py", UI + "SOURCE = %r\n" % source + CHECKS))
 
     @ui
     def test_09d_ui_notifications_are_read_and_waited_for(self):

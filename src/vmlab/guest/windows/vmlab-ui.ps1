@@ -439,12 +439,15 @@ public static class Helper {
             AutomationElement.HasKeyboardFocusProperty, AutomationElement.IsEnabledProperty, AutomationElement.HelpTextProperty,
             AutomationElement.NativeWindowHandleProperty,
             ValuePattern.ValueProperty, ValuePattern.IsReadOnlyProperty, RangeValuePattern.ValueProperty, WindowPattern.IsModalProperty,
+            TogglePattern.ToggleStateProperty, SelectionItemPattern.IsSelectedProperty,
         };
         foreach (AutomationProperty property in properties) request.Add(property);
         request.Add(ValuePattern.Pattern);
         request.Add(RangeValuePattern.Pattern);
         request.Add(TextPattern.Pattern);
         request.Add(WindowPattern.Pattern);
+        request.Add(TogglePattern.Pattern);
+        request.Add(SelectionItemPattern.Pattern);
         return request;
     }
 
@@ -492,7 +495,7 @@ public static class Helper {
             "native_role", native, "name", name, "value", null, "description", help.Length > 0 ? help : null,
             "bounds", Bounds(Cached<System.Windows.Rect>(e, AutomationElement.BoundingRectangleProperty, System.Windows.Rect.Empty)),
             "focused", Cached<bool>(e, AutomationElement.HasKeyboardFocusProperty, false),
-            "enabled", Cached<bool>(e, AutomationElement.IsEnabledProperty, true));
+            "enabled", Cached<bool>(e, AutomationElement.IsEnabledProperty, true), "checked", Checked(e, type));
         object pattern;
         bool editable = false;
         if (e.TryGetCachedPattern(ValuePattern.Pattern, out pattern)) {
@@ -520,6 +523,20 @@ public static class Helper {
             children.Add(Node(child, depth + 1, maxDepth));
         }
         return node;
+    }
+
+    /// The tick state: TogglePattern's (checkboxes, toggle buttons, checkable menu items), or a radio
+    /// button's SelectionItemPattern IsSelected; true, false, "mixed" or null.
+    static object Checked(AutomationElement e, ControlType type) {
+        object pattern;
+        if (e.TryGetCachedPattern(TogglePattern.Pattern, out pattern)) {
+            object state = Cached<object>(e, TogglePattern.ToggleStateProperty, null);
+            if (state is ToggleState) return (ToggleState)state == ToggleState.Indeterminate ? (object)"mixed" : (ToggleState)state == ToggleState.On;
+            return null;
+        }
+        if (type == ControlType.RadioButton && e.TryGetCachedPattern(SelectionItemPattern.Pattern, out pattern))
+            return Cached<bool>(e, SelectionItemPattern.IsSelectedProperty, false);
+        return null;
     }
 
     static bool Multiline(AutomationElement e) {
