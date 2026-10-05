@@ -17,7 +17,10 @@ Guest policy applies, and vmlab says what it stopped and left. Under --parallel
 the Labs get up to INTERRUPT_WAIT_S for that; a second Ctrl-C exits at once.
 
 A Lab this Host does not cover (vmlab.arch) is skipped: no build, no Guest, a
-warning, and reports with status "skipped".
+warning, and reports with status "skipped". A Scenario declaring OS or LANGUAGES
+is left out on the Labs that do not match them, said once per Lab and in its
+reports; a Lab left with no Scenario is skipped the same way, and no Scenario
+left on any Lab is a UsageError, all before anything builds or boots.
 """
 
 import collections
@@ -35,7 +38,7 @@ from vmlab.memory import free_memory_gb
 from vmlab.progress import Progress, duration
 from vmlab.providers import provider_for
 from vmlab.providers.base import BootTimeout, GuestError
-from vmlab.scenario import FAIL, SKIP, STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, outcome, run_scenario
+from vmlab.scenario import FAIL, SKIP, STILL_OPEN, STILL_RUNNING, ChannelUse, Guest, Interrupted, excluded_by, limits, outcome, run_scenario
 
 INTERRUPT_WAIT_S = 60  # how long Ctrl-C in a parallel Run waits for the Labs to end theirs
 
@@ -81,6 +84,7 @@ def run(
     steps_out, a print-like callable, gets each Lab's step lines (vmlab.progress); None: none."""
     labs = project.select_labs(lab_names)
     scenarios, ad_hoc = discover(project, scenario_names)
+    chosen = _chosen(labs, scenarios)
     lock = threading.Lock()
 
     def locked(write):
@@ -96,7 +100,7 @@ def run(
 
     locked_out = locked(out)
     # Builds run first, one Lab at a time: Labs sharing an artifact build it once.
-    runs = [_LabRun(project, lab, Progress(locked(steps_out), lab.name)) for lab in labs]
+    runs = [_LabRun(project, lab, Progress(locked(steps_out), lab.name), *chosen[lab.name]) for lab in labs]
     for lab_run in runs:
         lab_run.build()
 
@@ -109,7 +113,7 @@ def run(
             lab_run.drop_run_dir()
             return False
         return lab_run.run(
-            scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh, interrupt=interrupt, repeat=repeat,
+            lab_run.scenarios, locked_out, keep=keep or ad_hoc, ad_hoc=ad_hoc, fresh=fresh, interrupt=interrupt, repeat=repeat,
             stop_repeating=stop_repeating,
         )  # fmt: skip
 
@@ -125,6 +129,26 @@ def run(
     _print_tally(runs, repeat, out)
     kept_running([r.lab.name for r, still_ours in zip(runs, outcomes) if still_ours], out, stop_command)
     return _reports(runs)
+
+
+def _chosen(labs, scenarios):
+    """{Lab name: (the Scenarios it runs, those its OS and LANGUAGES leave out there: [{name, reason}])};
+    ConfigError for a malformed declaration, UsageError when no Lab is left any Scenario."""
+    declared = {path: limits(path) for path in scenarios}
+    chosen = {}
+    for lab in labs:
+        reasons = [(path, excluded_by(declared[path], lab)) for path in scenarios]
+        left_out = list(dict.fromkeys((p, why) for p, why in reasons if why))  # a Scenario chosen twice is left out once
+        chosen[lab.name] = ([p for p, why in reasons if not why], [{"name": p.stem, "reason": why} for p, why in left_out])
+    if not any(runs for runs, _ in chosen.values()):
+        raise UsageError(
+            "no Scenario is left to run: each one's OS or LANGUAGES leaves it out on every Lab chosen; %s; "
+            "pick a Lab they match with --lab" % "; ".join(
+                "%s (%s, %s): %s" % (lab.name, lab.os, lab.language, ", ".join("%s (%s)" % (e["name"], e["reason"]) for e in chosen[lab.name][1]))
+                for lab in labs
+            )
+        )  # fmt: skip
+    return chosen
 
 
 def _reports(runs):
@@ -285,16 +309,22 @@ EXPECTED = (ConfigError, UsageError, GuestInUse)
 class _LabRun:
     """One Lab's part of an invocation: its build, and its Suite runs' folders and Scenarios."""
 
-    def __init__(self, project, lab, progress):
+    def __init__(self, project, lab, progress, scenarios, excluded):
         self.project = project
         self.lab = lab
         self.progress = progress
+        self.scenarios = scenarios  # the Scenario files it runs
+        self.excluded = excluded  # [{name, reason}] of those its OS or LANGUAGES leave out here
         self._new_repetition()
         self.built = None
         self.reports = []  # one per repetition that ended
         self.coverage = arch.coverage(lab)
         self.warnings = [w for w in [arch.warning(lab)] if w]
-        self.skipped = bool(self.warnings)
+        self.skipped = None  # why the Lab runs nothing (no build, no Guest); None when it runs
+        if self.warnings:
+            self.skipped = self.coverage["detail"]
+        elif not scenarios:
+            self.skipped = "every Scenario chosen is left out on this Lab"
         # What Ctrl-C needs to say what was stopped and left (see _say_what_was_left)
         self.began = self.done = False
         self.ours = False  # vmlab started this Lab's Guest, or holds it from an earlier Run
@@ -342,6 +372,10 @@ class _LabRun:
         lock = None
         for warning in self.warnings:
             out("warning: %s: %s" % (lab.name, warning))
+        for e in self.excluded:
+            out("%s: %s left out (%s)" % (lab.name, e["name"], e["reason"]))
+        if self.skipped and not self.warnings:
+            out("%s: skipped: %s" % (lab.name, self.skipped))
         if not self.error and not self.skipped:
             try:
                 lock = guest_lock(provider)
@@ -437,6 +471,8 @@ class _LabRun:
             "status": self._status(results),
             "error": self.error,
             "warnings": self.warnings,
+            "skipped": self.skipped,
+            "excluded": self.excluded,
             "run_dir": str(self.run_dir),
             "deploy": deploy,
             "channels": lab_calls.channels,

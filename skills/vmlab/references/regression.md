@@ -23,7 +23,7 @@ From the project root, with the pinned copy, as a terminal or CI job will:
 .vmlab/run NAME --lab LAB
 ```
 
-Repeat `--lab` per Lab the Scenario is meant for. A saved Scenario's run restores Clean state first, so nothing you did in the Guest while exploring can make it pass.
+Repeat `--lab` per Lab the Scenario is meant for. A Scenario meant only for some Labs (one OS, one Lab language) declares `OS` or `LANGUAGES` ([scenarios.md](scenarios.md)), so the whole suite leaves it out on the others and says so, rather than you narrowing every run by hand. A saved Scenario's run restores Clean state first, so nothing you did in the Guest while exploring can make it pass.
 
 Done when it passes on every Lab it is meant for, and the whole suite (`.vmlab/run`, no arguments) still does.
 
@@ -67,5 +67,5 @@ Tell the user, per Lab: the Scenario file, both measured Runs (exit codes, the C
 
 - `.vmlab/run` runs every saved Scenario on every Lab, from anywhere in the project; `.vmlab/run NAME ... --lab LAB` narrows it. It passes its arguments to `vmlab run`. A project made by an older vmlab gets it from `vmlab init`, which keeps everything else.
 - The suite restores Clean state once per Lab at its start, and stops the Guests vmlab started. `--keep` leaves them running for inspection; `--fresh` restores before every Scenario; `--parallel` runs Labs concurrently as free Host memory allows; `--repeat N [--until-fail]` runs it N times per Lab ([measure flakiness](#measure-flakiness)). It prints each Lab's steps as they start and end (`LAB: restoring Clean state`, `LAB: ... done in 41s`) and each Scenario as it starts and ends (`LAB: scenario NAME`, `LAB: scenario NAME failed in 1m12s (2 of 8 Checks failed)`); `--quiet` leaves only the results.
-- Exit code: 0 all passed (or skipped: a Lab this Host does not cover, or Skipped Checks next to passed ones), 1 a Check failed or a Run errored, 2 a usage or config error. Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`, `summary.md` and `screenshots/<scenario>/NN-<name>.png`, one folder per Scenario (a second Scenario of the same name in one Suite run gets `<scenario>-2`).
+- Exit code: 0 all passed (or skipped: a Lab this Host does not cover or with every Scenario left out by its `OS`/`LANGUAGES`, or Skipped Checks next to passed ones), 1 a Check failed or a Run errored, 2 a usage or config error. Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`, `summary.md` and `screenshots/<scenario>/NN-<name>.png`, one folder per Scenario (a second Scenario of the same name in one Suite run gets `<scenario>-2`).
 - Every `vmlab run` installs the Build artifact afresh, rebuilding it first when anything in its `inputs` is newer.

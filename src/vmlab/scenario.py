@@ -5,10 +5,15 @@ A Scenario is a Python file in .vmlab/scenarios defining:
     FRESH = True        # optional: restore Clean state before this Scenario
     LAUNCH = False      # optional: don't launch the app before this Scenario (call g.launch())
     TIMEOUT = 300       # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
+    OS = ["macos"]      # optional: run only on Labs of these Guest OSes (g.os); left out on the others
+    LANGUAGES = ["en-US"]  # optional: run only on Labs of these Lab languages (g.language)
 
     def scenario(g):
         r = g.exec(["echo", "hello"])
         g.check("echo prints hello", r.stdout.strip() == "hello")
+
+OS and LANGUAGES are read without running the file (limits()), before any Lab
+builds or boots, so they must be literal lists of strings.
 
 The timeout is enforced at g.* calls: Python code in a Scenario must not block
 outside them.
@@ -17,9 +22,11 @@ While a Scenario loads and runs, its folder is on sys.path, so it imports shared
 helpers from _name.py files next to it; they are re-imported for every Scenario.
 """
 
+import ast
 import collections
 import contextlib
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -28,7 +35,7 @@ import time
 import traceback
 
 from vmlab import arch, hostpower, ui
-from vmlab.config import ConfigError, UsageError
+from vmlab.config import LANGUAGE, OSES, ConfigError, UsageError
 from vmlab.providers import spawning
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
 
@@ -540,6 +547,52 @@ def _scenario_line(path, tb):
     """'name.py:LINE' of the innermost Scenario frame in tb."""
     lines = [f.lineno for f in traceback.extract_tb(tb) if f.filename == str(path)]
     return "%s:%s" % (path.name, lines[-1]) if lines else path.name
+
+
+# What a Scenario may be limited to: the Lab attribute each declaration matches, its valid values, and what they are.
+LIMITS = {
+    "OS": ("os", lambda v: v in OSES, "Guest OS names (%s)" % ", ".join(OSES), '["macos"]'),
+    "LANGUAGES": ("language", lambda v: bool(LANGUAGE.match(v)), "Lab languages, ll-RR", '["en-US"]'),
+}
+
+
+def limits(path):
+    """The Scenario file's OS and LANGUAGES, {name: [values]}, read without executing it; ConfigError
+    when one is not a non-empty literal list of valid values. A file that does not parse limits nothing:
+    its Run errors."""
+    try:
+        tree = ast.parse(path.read_bytes(), str(path))
+    except (OSError, SyntaxError, ValueError):
+        return {}
+    found = {}
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) and node.value else []
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id in LIMITS:
+                found[target.id] = _limit(path, target.id, node.value)
+    return found
+
+
+def _limit(path, name, node):
+    _, valid, what, example = LIMITS[name]
+    try:
+        value = ast.literal_eval(node)
+    except Exception:  # not a literal: a name, a call, an expression
+        value = None
+    fix = "use a literal list of %s, e.g. %s = %s" % (what, name, example)
+    if not (isinstance(value, (list, tuple)) and value and all(isinstance(v, str) for v in value)):
+        raise ConfigError(path, name, "%s = %s is not a non-empty literal list of strings" % (name, ast.unparse(node)), fix)
+    bad = [v for v in value if not valid(v)]
+    if bad:
+        raise ConfigError(path, name, "%s %s not %s" % (", ".join(map(repr, bad)), "is" if len(bad) == 1 else "are", what), fix)
+    return list(value)
+
+
+def excluded_by(declared, lab):
+    """Why a Scenario with these limits() is left out on lab: its declarations lab does not match,
+    'LANGUAGES = ["en-US"]'; None when it runs there."""
+    unmet = [name for name, values in declared.items() if getattr(lab, LIMITS[name][0]) not in values]
+    return " and ".join("%s = %s" % (name, json.dumps(declared[name])) for name in unmet) or None
 
 
 def _declared(module, name, default, valid, expected):

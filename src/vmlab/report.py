@@ -5,6 +5,8 @@ import shlex
 import xml.etree.ElementTree as ET
 from collections import Counter
 
+
+from vmlab.arch import UNCOVERED
 from vmlab.scenario import ALREADY_GONE, BY_ITSELF, BY_SCENARIO, FAIL, OUTPUT_TAIL, PASS, SKIP, STILL_OPEN, STILL_RUNNING, VISUAL, WITH_RUN, failed, outcome
 
 STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
@@ -98,7 +100,7 @@ def tally(reports):
 
 def _write_junit(path, report):
     t = report["totals"]
-    lab_skipped = int(report["status"] == "skipped")  # its architecture is not covered
+    lab_skipped = int(report["status"] == "skipped")  # its architecture is not covered, or it has no Scenario left
     suite = ET.Element(
         "testsuite",
         name="vmlab.%s" % report["lab"],
@@ -110,8 +112,9 @@ def _write_junit(path, report):
         timestamp=report["started_at"],
     )
     if lab_skipped:
-        case = ET.SubElement(suite, "testcase", classname=report["lab"], name="Architecture")
-        ET.SubElement(case, "skipped", message=report["coverage"]["detail"])
+        name = "Architecture" if report["coverage"]["mode"] == UNCOVERED else "Scenarios"
+        case = ET.SubElement(suite, "testcase", classname=report["lab"], name=name)
+        ET.SubElement(case, "skipped", message=report["skipped"])
     if report["error"]:
         case = ET.SubElement(suite, "testcase", classname=report["lab"], name="Guest setup")
         error = ET.SubElement(case, "error", message=report["error"].splitlines()[0])
@@ -194,6 +197,10 @@ def _markdown(report):
     ]
     for warning in report["warnings"]:
         lines += ["", "> **warning:** %s" % warning]
+    if report["excluded"]:
+        lines += [""] + ["- %s: left out (%s)" % (e["name"], e["reason"]) for e in report["excluded"]]
+    if report["skipped"] and report["coverage"]["mode"] != UNCOVERED:
+        lines += ["", "Skipped: %s" % report["skipped"]]
     if report["deploy"]:
         d = report["deploy"]
         lines += ["", "Build artifact: %s (%s)" % (d["artifact"], "rebuilt" if d["built"] else "up to date")]
