@@ -1,8 +1,16 @@
-"""Labs run sequentially by default; --parallel runs them concurrently as free memory allows."""
+"""Labs run sequentially by default; --parallel runs them concurrently as free memory and the vCPU budget allow."""
 
 import json
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
 
 from harness import VmlabTestCase
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from vmlab import memory  # noqa: E402
 
 LABS = """
 [labs.mac]
@@ -41,8 +49,11 @@ class ParallelTest(VmlabTestCase):
         (a0, a1), (b0, b1) = (json.loads((self.times / n).read_text()) for n in ("mac.json", "ubuntu.json"))
         return a0 < b1 and b0 < a1
 
-    def run_vmlab(self, *args, free_gb):
-        r = self.project.vmlab("run", *args, env={"VMLAB_FREE_MEMORY_GB": str(free_gb)})
+    def run_vmlab(self, *args, free_gb, host_cpus=None):
+        env = {"VMLAB_FREE_MEMORY_GB": str(free_gb)}
+        if host_cpus is not None:
+            env["VMLAB_HOST_CPUS"] = str(host_cpus)
+        r = self.project.vmlab("run", *args, env=env)
         self.assertExit(r, 0)
         return r
 
@@ -70,6 +81,39 @@ class ParallelTest(VmlabTestCase):
         self.run_vmlab("--parallel", free_gb=10)
         self.assertTrue(self.overlapped())
 
+    def with_cpus(self, cpu=4):
+        self.project.config(LABS + "\n[labs.mac.fake]\ncpu = %d\n\n[labs.ubuntu.fake]\ncpu = %d\n" % (cpu, cpu))
+
+    def test_labs_beyond_the_vcpu_budget_are_queued(self):
+        self.with_cpus()
+        r = self.run_vmlab("--parallel", free_gb=64, host_cpus=6)
+        self.assertFalse(self.overlapped())
+        self.assertIn("queued ubuntu: needs 4 vCPUs, 2 of 6 free while mac run", r.out)
+
+    def test_labs_within_the_vcpu_budget_overlap(self):
+        self.with_cpus()
+        self.run_vmlab("--parallel", free_gb=64, host_cpus=8)
+        self.assertTrue(self.overlapped())
+
+    def test_a_lab_bigger_than_the_vcpu_budget_still_runs_alone(self):
+        self.with_cpus()
+        r = self.run_vmlab("--parallel", free_gb=64, host_cpus=2)
+        self.assertFalse(self.overlapped())
+        self.assertIn("warning: mac needs 4 vCPUs, more than the budget of 2; running it alone", r.out)
+
+    def test_an_already_running_guest_counts_against_the_vcpu_budget(self):
+        self.with_cpus()
+        self.assertExit(self.project.vmlab("up", "mac"), 0)
+        r = self.run_vmlab("--parallel", free_gb=64, host_cpus=6)
+        self.assertFalse(self.overlapped())
+        self.assertIn("queued ubuntu: needs 4 vCPUs", r.out)
+
+    def test_fake_cpu_must_be_a_whole_number(self):
+        self.with_cpus(0)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 2)
+        self.assertIn("labs.mac.fake.cpu", r.err)
+
     def test_per_lab_reports_stay_separate_and_correct(self):
         self.project.scenario("fails_on_linux.py", """
             def scenario(g):
@@ -91,3 +135,15 @@ class ParallelTest(VmlabTestCase):
         r = self.project.vmlab("run")
         self.assertExit(r, 2)
         self.assertIn("labs.mac.memory_gb", r.err)
+
+
+class VcpuBudgetTest(unittest.TestCase):
+    def test_budget_is_one_and_a_half_times_the_cores_rounded_down(self):
+        with mock.patch.dict("os.environ", {"VMLAB_HOST_CPUS": ""}), mock.patch("os.cpu_count", return_value=10):
+            self.assertEqual(memory.vcpu_budget(), 15)
+        with mock.patch.dict("os.environ", {"VMLAB_HOST_CPUS": ""}), mock.patch("os.cpu_count", return_value=7):
+            self.assertEqual(memory.vcpu_budget(), 10)
+
+    def test_vmlab_host_cpus_is_the_budget_as_is(self):
+        with mock.patch.dict("os.environ", {"VMLAB_HOST_CPUS": "12"}), mock.patch("os.cpu_count", return_value=10):
+            self.assertEqual(memory.vcpu_budget(), 12)

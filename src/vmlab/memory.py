@@ -1,6 +1,7 @@
-"""Free Host memory, for deciding how many Guests can run at once.
+"""Free Host memory and the vCPU budget, for deciding how many Guests can run at once.
 
-VMLAB_FREE_MEMORY_GB overrides the measurement (tests, or to hold memory back).
+VMLAB_FREE_MEMORY_GB overrides the measurement (tests, or to hold memory back);
+VMLAB_HOST_CPUS overrides the vCPU budget.
 """
 
 import os
@@ -22,6 +23,14 @@ def free_memory_gb():
     except (OSError, ValueError, subprocess.SubprocessError):
         pass
     return None
+
+
+def vcpu_budget():
+    """The vCPUs the Guests of one `vmlab run --parallel` may have at once: the Host's cores × 1.5, rounded down."""
+    override = os.environ.get("VMLAB_HOST_CPUS")
+    if override:
+        return int(override)
+    return (os.cpu_count() or 1) * 3 // 2
 
 
 def _darwin():

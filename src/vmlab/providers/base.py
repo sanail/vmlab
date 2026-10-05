@@ -124,6 +124,11 @@ class Provider:
     def guest_os(self, value):
         self._guest_os = value
 
+    @property
+    def vcpus(self):
+        """The vCPUs the Guest takes when running, which `run --parallel` budgets; 0: not counted."""
+        return 0
+
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
         """Raise ConfigError if this Provider's [labs.<name>.<provider>] table is wrong."""

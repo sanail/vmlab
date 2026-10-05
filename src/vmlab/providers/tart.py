@@ -242,6 +242,10 @@ class TartProvider(Provider):
         self.vm = TartVM(self.guest_id)
         self._channels = None
 
+    @property
+    def vcpus(self):
+        return self.options["cpu"]
+
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
         for k in sorted(set(options) - set(DEFAULTS)):

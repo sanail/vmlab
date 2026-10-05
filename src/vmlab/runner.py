@@ -34,7 +34,7 @@ from vmlab import __version__, arch, hostpower, report
 from vmlab.config import ConfigError, UsageError
 from vmlab.deploy import build_if_stale, install, launch, prepare_run, quit
 from vmlab.home import GuestInUse, GuestLock, StartedGuests
-from vmlab.memory import free_memory_gb
+from vmlab.memory import free_memory_gb, vcpu_budget
 from vmlab.progress import Progress, duration
 from vmlab.providers import provider_for
 from vmlab.providers.base import BootTimeout, GuestError
@@ -165,7 +165,8 @@ def _print_tally(runs, repeat, out):
 
 def _run_parallel(runs, work, out, interrupt):
     """Run work(lab_run) concurrently, starting a Lab only while its memory_gb fits in free
-    Host memory. A Guest that is already running needs none. Returns outcomes in order.
+    Host memory and its vCPUs fit in the budget (vmlab.memory.vcpu_budget). A Guest that is
+    already running needs no memory, but its vCPUs count. Returns outcomes in order.
 
     On Ctrl-C it sets interrupt, which ends each Lab's Suite run, waits up to INTERRUPT_WAIT_S for
     them, and raises KeyboardInterrupt; a second Ctrl-C raises it at once."""
@@ -173,8 +174,9 @@ def _run_parallel(runs, work, out, interrupt):
     if free is None:
         out("warning: cannot measure free Host memory; starting all Labs at once")
         free = float("inf")
+    budget = vcpu_budget()
     pending = list(runs)
-    running = {}  # lab_run -> GB reserved
+    running = {}  # lab_run -> (GB, vCPUs) reserved
     outcomes, errors, announced = {}, [], set()
     threads = []
     done = threading.Condition()
@@ -194,17 +196,28 @@ def _run_parallel(runs, work, out, interrupt):
             while pending or running:
                 for lab_run in list(pending):
                     lab = lab_run.lab
-                    need = 0 if lab_run.skipped or provider_for(lab_run.project, lab).is_running() else lab.memory_gb
-                    available = free - sum(running.values())
-                    if need > available and running:
+                    if lab_run.skipped:
+                        need, cpus = 0, 0
+                    else:
+                        provider = provider_for(lab_run.project, lab)
+                        need, cpus = (0 if provider.is_running() else lab.memory_gb), provider.vcpus
+                    available = free - sum(gb for gb, _ in running.values())
+                    cpus_free = max(0, budget - sum(c for _, c in running.values()))
+                    if running and (need > available or cpus > cpus_free):
                         if lab.name not in announced:
                             announced.add(lab.name)
-                            out("queued %s: needs %g GB, %.1f GB free while %s run" % (lab.name, need, available, ", ".join(r.lab.name for r in running)))
+                            names = ", ".join(r.lab.name for r in running)
+                            if need > available:
+                                out("queued %s: needs %g GB, %.1f GB free while %s run" % (lab.name, need, available, names))
+                            else:
+                                out("queued %s: needs %d vCPUs, %d of %d free while %s run" % (lab.name, cpus, cpus_free, budget, names))
                         continue
                     if need > available:
                         out("warning: %s needs %g GB, more memory than is free (%.1f GB); running it alone" % (lab.name, need, available))
+                    if cpus > budget:
+                        out("warning: %s needs %d vCPUs, more than the budget of %d; running it alone" % (lab.name, cpus, budget))
                     pending.remove(lab_run)
-                    running[lab_run] = need
+                    running[lab_run] = (need, cpus)
                     threads.append(threading.Thread(target=target, args=(lab_run,), daemon=True))
                     threads[-1].start()
                 done.wait()

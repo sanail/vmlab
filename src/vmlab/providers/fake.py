@@ -22,6 +22,7 @@ editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fa
                                     # output, as ssh failing without a message of its own
     latency = {ssh = 0.2}           # seconds each call over a Channel takes on top (doctor --bench)
     boot_seconds = 0                # how long the Guest takes to become reachable
+    cpu = 4                         # the Guest's vCPUs, for `run --parallel`'s budget; unset: not counted
 """
 
 import json
@@ -44,7 +45,7 @@ DEFAULT_CHANNELS = ["ssh", "exec"]
 FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are written (under fs, as every Guest path)
 OPTIONS = (
     "ui_tree", "notifications", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds",
-    "crashing_restores",
+    "crashing_restores", "cpu",
 )  # fmt: skip
 
 
@@ -158,6 +159,10 @@ class FakeProvider(Provider):
             elif target.exists() or target.is_symlink():
                 target.unlink()
 
+    @property
+    def vcpus(self):
+        return self.lab.options.get("cpu", 0)
+
     def channels(self):
         return [FakeChannel(self, name) for name in self.lab.options.get("channels", DEFAULT_CHANNELS)]
 
@@ -190,6 +195,9 @@ class FakeProvider(Provider):
                 raise ConfigError(config_path, "%s.latency.%s" % (key, name), "unknown Channel %r" % name, "use names from channels: %s" % ", ".join(channels))
             if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or seconds < 0:
                 raise ConfigError(config_path, "%s.latency.%s" % (key, name), "must be a number of seconds >= 0", "e.g. latency = {ssh = 0.2}")
+        cpu = options.get("cpu", 1)
+        if isinstance(cpu, bool) or not isinstance(cpu, int) or cpu < 1:
+            raise ConfigError(config_path, key + ".cpu", "must be a whole number of CPUs >= 1", "e.g. cpu = 4")
         boot = options.get("boot_seconds", 0)
         if isinstance(boot, bool) or not isinstance(boot, (int, float)) or boot < 0:
             raise ConfigError(config_path, key + ".boot_seconds", "must be a number >= 0", "e.g. boot_seconds = 2")

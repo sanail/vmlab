@@ -42,7 +42,7 @@ TEMPLATE = """\
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 # language = "en-US"       # the Lab language (ll-RR): system element names come in it; en-US by default
-# memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs that don't fit
+# memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs whose memory or `cpu` doesn't fit
 # boot_timeout = 300       # seconds from power-on until the Guest must be reachable (the Host's sleep does not count)
 # step_timeout = 60        # default seconds per Guest call
 # scenario_timeout = 600   # default seconds per Scenario
@@ -64,7 +64,7 @@ TEMPLATE = """\
 #
 # [labs.mac.tart]          # options of the Lab's Provider
 # base = "macos-tahoe"     # Base guest to clone; create it once with `vmlab base create macos-tahoe`
-# cpu = 4
+# cpu = 4                  # the Guest's vCPUs; `run --parallel` keeps them within the budget
 # display = "1920x1080"
 #
 # [labs.linux]

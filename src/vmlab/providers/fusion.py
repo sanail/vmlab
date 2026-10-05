@@ -875,6 +875,10 @@ class FusionProvider(Provider):
         self._seen_session = None  # the session type the desktop probe last found
         self._booting = False  # started by this process and not reachable yet
 
+    @property
+    def vcpus(self):
+        return self.options["cpu"]
+
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
         allowed = defaults(os_name)
