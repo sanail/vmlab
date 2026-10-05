@@ -122,6 +122,22 @@ class UiCliTest(UiTestCase):
         found = self.ui("find", "--role", "button")
         self.assertEqual([(m["app"], m["name"]) for m in found["matches"]], [("MyApp", "Run again"), ("MyApp", "Run"), ("Other", "Run")])
 
+    def test_a_closed_menu_is_left_out_of_the_tree_and_an_open_one_kept(self):
+        tree = json.loads(json.dumps(TREE))
+
+        def icon(menu_bounds):
+            item = {"role": "menuitem", "name": "Settings", "bounds": dict(menu_bounds, h=menu_bounds["h"] and 20)}
+            return {"role": "menubaritem", "name": "MyApp", "bounds": {"x": 900, "y": 0, "w": 24, "h": 24},
+                    "children": [{"role": "menu", "bounds": menu_bounds, "children": [item]}]}  # fmt: skip
+
+        tree["children"][0]["children"].append(icon({"x": 0, "y": 1080, "w": 0, "h": 0}))  # macOS: a Tray menu not open
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
+        self.assertEqual(self.ui("find", "--text", "Settings")["matches"], [])
+        self.assertEqual([m["role"] for m in self.ui("find", "--text", "MyApp", "--role", "menubaritem")["matches"]], ["menubaritem"])
+        tree["children"][0]["children"][-1] = icon({"x": 900, "y": 24, "w": 200, "h": 60})
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
+        self.assertEqual([m["role"] for m in self.ui("find", "--text", "Settings")["matches"]], ["menuitem"])
+
     def test_find_with_no_match_is_an_empty_list(self):
         self.assertEqual(self.ui("find", "--text", "Nope")["matches"], [])
 
@@ -519,6 +535,19 @@ class TrayTest(UiTestCase):
         self.later(1, self.write_tray_tree)
         code, result, _ = self.tray("--app", "MyApp", "--choose", "Open", "--timeout", "10")
         self.assertEqual((code, result["chosen"]), (0, ["Open"]))
+
+    def test_a_timeout_waits_for_the_item_to_choose_while_the_menu_is_filled(self):
+        unnamed = json.loads(json.dumps(TRAY_ICON))
+        for item in unnamed["children"]:
+            item.pop("name", None)
+        self.write_tray_tree(icon=unnamed)  # macOS, right after a launch: every item read untitled
+        self.later(1, self.write_tray_tree)
+        code, result, _ = self.tray("--app", "MyApp", "--choose", "Open", "--timeout", "10")
+        self.assertEqual((code, result["chosen"]), (0, ["Open"]))
+        self.write_tray_tree(icon=unnamed)
+        code, _, err = self.tray("--app", "MyApp", "--choose", "Open", "--timeout", "1")
+        self.assertEqual(code, 1)
+        self.assertIn('no item "Open"', err)
 
     def test_a_timeout_that_runs_out_says_so(self):
         self.write_tray_tree(icon=None)

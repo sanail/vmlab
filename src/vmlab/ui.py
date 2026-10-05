@@ -198,8 +198,16 @@ def normalize(node, native_roles):
     out["native_role"] = native if native is not None else out["role"]
     for key in EXTRA_KEYS:  # helper detail outside the shared shape
         out.pop(key, None)
-    out["children"] = [normalize(child, native_roles) for child in node.get("children", [])]
+    out["children"] = [normalize(child, native_roles) for child in node.get("children", []) if not closed_menu(child, native_roles)]
     return out
+
+
+def closed_menu(node, native_roles):
+    """A menu that is not open: macOS keeps a Tray icon's menu in the app's tree with no size
+    (x 0, y the screen's height), and its items would answer find and wait_for though nothing is on screen."""
+    b = node.get("bounds")
+    role = node.get("role") or native_roles.get(node.get("native_role"))
+    return role == "menu" and bool(b) and (b["w"] <= 0 or b["h"] <= 0)
 
 
 def texts(node):
@@ -743,7 +751,7 @@ class UI:
         """Read app's Tray menu and, with choose (a label per menu level), choose that item.
 
         {"items": [{"name", "enabled", "checked", "children"}], "chosen": labels or None}.
-        With timeout (seconds), wait for the Tray icon to appear. TrayError, carrying the
+        With timeout (seconds), wait for the Tray icon to appear, and for the items of choose to. TrayError, carrying the
         items, when there is no Tray icon, no item of a label, a disabled one, or one that
         opens a submenu (choose one of its items instead).
         """
@@ -753,9 +761,14 @@ class UI:
         deadline = hostpower.awake_time() + (timeout or 0)
         while True:
             result = self._call_with_deadline("tray", {"app": app, "choose": path})
-            if result.get("icon"):
+            # An app may fill or rebuild its menu after its icon is up: macOS then reads it empty, or
+            # with items still untitled, for a moment.
+            unread = (result.get("failed") or {}).get("reason") == "missing"
+            if result.get("icon") and not unread:
                 break
             now = hostpower.awake_time()
+            if now >= deadline and result.get("icon"):
+                break
             if now >= deadline:
                 within = " within %gs" % timeout if timeout else ""
                 detail = ": %s" % result["detail"] if result.get("detail") else ""

@@ -50,7 +50,7 @@ Tell the user what this means for real users: an ad-hoc signed app's grant is ti
 
 ## Tray menus
 
-Read and choose from an app's Tray menu with `g.tray(APP, choose=...)`: it presses the item without opening the menu, so `loginwindow` covering the menu bar right after a launch is no obstacle. Wait for the icon with `g.wait_for(tray=APP)` (or `ready = { tray = "APP" }`), which reads nothing of the menu. The Tray icon itself is a `menubaritem` of the app; clicking it (for an app whose icon opens a window rather than a menu) is `g.click(role="menubaritem", app=APP, timeout=10)`, whose timeout waits until `loginwindow` has gone. A menu the app fills only as it opens (an `NSMenuDelegate` building it in `menuNeedsUpdate`) reads empty.
+Read and choose from an app's Tray menu with `g.tray(APP, choose=...)`: it presses the item without opening the menu, so `loginwindow` covering the menu bar right after a launch is no obstacle. Wait for the icon with `g.wait_for(tray=APP)` (or `ready = { tray = "APP" }`), which reads nothing of the menu. The Tray icon itself is a `menubaritem` of the app; clicking it (for an app whose icon opens a window rather than a menu) is `g.click(role="menubaritem", app=APP, timeout=10)`, whose timeout waits until `loginwindow` has gone. A menu the app fills only as it opens (an `NSMenuDelegate` building it in `menuNeedsUpdate`) reads empty. macOS keeps a Tray menu that is not open in the app's tree, with no size: vmlab leaves it out of `tree`, `find` and `wait_for`, so its items never answer for the app's windows.
 
 ## Scripting System Events
 
