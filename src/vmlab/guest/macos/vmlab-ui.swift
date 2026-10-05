@@ -12,7 +12,7 @@
 //   tree        {"app": name?, "depth": n?}
 //   click       {"x": n, "y": n, "expect": {"label": s?, "bounds": {x,y,w,h}?}?}
 //   press       {"key": name, "modifiers": [cmd|ctrl|alt|shift]}
-//   type        {"text": s}
+//   type        {"text": s}: returns once the focused element holds s (see awaitTyped)
 //   clipboard   {"set": s?}
 //   focus       {"app": name, "window": title substring?, "timeout": seconds}
 //   stage-text  {"text": s, "app": name, "then": {"key", "modifiers"}?, "timeout": seconds}
@@ -41,6 +41,9 @@ let VERSION = 1
 let MAX_NODES = 5000
 let STAGE = "vmlab-stage-"  // + 8 hex digits: the name of every file stage-text opens
 let SELECT_WAIT = 2.0  // s for a select-all to select a Staged document's text, before it is pressed again
+let TYPE_WAIT = 5.0  // s at most for typed keys to show in the focused element
+let TYPE_SETTLE = 0.5  // s its text stands still before type stops waiting for text it does not hold
+let TRUST_WAIT = 5.0  // s to ask TCC again before saying the Accessibility grant is missing: under load it answered no once
 
 func fail(_ message: String) -> Never {
     FileHandle.standardError.write("vmlab-ui: \(message)\n".data(using: .utf8)!)
@@ -279,7 +282,33 @@ func typeCommand(_ params: [String: Any]) {
             post(event)
         }
     }
+    awaitTyped(s)
     emit(["typed": s.unicodeScalars.count])
+}
+
+/// The text of the element holding the keyboard focus; nil when there is none to read (a secure field, no focus).
+func focusedValue() -> String? {
+    let system = AXUIElementCreateSystemWide()
+    AXUIElementSetMessagingTimeout(system, 1)
+    guard let focused = attribute(system, kAXFocusedUIElementAttribute as String), CFGetTypeID(focused) == AXUIElementGetTypeID()
+    else { return nil }
+    return text(focused as! AXUIElement, kAXValueAttribute as String)
+}
+
+/// Waits until the focused element holds what was typed: posted keys reach a web page some 150 ms after the
+/// last was posted, and a Tab pressed at once took the rest to the next control. A field that changes what
+/// is typed (a mask, upper case) never holds it: the wait then ends once its text has stood still for
+/// TYPE_SETTLE. Nothing to read: no wait.
+func awaitTyped(_ s: String) {
+    guard var last = focusedValue() else { return }
+    var since = Date()
+    let deadline = Date().addingTimeInterval(TYPE_WAIT)
+    _ = waitFor(deadline) { () -> Bool? in
+        guard let now = focusedValue() else { return true }
+        if now.contains(s) { return true }
+        if now != last { last = now; since = Date() }
+        return Date().timeIntervalSince(since) >= TYPE_SETTLE ? true : nil
+    }
 }
 
 func elementAt(_ point: CGPoint) -> AXUIElement? {
@@ -550,41 +579,55 @@ func trayMenu(_ element: AXUIElement) -> [TrayItem]? {
 func tray(_ params: [String: Any]) {
     guard let wanted = params["app"] as? String else { fail("tray needs an app") }
     let path = params["choose"] as? [String] ?? []
-    var icon: AXUIElement?
-    for app in appsFor(wanted) {
-        let ax = AXUIElementCreateApplication(app.processIdentifier)
-        AXUIElementSetMessagingTimeout(ax, 3)
-        if let extras = attribute(ax, kAXExtrasMenuBarAttribute as String), CFGetTypeID(extras) == AXUIElementGetTypeID(),
-           let first = children(extras as! AXUIElement).first {
-            icon = first
-            break
+    let deadline = Date().addingTimeInterval(params["timeout"] as? Double ?? 10)
+    while true {
+        var icon: AXUIElement?
+        for app in appsFor(wanted) {
+            let ax = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(ax, 3)
+            if let extras = attribute(ax, kAXExtrasMenuBarAttribute as String), CFGetTypeID(extras) == AXUIElementGetTypeID(),
+               let first = children(extras as! AXUIElement).first {
+                icon = first
+                break
+            }
         }
+        guard let status = icon else { return emit(["icon": false]) }
+        if params["icon_only"] as? Bool == true { return emit(["icon": true]) }  // whether it is there, nothing more
+        if let result = choose(status, path) { return emit(result) }
+        // The app replaced its menu between the read and the press (some rebuild it once they have
+        // started): read the new one and press again.
+        if Date() >= deadline { fail("pressing \(path.last ?? "") in the Tray menu failed: the app kept replacing its menu") }
+        usleep(200_000)
     }
-    guard let status = icon else { return emit(["icon": false]) }
-    if params["icon_only"] as? Bool == true { return emit(["icon": true]) }  // whether it is there, nothing more
+}
+
+/// Read a Tray icon's menu and choose path from it: the tray command's result, or nil when the item
+/// to press had gone (AXError -25202, invalid element) by the time it was pressed.
+func choose(_ status: AXUIElement, _ path: [String]) -> [String: Any]? {
     let top = trayMenu(status) ?? []
     let items = top.map { $0.node }
     var level: [TrayItem]? = top
     var chosen: [String] = []
     for (i, label) in path.enumerated() {
         guard let menu = level else {
-            return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen + [label], "reason": "leaf"]])
+            return ["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen + [label], "reason": "leaf"]]
         }
         chosen.append(label)
         guard let item = menu.first(where: { $0.node["name"] as? String == label }), item.node["enabled"] as? Bool == true else {
             let reason = menu.contains(where: { $0.node["name"] as? String == label }) ? "disabled" : "missing"
-            return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": reason]])
+            return ["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": reason]]
         }
         if i == path.count - 1 {
             if item.submenu != nil {  // pressing it would choose nothing
-                return emit(["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": "submenu"]])
+                return ["icon": true, "items": items, "chosen": NSNull(), "failed": ["at": chosen, "reason": "submenu"]]
             }
             let pressed = AXUIElementPerformAction(item.element, kAXPressAction as CFString)
+            if pressed == .invalidUIElement { return nil }
             if pressed != .success { fail("pressing \(label) in the Tray menu failed (AXError \(pressed.rawValue))") }
         }
         level = item.submenu
     }
-    emit(["icon": true, "items": items, "chosen": path.isEmpty ? NSNull() : path as Any, "failed": NSNull()])
+    return ["icon": true, "items": items, "chosen": path.isEmpty ? NSNull() : path as Any, "failed": NSNull()]
 }
 
 // MARK: - Notifications
@@ -643,11 +686,22 @@ if args.count >= 3 {
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { fail("parameters are not a JSON object: \(args[2])") }
     params = object
 }
-if !["version", "clipboard", "notifications"].contains(args[1]) && !AXIsProcessTrusted() {
-    fail("no Accessibility permission for this Channel; re-provision the Base guest (vmlab base create NAME --reprovision)")
+/// Has this Channel the Accessibility grant? A no is asked again for TRUST_WAIT: on a busy Guest TCC said no
+/// once in a series of calls over the same Channel whose others all had it.
+func trusted() -> Bool {
+    let deadline = Date().addingTimeInterval(TRUST_WAIT)
+    while !AXIsProcessTrusted() {
+        if Date() >= deadline { return false }
+        usleep(250_000)
+    }
+    return true
+}
+
+if !["version", "clipboard", "notifications"].contains(args[1]) && !trusted() {
+    fail("no Accessibility permission for this Channel (asked for \(Int(TRUST_WAIT)) s); re-provision the Base guest (vmlab base create NAME --reprovision)")
 }
 switch args[1] {
-case "version": emit(["helper": "swift", "version": VERSION, "trusted": AXIsProcessTrusted()])
+case "version": emit(["helper": "swift", "version": VERSION, "trusted": trusted()])
 case "tree": tree(params)
 case "click": click(params)
 case "press": pressCommand(params)
