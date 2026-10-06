@@ -425,6 +425,14 @@ WINDOWS_UI_LANGUAGE = (
     "'[DllImport(\"kernel32.dll\")] public static extern ushort GetUserDefaultUILanguage();')::GetUserDefaultUILanguage()).Name"
 )
 
+# What WebView2 apps do at every start (Chromium's check for a blank password): ten interactive
+# sign-ins as the desktop user with no password, each a failed one.
+BLANK_PASSWORD_SIGN_INS = (
+    "$s = Add-Type -PassThru -Name SignIn -Namespace Vmlab -MemberDefinition "
+    "'[DllImport(\"advapi32.dll\", CharSet = CharSet.Unicode)] public static extern bool LogonUser(string u, string d, string p, int t, int v, out IntPtr h);'; "
+    "$h = [IntPtr]::Zero; 1..10 | ForEach-Object { [void]$s::LogonUser($env:USERNAME, '.', '', 2, 0, [ref]$h) }"
+)
+
 # The keyboard of the desktop session's foreground window (its layout's low word, e.g. 0409 for
 # US), every keyboard the user has, and the Lab language's own one.
 WINDOWS_KEYBOARD = r'''
@@ -1170,6 +1178,20 @@ def scenario(g):
         self.assertEqual(json.loads(proc.stdout)["role"], "desktop")
         proc = self.target.vmlab("ui", "press", "ctrl+nokey", "--lab", self.target.lab)
         self.assertEqual(proc.returncode, 2, proc.stderr)
+
+    def test_10b_failed_sign_ins_do_not_lock_the_guest_user_out_of_ssh(self):
+        # Windows' default policy locks a user out after 10 failed sign-ins; sshd then cannot log
+        # it on and resets every new connection (put's scp), while calls over the master still work.
+        if self.target.os != "windows":
+            self.skipTest("Windows' account lockout")
+        tries = self.target.vmlab("exec", "--lab", self.target.lab, "--", "powershell", "-NoProfile", "-Command", BLANK_PASSWORD_SIGN_INS)
+        self.assertEqual(tries.returncode, 0, tries.stderr)
+        put = subprocess.run(
+            [sys.executable, str(zipapp_path()), "put", "~/contract-lockout-%d.txt" % os.getpid(), "--lab", self.target.lab],
+            cwd=str(self.target.root), env=self.target.env, input=b"lockout", capture_output=True, timeout=300,
+        )  # fmt: skip
+        self.assertEqual(put.returncode, 0, put.stderr)
+        self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
 
     def test_11_restore_returns_to_clean_state(self):
         self.assertPassed(*self.target.scenario("dirty.py", COMMANDS + """

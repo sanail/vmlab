@@ -94,6 +94,13 @@ public static class VmlabLsa {
 '@ -Language CSharp
 [VmlabLsa]::Store('DefaultPassword', $p.password)
 
+Say 'no account lockout'
+# WebView2 apps sign in as the user with a blank password at every start (Chromium's check for
+# one), each a failed sign-in. After 10 in 10 minutes Windows' default policy locks the user out:
+# sshd then cannot log it on and resets every new connection, and vmrun's sign-in fails.
+& net.exe accounts /lockoutthreshold:0 | Out-Null
+if ($LASTEXITCODE) { throw 'net accounts /lockoutthreshold:0 failed' }
+
 Say 'no updates (Windows, Store apps, Edge), sleep, screen saver or lock screen'
 Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoUpdate 1
 Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU' NoAutoRebootWithLoggedOnUsers 1

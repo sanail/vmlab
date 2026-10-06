@@ -25,7 +25,7 @@ from vmlab.providers.base import FAIL, OK, ExecResult, GuestError  # noqa: E402
 
 RECORD = {
     "provider": "fusion", "os": "windows", "arch": "arm64", "vm": "vmlab-base-windows-11", "vmx": "/vms/vmlab-base-windows-11.vmx",
-    "user": "tester", "installed": True, "provisioned": 6, "provisioned_id": "ea5697763a604a6eb2da486b2fc2b0d9",
+    "user": "tester", "installed": True, "provisioned": 7, "provisioned_id": "ea5697763a604a6eb2da486b2fc2b0d9",
     "snapshot": "vmlab-provisioned-ea5697763a60", "language": "en-US", "elevated": True,
 }  # fmt: skip
 

@@ -42,7 +42,7 @@ from vmlab.providers.ssh import pin_host_key, public_key
 from vmlab.providers.windows import WindowsSshChannel
 
 UTC_SINCE = 5  # the first provisioning that keeps Windows' clock in UTC
-PROVISION_VERSION = 6  # bump when provision.ps1 changes; `base create` then re-provisions
+PROVISION_VERSION = 7  # bump when provision.ps1 changes; `base create` then re-provisions
 PROBE = ["cmd", "/c", "exit 0"]
 ELEVATION_TIMEOUT = 180  # s: Windows cancels an unanswered UAC prompt after about two minutes
 POLICIES = r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"
