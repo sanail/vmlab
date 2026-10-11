@@ -927,6 +927,21 @@ class PointerTest(UiTestCase):
         self.assertEqual(moved["events"], [{"do": "keydown", "key": "alt"}, move(30, 40), {"do": "keyup", "key": "alt"}])
         self.assertEqual(released, {"button": "left", "events": [move(30, 40), dict(move(30, 40), do="up"), {"do": "keyup", "key": "shift"}]})
 
+    def test_a_scenario_drags_an_element_find_found(self):
+        self.project.scenario("found.py", """
+            def scenario(g):
+                run = g.find(text="Run", role="button", app="MyApp")["matches"][0]
+                dragged = g.drag(run, (1, 1))
+                g.check("from its middle", (dragged["from"]["x"], dragged["from"]["y"], dragged["from"]["element"]) == (250, 360, run))
+                hidden = g.find(text="Run", app="Other")["matches"][0]
+                try:
+                    g.drag(hidden, (1, 1))
+                except Exception as exc:
+                    g.check("one without bounds is refused", "no bounds" in str(exc), detail=str(exc))
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+        self.assertEqual(self.calls("pointer")[0]["expect"], {"label": "Run", "bounds": {"x": 220, "y": 350, "w": 60, "h": 20}})
+
     def test_every_held_button_is_released_and_the_modifiers_with_the_last(self):
         self.project.scenario("two.py", """
             def scenario(g):

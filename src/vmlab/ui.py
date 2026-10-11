@@ -218,6 +218,14 @@ def key_events(do, modifiers):
     return [{"do": do, "key": m} for m in modifiers]
 
 
+def middle(element, named):
+    """(x, y) of element's middle; NotClickable naming it when it has no bounds on screen."""
+    b = element.get("bounds")
+    if not b or b["w"] <= 0 or b["h"] <= 0:
+        raise NotClickable("%s has no bounds on screen" % named, "it may be hidden; wait for it to appear, or click another element")
+    return b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
+
+
 def click_events(x, y, modifiers):
     at = {"x": x, "y": y}
     return key_events("keydown", modifiers) + [dict(at, do=d) for d in ("move", "down", "up")] + key_events("keyup", modifiers[::-1])
@@ -803,11 +811,7 @@ class UI:
         matches = self.find(query)["matches"]
         if len(matches) <= index:
             raise NotClickable("no element to %s matches %s (%d found)" % (doing, query, len(matches)), "look at `vmlab ui tree` for what is on screen")
-        element = matches[index]
-        b = element["bounds"]
-        if not b or b["w"] <= 0 or b["h"] <= 0:
-            raise NotClickable("the element matching %s has no bounds on screen" % query, "it may be hidden; wait for it to appear, or click another element")
-        return element, b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
+        return (matches[index],) + middle(matches[index], "the element matching %s" % query)
 
     def _pointer(self, button, events, element=None):
         """Send events with button. With element, the helper first checks that it is what lies under
@@ -842,8 +846,8 @@ class UI:
     def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None):
         """Press the button at source, move to target in steps even moves over duration seconds, release.
 
-        source and target are each (x, y) or an element: its text, or a dict of find's fields plus
-        "index", whose middle is used. hold is a modifier chord held for the whole drag. An element
+        source and target are each (x, y) or an element, whose middle is used: one find found, or
+        its text or a dict of find's fields plus "index", found now. hold is a modifier chord held for the whole drag. An element
         at source must be what lies under the press; with timeout (seconds), the drag waits for
         both elements to be there and the source uncovered, as click does."""
         if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
@@ -866,13 +870,18 @@ class UI:
         return self._retrying("drag from %r" % (source,), timeout, attempt)
 
     def _drag_end(self, end):
-        """A drag's end as {"x", "y", "element"}: a point, or the middle of an element (text or find's fields plus "index")."""
+        """A drag's end as {"x", "y", "element"}: a point, or the middle of an element (one find found,
+        or its text or find's fields plus "index", found now)."""
         if isinstance(end, (tuple, list)) and len(end) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in end):
             return {"x": end[0], "y": end[1], "element": None}
+        if isinstance(end, dict) and "bounds" in end:  # a node: where it was when found; the press checks it is still there
+            node = dict(NODE_DEFAULTS, **end)
+            x, y = middle(node, "the %s %r" % (node.get("role", "element"), label(node)))
+            return {"x": x, "y": y, "element": node}
         fields = {"text": end} if isinstance(end, str) else dict(end) if isinstance(end, dict) else None
         index = fields.pop("index", 0) if fields is not None else 0
         if fields is None or not set(fields) <= {"text", "role", "app", "checked"}:
-            raise UsageError("a drag's ends are each (x, y), an element's text, or a dict of text, role, app, checked and index; not %r" % (end,))
+            raise UsageError("a drag's ends are each (x, y), an element find found, its text, or a dict of text, role, app, checked and index; not %r" % (end,))
         element, x, y = self._target(Query(**fields).require("drag"), index, "drag")
         return {"x": x, "y": y, "element": element}
 

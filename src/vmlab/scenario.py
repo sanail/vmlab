@@ -298,8 +298,8 @@ class Guest:
 
     def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None):
         """Press button at source, move to target in steps even moves over duration seconds, release.
-        source and target are each (x, y), an element's text, or a dict of find's fields plus "index"
-        (the element's middle); hold is a modifier chord held for the whole drag. Raises if an element
+        source and target are each (x, y), an element find found, or an element's text or a dict of
+        find's fields plus "index" (the element's middle); hold is a modifier chord held for the whole drag. Raises if an element
         at source is covered; with timeout (seconds), first waits for the elements as click does."""
         return self._ui_call(lambda contract: contract.drag(source, target, button=button, hold=hold, steps=steps, duration=duration, timeout=timeout))
 
