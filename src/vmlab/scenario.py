@@ -250,6 +250,10 @@ class Guest:
         and with a tick state (checked: True, False or "mixed")."""
         return self._ui_call(lambda contract: contract.find(ui.Query(text, role, app, checked)))
 
+    def displays(self):
+        """{"displays": [{"bounds", "scale", "primary"}]}: the Guest's Display, its bounds in Desktop pixels."""
+        return self._ui_call(lambda contract: contract.displays())
+
     def click(self, text=None, role=None, app=None, index=0, at=None, timeout=None, checked=None):
         """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing
         matches or something covers it; with timeout (seconds), first waits for it to be there and

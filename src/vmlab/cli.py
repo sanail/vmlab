@@ -292,6 +292,7 @@ def _ui_parser(sub):
     p = ui_sub.add_parser("tree", parents=[common], help="the accessibility tree of the desktop or one app")
     p.add_argument("--app")
     ui_sub.add_parser("find", parents=[common, element], help="elements by text and/or role")
+    ui_sub.add_parser("displays", parents=[common], help="the Guest's Display: its bounds in Desktop pixels and its scale")
     p = ui_sub.add_parser("click", parents=[common, element], help="click an element's middle (or --at X Y)")
     p.add_argument("--index", type=int, default=0, help="which match to click (default: the first)")
     p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="click this screen point instead")
@@ -419,6 +420,8 @@ def _ui(project, args):
         result = contract.tree(args.app)
     elif c == "find":
         result = contract.find(ui.Query(args.text, args.role, args.app, args.checked))
+    elif c == "displays":
+        result = contract.displays()
     elif c == "click":
         at = tuple(args.at) if args.at else None
         result = contract.click(ui.Query(args.text, args.role, args.app, args.checked), index=args.index, at=at, timeout=args.timeout)

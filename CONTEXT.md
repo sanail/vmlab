@@ -44,6 +44,18 @@ _Avoid_: binary, package, build
 The graphical login session inside a Linux **Guest** (GNOME on Wayland, or Xfce on X11) whose screen the UI contract drives. A **Lab** chooses one.
 _Avoid_: session (alone, which could mean a **Run**)
 
+**Display**:
+The one screen a **Guest** shows its desktop on. It has bounds in **Desktop pixels** and a **Display scale**.
+_Avoid_: screen, monitor
+
+**Desktop pixels**:
+The one coordinate space of a **Guest**'s UI on every **Guest OS**: a pixel of its screenshot is the point a click at the same coordinates lands on. Element bounds, clicks, drags and the **Display**'s bounds are all given in it.
+_Avoid_: points, logical pixels, stage coordinates (each names one OS's own space)
+
+**Display scale**:
+How many **Desktop pixels** the **Guest OS** draws per logical unit of its UI (1, 1.5, 2…). A **Lab** may set it; otherwise the **Guest** keeps the scale its **Provider** gives it.
+_Avoid_: DPI, zoom, HiDPI
+
 **Lab language**:
 The language and regional formats a **Lab**'s **Guest** shows the application and its **Scenarios** (e.g. ru-RU); system element names come in it. vmlab sets it where the **Guest OS** allows and otherwise takes it from the **Base guest**, checking that the **Guest** shows it. English (en-US) unless the **Lab** says otherwise.
 _Avoid_: locale, display language (both name one OS's part of it)
@@ -102,6 +114,8 @@ _Avoid_: test suite, smoke tests
 - A **Regression suite** restores **Clean state** once at its start; a **Scenario** may demand its own restore
 - A **Suite run** holds one **Run** per **Scenario** it executes; what a **Scenario** starts in the **Guest** ends with its **Run**, not with the **Suite run**
 - A **Scenario** closes each **Staged document** it opened; one it leaves open is closed at the end of its **Run**
+- A **Guest** has exactly one **Display**; a **Lab** has one **Display scale**
+- A pointer button a **Scenario** leaves held down is released at the end of its **Run**
 - A **Lab** has one **Lab language**; testing an application in several languages means declaring several **Labs**
 - A **Guest**'s architecture follows the **Host**'s; the other architecture is covered only where the **Guest OS** emulates it
 

@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import threading
 import time
+import types
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -126,11 +127,17 @@ def webview_window():
     return Node("frame", "MyApp", extents=(0, 0, 400, 300), children=[Node("filler", extents=(0, 0, 400, 300), children=[wrapper, closed])])
 
 
+def walk(node):
+    yield node
+    for child in node["children"]:
+        yield from walk(child)
+
+
 class TreeWalkTest(unittest.TestCase):
     def setUp(self):
         helper = load_helper()
         ui = helper.UI.__new__(helper.UI)
-        ui.Atspi, ui.S, ui.kind = Atspi, State, "x11"
+        ui.Atspi, ui.S, ui.kind, ui.ws = Atspi, State, "x11", types.SimpleNamespace(toolkit_scale=1.0)
         ui.screen, ui.windows = (1280, 800), [Window(42, (0, 0, 400, 300))]
         ui.nodes, ui.truncated = 0, False
         self.window = webview_window()
@@ -154,6 +161,16 @@ class TreeWalkTest(unittest.TestCase):
         chain = self.ui.under(50, 70)
         self.assertEqual(chain[0][0], "Run", chain)
 
+    def test_at_scale_2_toolkit_units_become_desktop_pixels(self):
+        # Wayland at scale 2: the window manager's frame already in Desktop pixels, the toolkit's extents logical.
+        self.ui.ws.toolkit_scale = 2.0
+        self.ui.windows = [Window(42, (100, 50, 800, 600))]
+        self.window.extents = (0, 0, 400, 300)
+        node = self.ui.node(self.window, self.ui.placement(self.window, 42), 1, 60)
+        [run] = [n for n in walk(node) if n["name"] == "Run"]
+        self.assertEqual(run["bounds"], {"x": 140, "y": 170, "w": 160, "h": 40})
+        self.assertEqual(self.ui.under(220, 190)[0][0], "Run")
+
 
 class TickStateTest(unittest.TestCase):
     """How AT-SPI states become a node's "checked"."""
@@ -161,7 +178,7 @@ class TickStateTest(unittest.TestCase):
     def setUp(self):
         helper = load_helper()
         ui = helper.UI.__new__(helper.UI)
-        ui.Atspi, ui.S, ui.nodes = Atspi, State, 0
+        ui.Atspi, ui.S, ui.nodes, ui.ws = Atspi, State, 0, types.SimpleNamespace(toolkit_scale=1.0)
         self.ui = ui
 
     def checked(self, role, *states):
@@ -199,6 +216,8 @@ class Editor:
     in the background, keeps a focused view with a selection. Ctrl+S writes the file `saves` seconds
     later, with a newline at its end; Ctrl+W before then asks about saving, in the window, and closes
     nothing."""
+
+    toolkit_scale = 1.0  # Desktop pixels per AT-SPI unit, as on a Display at scale 1
 
     PID = 7
 

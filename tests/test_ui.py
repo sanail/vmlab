@@ -6,6 +6,7 @@ stage-text, so the same shapes can be checked here as on real Guests (Seam 2).
 
 import json
 import os
+import struct
 import subprocess
 import threading
 import time
@@ -411,6 +412,17 @@ class UiCliTest(UiTestCase):
     def test_screenshot_writes_a_png(self):
         shot = self.ui("screenshot")
         self.assertTrue(Path(shot["path"]).read_bytes().startswith(b"\x89PNG"))
+
+    def test_displays_lists_the_guests_one_display(self):
+        self.assertEqual(self.ui("displays"), {"displays": [{"bounds": {"x": 0, "y": 0, "w": 1024, "h": 768}, "scale": 1, "primary": True}]})
+
+    def test_the_desktop_node_and_a_screenshot_cover_the_display_in_desktop_pixels(self):
+        write_whole(self.project.dir / "tree.json", json.dumps(dict(TREE, bounds={"x": 0, "y": 0, "w": 2048, "h": 1536})))
+        [display] = self.ui("displays")["displays"]
+        self.assertEqual(display["bounds"], {"x": 0, "y": 0, "w": 2048, "h": 1536})
+        self.assertEqual(self.ui("tree")["bounds"], display["bounds"])
+        png = Path(self.ui("screenshot")["path"]).read_bytes()
+        self.assertEqual(struct.unpack(">II", png[16:24]), (2048, 1536))
 
     def test_ui_on_a_stopped_guest_says_how_to_start_it(self):
         self.assertExit(self.project.vmlab("down"), 0)
@@ -1124,6 +1136,7 @@ class UiScenarioTest(UiTestCase):
                 g.check("type", g.type("abc")["typed"] == 3)
                 g.check("wait", g.wait_for(role="textarea", text="abc", timeout=5)["met"])
                 g.check("wait not met", not g.wait_for(text="Nope", timeout=0.5)["met"])
+                g.check("displays", g.displays()["displays"][0]["primary"] is True)
         """)
         r = self.project.vmlab("run")
         self.assertExit(r, 0)

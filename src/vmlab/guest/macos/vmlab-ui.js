@@ -7,6 +7,9 @@
 // keystrokes, which follow the Guest's keyboard layout; a click does not check
 // what lies under the point first; and there is no wake-up read for lazy
 // WebKit trees, nor AXManualAccessibility for Electron.
+//
+// System Events and CGEvent speak points; vmlab speaks Desktop pixels: bounds are
+// multiplied by the display's backing scale, points to click divided by it.
 
 ObjC.import("AppKit");
 ObjC.import("CoreGraphics");
@@ -27,6 +30,12 @@ const SELECT_WAIT = 2; // s for a select-all to select a Staged document's text,
 const USING = { cmd: "command down", ctrl: "control down", alt: "option down", shift: "shift down" };
 
 const events = Application("System Events");
+const SCALE = $.NSScreen.mainScreen.backingScaleFactor; // Desktop pixels per point
+
+// A rectangle in points as Desktop pixels.
+function bounds(x, y, w, h) {
+  return { x: Math.round(x * SCALE), y: Math.round(y * SCALE), w: Math.round(w * SCALE), h: Math.round(h * SCALE) };
+}
 
 function fail(message) {
   throw new Error("vmlab-ui (JXA): " + message);
@@ -79,7 +88,7 @@ function walker(maxDepth) {
       name: str(p.name) || "",
       value: str(p.value),
       description: str(p.description),
-      bounds: pos && size ? { x: Math.round(pos[0]), y: Math.round(pos[1]), w: Math.round(size[0]), h: Math.round(size[1]) } : null,
+      bounds: pos && size ? bounds(pos[0], pos[1], size[0], size[1]) : null,
       focused: p.focused === true,
       enabled: p.enabled !== false,
       checked: checked(element, p),
@@ -112,7 +121,7 @@ function extrasBar(proc) {
 
 function screenBounds() {
   const frame = $.NSScreen.mainScreen.frame;
-  return { x: 0, y: 0, w: Math.round(frame.size.width), h: Math.round(frame.size.height) };
+  return bounds(0, 0, frame.size.width, frame.size.height);
 }
 
 function tree(params) {
@@ -142,7 +151,7 @@ function tree(params) {
 }
 
 function click(params) {
-  const point = { x: params.x, y: params.y };
+  const point = { x: params.x / SCALE, y: params.y / SCALE };
   for (const type of [$.kCGEventMouseMoved, $.kCGEventLeftMouseDown, $.kCGEventLeftMouseUp]) {
     $.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent(null, type, point, $.kCGMouseButtonLeft));
     delay(0.01);
@@ -412,6 +421,7 @@ function run(argv) {
   switch (command) {
     case "version": result = { helper: "jxa", version: VERSION, trusted: $.AXIsProcessTrusted() }; break;
     case "tree": result = tree(params); break;
+    case "displays": result = { displays: [{ bounds: screenBounds(), scale: SCALE, primary: true }] }; break;
     case "click": result = click(params); break;
     case "press": press(params.key, params.modifiers || []); result = { key: params.key, modifiers: params.modifiers || [] }; break;
     case "type": events.keystroke(params.text); result = { typed: Array.from(params.text).length }; break;

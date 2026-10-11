@@ -10,7 +10,8 @@ editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fa
                                     # application node's "trayicon" node is its Tray icon,
                                     # whose "menuitem" children (with "enabled", "checked" and
                                     # their own children) are its Tray menu; the root's
-                                    # "tray_detail" (a reason) shows no Tray icons at all
+                                    # "tray_detail" (a reason) shows no Tray icons at all, and
+                                    # its "bounds" are the Display's (default 1024x768, scale 1)
     notifications = "notifications.json"  # Notifications the Guest's OS recorded, relative to the
                                     # config file: a list of {"app", "title", "body", "time"}, time
                                     # in ISO 8601 (the Fake's Guest clock is the Host's); read on
@@ -41,6 +42,7 @@ from vmlab.home import vmlab_home
 from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 
 DEFAULT_TREE = {"role": "desktop", "name": "", "children": []}
+DEFAULT_DISPLAY = {"x": 0, "y": 0, "w": 1024, "h": 768}  # the Display's bounds, unless the scripted desktop has its own
 DEFAULT_CHANNELS = ["ssh", "exec"]
 FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are written (under fs, as every Guest path)
 OPTIONS = (
@@ -168,7 +170,8 @@ class FakeProvider(Provider):
 
     def screenshot(self, dest):
         self._record("screenshot")
-        dest.write_bytes(_placeholder_png())
+        screen = self._display_bounds()
+        dest.write_bytes(_placeholder_png(screen["w"], screen["h"]))
 
     @classmethod
     def validate_options(cls, config_path, key, options, os_name):
@@ -226,7 +229,9 @@ class FakeProvider(Provider):
             if params.get("app"):  # by the app's name or bundle id, as on macOS
                 wanted = params["app"].lower()
                 apps = [a for a in apps if a.get("role") == "application" and wanted in (a.get("name", "").lower(), (a.get("bundle_id") or "").lower())]
-            return dict(tree, children=apps)
+            return dict(tree, bounds=self._display_bounds(), children=apps)
+        if command == "displays":
+            return {"displays": [{"bounds": self._display_bounds(), "scale": 1, "primary": True}]}
         if command == "click":
             cover = _cover(self._scripted_tree(), params.get("expect", {}).get("bounds"))
             if cover:
@@ -340,6 +345,9 @@ class FakeProvider(Provider):
             return DEFAULT_TREE
         key = "labs.%s.fake.ui_tree" % self.lab.name
         return _read_tree(self.project.vmlab_dir / name, self.project.config_path, key)
+
+    def _display_bounds(self):
+        return self._scripted_tree().get("bounds") or DEFAULT_DISPLAY
 
     def _ui_state(self):
         path = self.fs / "ui-state.json"
@@ -460,11 +468,12 @@ def _read_notifications(path, config_path, key):
     return posted
 
 
-def _placeholder_png():
-    """A valid 1x1 grey PNG."""
+def _placeholder_png(width, height):
+    """A valid grey PNG of width x height."""
 
     def chunk(kind, data):
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
-    header = struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(b"\x00\x80")) + chunk(b"IEND", b"")
+    header = struct.pack(">IIBBBBB", width, height, 8, 0, 0, 0, 0)
+    rows = (b"\x00" + b"\x80" * width) * height
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b"")

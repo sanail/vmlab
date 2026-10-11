@@ -22,6 +22,7 @@ with a Lab that sets session = "x11".
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -307,10 +308,9 @@ def scenario(g):
 # Tick states, against a window of the Guest's own making (checks_fixture_*), started as TRAY's fixture is
 # under a name of its own, which is the app's name and its window's title. SOURCE is its source.
 CHECKS_FIXTURES = {"linux": "checks_fixture_linux.py", "macos": "checks_fixture_macos.swift", "windows": "checks_fixture_windows.ps1"}
-CHECKS = r'''
+# Starts the checks fixture (SOURCE) as the app NAME.
+CHECKS_START = r'''
 NAME = "vmlab-chk-" + uuid.uuid4().hex[:4]  # within the 15 characters of a Linux process's name
-EXPECTED = [("Pictures", "checkbox", True), ("Music", "checkbox", False), ("Some", "checkbox", "mixed"),
-            ("Light", "radiobutton", True), ("Dark", "radiobutton", False), ("Save", "button", None)]
 
 def start(g):
     if g.os == "windows":
@@ -324,6 +324,10 @@ def start(g):
         return g.spawn([exe, NAME])
     g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
     return g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), NAME])
+'''
+CHECKS = CHECKS_START + r'''
+EXPECTED = [("Pictures", "checkbox", True), ("Music", "checkbox", False), ("Some", "checkbox", "mixed"),
+            ("Light", "radiobutton", True), ("Dark", "radiobutton", False), ("Save", "button", None)]
 
 def scenario(g):
     fixture = start(g)
@@ -343,6 +347,58 @@ def scenario(g):
     g.check("and is met once a click ticked it", ticked["met"], detail=ticked)
     fixture.stop()
 '''
+
+
+# Desktop pixels: the Display, the desktop node and a screenshot share one size, and a box clicked
+# at its bounds' centre (the checks fixture's Music) ticks and shows the change at those bounds in
+# the screenshots, which the test compares. The Fake draws nothing: FAKE stops after the size.
+PIXELS = CHECKS_START + r'''
+def scenario(g):
+    displays = g.displays()["displays"]
+    g.check("one primary Display with a scale", len(displays) == 1 and displays[0]["primary"] is True and displays[0]["scale"] > 0, detail=displays)
+    display = displays[0]
+    g.check("the desktop node covers the Display", g.tree(app=NAME)["bounds"] == display["bounds"], detail=display)
+    g.screenshot("display")
+    if FAKE:
+        g.check("geometry", True, detail={"display": display})
+        return
+    fixture = start(g)
+    up = g.wait_for(text="Music", role="checkbox", app=NAME, checked=False, timeout=60)
+    g.check("the fixture's window is up", up["met"], detail=up)
+    box = up["matches"][0]["bounds"]
+    window = g.find(role="window", app=NAME)["matches"][0]["bounds"]
+    x, y = box["x"] + box["w"] // 2, box["y"] + box["h"] // 2
+    clicked = g.click(at=(x, y))
+    g.check("click(at=) clicks the point given", (clicked["x"], clicked["y"]) == (x, y), detail=clicked)
+    ticked = g.wait_for(text="Music", role="checkbox", app=NAME, checked=True, timeout=10)
+    g.check("a click at the box's bounds' centre ticks it", ticked["met"], detail=ticked)
+    g.screenshot("ticked")
+    g.click(at=(x, y))
+    unticked = g.wait_for(text="Music", role="checkbox", app=NAME, checked=False, timeout=10)
+    g.check("and again unticks it", unticked["met"], detail=unticked)
+    g.screenshot("unticked")
+    g.check("geometry", True, detail={"display": display, "box": box, "window": window})
+    fixture.stop()
+'''
+
+
+def screen_pixels(png):
+    """(width, height, pixel(x, y) -> bytes) of a PNG screenshot, decoded by the Host's sips."""
+    with tempfile.TemporaryDirectory() as tmp:
+        bmp = Path(tmp) / "screen.bmp"
+        subprocess.run(["sips", "-s", "format", "bmp", str(png), "--out", str(bmp)], check=True, capture_output=True)
+        data = bmp.read_bytes()
+    offset, = struct.unpack("<I", data[10:14])
+    width, height, _, bits = struct.unpack("<iiHH", data[18:30])
+    size, stride = bits // 8, (width * bits // 8 + 3) // 4 * 4
+    rows_down = height < 0  # a BMP's rows run bottom up unless its height is negative
+
+    def pixel(x, y):
+        row = y if rows_down else abs(height) - 1 - y
+        at = offset + row * stride + x * size
+        return data[at:at + size]
+
+    return width, abs(height), pixel
 
 
 # Notifications, each sent by a fixture of the Guest's own that installs nothing: macOS osascript
@@ -1161,6 +1217,36 @@ def scenario(g):
             self.skipTest("the Fake's tick states are scripted: tests/test_ui.py covers them")
         source = (Path(__file__).resolve().parent / CHECKS_FIXTURES[self.target.os]).read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_checks.py", UI + "SOURCE = %r\n" % source + CHECKS))
+
+    @ui
+    def test_09c3_ui_bounds_screenshots_and_clicks_are_in_desktop_pixels(self):
+        fake = self.target.provider == "fake"
+        source = "" if fake else (Path(__file__).resolve().parent / CHECKS_FIXTURES[self.target.os]).read_text(encoding="utf-8")
+        proc, report = self.target.scenario("ui_pixels.py", UI + "SOURCE = %r\nFAKE = %r\n" % (source, fake) + PIXELS)
+        self.assertPassed(proc, report)
+        [scenario] = report["scenarios"]
+        [geometry] = [c["detail"] for c in scenario["checks"] if c["name"] == "geometry"]
+        shots = [Path(report["run_dir"]) / s for s in scenario["screenshots"]]
+        display = geometry["display"]["bounds"]
+        with open(shots[0], "rb") as png:
+            self.assertEqual(struct.unpack(">II", png.read(24)[16:24]), (display["w"], display["h"]), "the screenshot's size is the Display's")
+        if fake:
+            return
+        # The pixels that the untick changed, within the fixture's window: the box's tick, centred in its bounds.
+        box, window = geometry["box"], geometry["window"]
+        (width, height, ticked), (_, _, unticked) = screen_pixels(shots[1]), screen_pixels(shots[2])
+        changed = [
+            (x, y)
+            for y in range(max(window["y"], 0), min(window["y"] + window["h"], height))
+            for x in range(max(window["x"], 0), min(window["x"] + window["w"], width))
+            if ticked(x, y) != unticked(x, y)
+        ]
+        self.assertTrue(changed, "unticking changed no pixel in the window %s" % window)
+        cx, cy = sum(x for x, _ in changed) / len(changed), sum(y for _, y in changed) / len(changed)
+        self.assertTrue(
+            box["x"] <= cx < box["x"] + box["w"] and box["y"] <= cy < box["y"] + box["h"],
+            "the changed pixels centre on (%d, %d), outside the box's bounds %s" % (cx, cy, box),
+        )
 
     @ui
     def test_09d_ui_notifications_are_read_and_waited_for(self):

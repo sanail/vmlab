@@ -6,10 +6,10 @@ commands and shapes); it exits non-zero with a message on stderr when it
 cannot do what was asked.
 
 macOS: vmlab-ui, a Swift helper (Accessibility + CGEvent) compiled into
-MACOS_HELPER when the Base guest is provisioned. Where it is missing (a Base
-guest provisioned by an older vmlab), the JXA fallback guest/macos/vmlab-ui.js
-is sent to osascript on stdin with every call: slower, and typing depends on
-the keyboard layout. VMLAB_UI_HELPER=jxa forces the fallback, to test it.
+MACOS_HELPER when the Base guest is provisioned. Where it is missing, or older
+than MACOS_PIXELS_VERSION (a Base guest provisioned by an older vmlab), the JXA
+fallback guest/macos/vmlab-ui.js is sent to osascript on stdin with every call:
+slower, and typing depends on the keyboard layout. VMLAB_UI_HELPER=jxa forces the fallback, to test it.
 
 Linux: guest/linux/vmlab-ui.py, sent to the Guest's python3 on stdin with
 every call, so it never lags behind the Host. It reads AT-SPI and acts through
@@ -32,6 +32,7 @@ from vmlab.providers.base import ChannelError, GuestError
 from vmlab.providers.windows import helper_call
 
 MACOS_HELPER = "/usr/local/vmlab/bin/vmlab-ui"
+MACOS_PIXELS_VERSION = 2  # vmlab-ui's first version in Desktop pixels; an older one takes and gives points
 MISSING = 127
 # exit 127 when the helper is not installed, whatever the Channel does with a missing program
 MACOS_GUARD = 'h=%s; [ -x "$h" ] || exit %d; exec "$h" "$@"' % (MACOS_HELPER, MISSING)
@@ -73,9 +74,15 @@ class MacHelper:
     def __init__(self, provider):
         self.provider = provider
         self.jxa = os.environ.get("VMLAB_UI_HELPER") == "jxa"
+        self.version_checked = self.jxa
 
     def call(self, command, params, timeout):
         args = [command, json.dumps(params)]
+        if not self.version_checked:
+            result = self.provider.exec(["/bin/sh", "-c", MACOS_GUARD, "sh", "version", "{}"], timeout)
+            info = None if result.code == MISSING else _result(result, "version", "vmlab-ui")
+            self.jxa = info is None or info.get("version", 0) < MACOS_PIXELS_VERSION
+            self.version_checked = True
         if not self.jxa:
             result = self.provider.exec(["/bin/sh", "-c", MACOS_GUARD, "sh"] + args, timeout)
             if "unknown command %s" % command not in result.stderr:
@@ -101,6 +108,8 @@ class MacHelper:
                 continue  # doctor reports the Channel itself
             if info is None:
                 return False, "vmlab-ui is not installed; UI commands use the slower JXA fallback"
+            if info.get("version", 0) < MACOS_PIXELS_VERSION:
+                return False, "vmlab-ui %s predates Desktop pixels; UI commands use the slower JXA fallback" % info.get("version")
             version = info.get("version")
             (trusted if info.get("trusted") else untrusted).append(channel.name)
         if untrusted:

@@ -42,6 +42,8 @@ Traps (README: "Linux Guests with VMware Fusion"):
   file holds what the view shows (or after SAVE_WAIT).
 - Registrations of apps that no longer answer would cost AT-SPI's default
   timeout each: timeouts are short.
+- On Wayland, stage and toolkit coordinates are logical: they are multiplied by
+  the Display scale into Desktop pixels, and a point to click is divided back.
 """
 
 import json
@@ -334,6 +336,18 @@ class WaylandShell:
             fail("vmlab's GNOME Shell extension (vmlab-ui@vmlab) is not running; %s" % REPROVISION)
         if version != EXTENSION_VERSION:
             fail("vmlab's GNOME Shell extension is version %s, this vmlab needs %s; %s" % (version, EXTENSION_VERSION, REPROVISION))
+        self.scale = self.stage_scale = self.toolkit_scale = 1.0
+        try:
+            state = self.bus.call_sync(
+                "org.gnome.Mutter.DisplayConfig", "/org/gnome/Mutter/DisplayConfig", "org.gnome.Mutter.DisplayConfig",
+                "GetCurrentState", None, None, Gio.DBusCallFlags.NONE, 5000, None,
+            ).unpack()  # fmt: skip
+        except GLib.Error as exc:
+            fail("GNOME Shell does not tell the display's scale: %s" % exc.message)
+        primary = next((m for m in state[2] if m[4]), state[2][0] if state[2] else None)
+        if primary:
+            self.scale = self.toolkit_scale = primary[2]
+            self.stage_scale = primary[2] if state[3].get("layout-mode", 1) == 1 else 1.0  # 1: logical, 2: physical
 
     def _call(self, method, signature=None, *args, timeout_ms=30000):
         params = self.GLib.Variant("(%s)" % signature, args) if signature else None
@@ -347,20 +361,24 @@ class WaylandShell:
         return "vmlab GNOME Shell extension %d" % EXTENSION_VERSION
 
     def state(self):
-        """(screen (w, h), windows bottom to top)."""
+        """(screen (w, h), windows bottom to top), in Desktop pixels."""
         data = json.loads(self._call("Windows")[0])
+
+        def px(values):
+            return [round(v * self.stage_scale) for v in values]
+
         # Meta.WindowType: 1 desktop, 2 dock
         windows = [
-            Window(w["id"], w["pid"], w["title"], w["frame"], w["buffer"], w["focused"], w["hidden"], w.get("type") in (1, 2))
+            Window(w["id"], w["pid"], w["title"], px(w["frame"]), px(w["buffer"]), w["focused"], w["hidden"], w.get("type") in (1, 2))
             for w in data["windows"]
         ]
-        return tuple(data["screen"]), windows
+        return tuple(px(data["screen"])), windows
 
     def activate(self, window):
         self._call("Activate", "t", window.id)
 
     def click(self, x, y):
-        self._call("Click", "dd", float(x), float(y))
+        self._call("Click", "dd", x / self.stage_scale, y / self.stage_scale)
 
     def press(self, key, modifiers):
         self._call("Keys", "au", [EVDEV[m] for m in modifiers] + [EVDEV[key]])
@@ -389,6 +407,14 @@ class X11:
         except Exception as exc:
             fail("cannot open the X display %s: %s" % (os.environ.get("DISPLAY"), exc))
         self.root = self.display.screen().root
+        # ponytail: toolkits are taken to report pixels; unproven at an Xfce scale other than 1
+        self.stage_scale = self.toolkit_scale = 1.0
+
+    @property
+    def scale(self):
+        """Xfce's window scaling, which GTK follows."""
+        found = output(["xfconf-query", "-c", "xsettings", "-p", "/Gdk/WindowScalingFactor"])
+        return float(found) if found and found.strip().isdigit() else 1.0
 
     def describe(self):
         return "xdotool"
@@ -612,12 +638,13 @@ class UI:
             title = window.get_name() or ""
         except Exception:
             return Atspi.CoordType.SCREEN, (0, 0)
+        k = self.ws.toolkit_scale
         mine = [w for w in reversed(self.windows) if w.pid == pid and not w.hidden]
         for pool in ([w for w in mine if w.title == title], mine):
             for w in pool:
                 for x, y, width, height in (w.frame, w.buffer):
-                    if abs(width - ext.width) <= 2 and abs(height - ext.height) <= 2:
-                        return Atspi.CoordType.WINDOW, (x - ext.x, y - ext.y)
+                    if abs(width - ext.width * k) <= 2 * k and abs(height - ext.height * k) <= 2 * k:
+                        return Atspi.CoordType.WINDOW, (x - ext.x * k, y - ext.y * k)
         # A window the window manager does not know by this app and size: trust the toolkit.
         return Atspi.CoordType.SCREEN, (0, 0)
 
@@ -631,7 +658,8 @@ class UI:
             return None
         if e.x <= -(1 << 30) or e.y <= -(1 << 30) or not (0 <= e.width < 1 << 16 and 0 <= e.height < 1 << 16):
             return None  # "no position", or garbage from a widget that is not laid out
-        return {"x": e.x + dx, "y": e.y + dy, "w": e.width, "h": e.height}
+        k = self.ws.toolkit_scale
+        return {"x": round(e.x * k + dx), "y": round(e.y * k + dy), "w": round(e.width * k), "h": round(e.height * k)}
 
     def text(self, accessible):
         Text = self.Atspi.Text
@@ -1103,6 +1131,9 @@ def main(argv):
         emit({"helper": "linux", "version": VERSION, "session": kind, "input": ui.ws.describe(), "trusted": True})
     elif command == "tree":
         ui.tree(params)
+    elif command == "displays":
+        width, height = ui.screen
+        emit({"displays": [{"bounds": {"x": 0, "y": 0, "w": width, "h": height}, "scale": ui.ws.scale, "primary": True}]})
     elif command == "click":
         ui.click(params)
     elif command == "press":

@@ -17,6 +17,9 @@ state: true, false or "mixed" (a tri-state box in its middle state); null where 
 has none. An unticked menu item may read null where the OS does not tell a checkable one
 apart: always on macOS, and on Windows in menus without UI Automation's TogglePattern.
 
+Bounds, like every coordinate the contract takes or returns, are in Desktop pixels: a pixel
+of the Guest's screenshot is the point a click at the same coordinates lands on.
+
 The root has role "desktop" and "truncated" (true when a size limit cut the
 tree short); its children are applications (with "pid"), whose children are
 their windows and, on macOS, their Tray icons (menubaritem). A Tray menu is read
@@ -724,6 +727,11 @@ class UI:
 
     def find(self, query):
         return {"matches": query.require("find").matches(self.tree(query.app))}
+
+    def displays(self):
+        """{"displays": [{"bounds", "scale", "primary"}]}: one entry, since a Guest has one Display."""
+        found = self._call("displays", {})["displays"]
+        return {"displays": [{k: d[k] for k in ("bounds", "scale", "primary")} for d in found]}
 
     def click(self, query=None, index=0, at=None, timeout=None):
         """Click the index-th match's middle, refusing if something else is on top of it; or click at (x, y).

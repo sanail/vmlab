@@ -10,6 +10,7 @@
 // Commands:
 //   version
 //   tree        {"app": name?, "depth": n?}
+//   displays    {}: [{"bounds", "scale", "primary"}], the one display
 //   click       {"x": n, "y": n, "expect": {"label": s?, "bounds": {x,y,w,h}?}?}
 //   press       {"key": name, "modifiers": [cmd|ctrl|alt|shift]}
 //   type        {"text": s}: returns once the focused element holds s (see awaitTyped)
@@ -29,6 +30,9 @@
 // - AXManualAccessibility turns the tree on in Chromium/Electron apps; WebKit
 //   rejects it (-25205). It is set best effort, and the retry above is what
 //   makes WebKit work.
+// - Accessibility and CGEvent speak points; vmlab speaks Desktop pixels, the
+//   screenshot's. Bounds are multiplied by the display's backing scale, points
+//   to click divided by it.
 // - Keys are sent by physical key code, so chords work on any keyboard layout;
 //   text is typed as Unicode strings, also independent of the layout.
 
@@ -37,7 +41,7 @@ import ApplicationServices
 import Foundation
 import SQLite3
 
-let VERSION = 1
+let VERSION = 2  // 2: Desktop pixels (uihelpers.MACOS_PIXELS_VERSION)
 let MAX_NODES = 5000
 let STAGE = "vmlab-stage-"  // + 8 hex digits: the name of every file stage-text opens
 let SELECT_WAIT = 2.0  // s for a select-all to select a Staged document's text, before it is pressed again
@@ -90,9 +94,14 @@ func frame(_ element: AXUIElement) -> CGRect? {
     return CGRect(origin: origin, size: extent)
 }
 
+/// Desktop pixels per point: the main display's backing scale, which screencapture's pixels follow.
+let SCALE: CGFloat = NSScreen.main?.backingScaleFactor ?? 1
+
+/// A rectangle in points as Desktop pixels.
 func bounds(_ rect: CGRect?) -> Any {
     guard let r = rect else { return NSNull() }
-    return ["x": Int(r.minX.rounded()), "y": Int(r.minY.rounded()), "w": Int(r.width.rounded()), "h": Int(r.height.rounded())]
+    func px(_ v: CGFloat) -> Int { Int((v * SCALE).rounded()) }
+    return ["x": px(r.minX), "y": px(r.minY), "w": px(r.width), "h": px(r.height)]
 }
 
 func label(_ element: AXUIElement) -> String {
@@ -234,6 +243,10 @@ func screenFrame() -> CGRect {
     CGDisplayBounds(CGMainDisplayID())
 }
 
+func displays() {
+    emit(["displays": [["bounds": bounds(screenFrame()), "scale": Double(SCALE), "primary": true]]])
+}
+
 // MARK: - Input
 
 let KEY_CODES: [String: CGKeyCode] = [
@@ -366,8 +379,11 @@ func owner(_ element: AXUIElement) -> String {
 func click(_ params: [String: Any]) {
     guard let x = params["x"] as? Double ?? (params["x"] as? Int).map(Double.init),
           let y = params["y"] as? Double ?? (params["y"] as? Int).map(Double.init) else { fail("click needs x and y") }
-    let point = CGPoint(x: x, y: y)
-    guard screenFrame().contains(point) else { fail("(\(Int(x)), \(Int(y))) is off the screen \(screenFrame())") }
+    let point = CGPoint(x: x / SCALE, y: y / SCALE)
+    guard screenFrame().contains(point) else {
+        let size = screenFrame().size
+        fail("(\(Int(x)), \(Int(y))) is off the screen (\(Int(size.width * SCALE))x\(Int(size.height * SCALE)))")
+    }
     let under = elementAt(point)
     if let expect = params["expect"] as? [String: Any] {
         // Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
@@ -714,12 +730,13 @@ func trusted() -> Bool {
     return true
 }
 
-if !["version", "clipboard", "notifications"].contains(args[1]) && !trusted() {
+if !["version", "displays", "clipboard", "notifications"].contains(args[1]) && !trusted() {
     fail("no Accessibility permission for this Channel (asked for \(Int(TRUST_WAIT)) s); re-provision the Base guest (vmlab base create NAME --reprovision)")
 }
 switch args[1] {
 case "version": emit(["helper": "swift", "version": VERSION, "trusted": trusted()])
 case "tree": tree(params)
+case "displays": displays()
 case "click": click(params)
 case "press": pressCommand(params)
 case "type": typeCommand(params)

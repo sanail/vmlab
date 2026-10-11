@@ -45,7 +45,7 @@ For macOS and Linux, `base create` asks before it downloads; without a terminal 
 
 `vmlab init` in the project root creates `.vmlab/vmlab.toml` (a commented template), `.vmlab/scenarios/`, a `.gitignore` for `runs/`, the pinned `.vmlab/vmlab.pyz` and `.vmlab/vmlab`, which runs it. It never overwrites what exists. Commit `.vmlab/` with the zipapp, so the suite runs offline; a project that leaves `vmlab.pyz` out of git still runs: `.vmlab/vmlab` downloads the release it pins and checks its sha256.
 
-`.vmlab/` already exists, but `vmlab version` is older than the skill's (`SKILL_DIR/scripts/vmlab version`) and the user wants newer features: `SKILL_DIR/scripts/vmlab self-update` in the project root pins the skill's version (it refuses to downgrade).
+`.vmlab/` already exists, but `vmlab version` is older than the skill's (`SKILL_DIR/scripts/vmlab version`) and the user wants newer features: `SKILL_DIR/scripts/vmlab self-update` in the project root pins the skill's version (it refuses to downgrade). Across a major version, Scenarios may need changes: [migrating.md](migrating.md).
 
 ## 5. Labs and the app recipe
 

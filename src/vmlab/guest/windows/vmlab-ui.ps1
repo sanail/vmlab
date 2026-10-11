@@ -19,7 +19,8 @@
 #   (AttachThreadInput) first, where the switch is allowed. No Alt tap: in an
 #   app with a menu bar it enters the menu, and the next chord goes there.
 # - The helper is per-monitor DPI aware, so the tree, clicks and screenshots
-#   all use physical pixels. Unaware, Windows scales some answers and not others.
+#   all use physical pixels, which are Desktop pixels. Unaware, Windows scales
+#   some answers and not others.
 # - Chords are sent as virtual keys, which keep their meaning on any keyboard
 #   layout (Ctrl+C copies under a Cyrillic layout too); punctuation keys are the
 #   US layout's. Text is sent as Unicode characters, which need no layout at all.
@@ -187,6 +188,7 @@ public static class Helper {
         switch (command) {
             case "version": return Version();
             case "tree": return Tree(p);
+            case "displays": return Obj("displays", new object[] { Obj("bounds", Screen(), "scale", Scale(), "primary", true) });
             case "click": return Click(p);
             case "press": {
                 string key = Str(p, "key");

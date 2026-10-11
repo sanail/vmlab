@@ -19,10 +19,10 @@ from harness import VmlabTestCase
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from vmlab import guestos, ui  # noqa: E402
+from vmlab import guestos, ui, uihelpers  # noqa: E402
 from vmlab.config import OSES, UsageError  # noqa: E402
 from vmlab.providers import spawning  # noqa: E402
-from vmlab.providers.base import NO_FILE  # noqa: E402
+from vmlab.providers.base import NO_FILE, ExecResult  # noqa: E402
 
 WINDOWS_FAKE_LAB = """
 [labs.win]
@@ -207,6 +207,32 @@ class ChoicesTest(unittest.TestCase):
 
     def test_a_fake_linux_lab_keeps_linuxs_process_name_probe(self):
         self.assertIsInstance(guestos.FakeGuestOS(guestos.for_os("linux")).probes(), ui.LinuxProbes)
+
+
+class MacHelperTest(unittest.TestCase):
+    """vmlab-ui is asked its version once: one from before Desktop pixels speaks points, so its calls go to the JXA fallback."""
+
+    def helper(self, version):
+        calls = []
+
+        class Provider:
+            def exec(self, argv, timeout, stdin=None):
+                calls.append("jxa" if stdin else argv[4])
+                return ExecResult(argv, 0, '{"version": %d}' % version if argv[4:5] == ["version"] else '{"x": 1}', "")
+
+        return uihelpers.MacHelper(Provider()), calls
+
+    def test_a_helper_in_desktop_pixels_takes_the_calls(self):
+        helper, calls = self.helper(uihelpers.MACOS_PIXELS_VERSION)
+        helper.call("click", {}, 5)
+        helper.call("click", {}, 5)
+        self.assertEqual(calls, ["version", "click", "click"])
+
+    def test_a_helper_in_points_hands_the_calls_to_the_fallback(self):
+        helper, calls = self.helper(uihelpers.MACOS_PIXELS_VERSION - 1)
+        helper.call("click", {}, 5)
+        helper.call("click", {}, 5)
+        self.assertEqual(calls, ["version", "jxa", "jxa"])
 
 
 if __name__ == "__main__":
