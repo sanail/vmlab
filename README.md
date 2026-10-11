@@ -426,4 +426,4 @@ Every command that acts on Labs takes `--lab LAB`; `deploy`, `up`, `down`, `stat
 
 ## License
 
-MIT, see `LICENSE`. The bundled tomli (`src/vmlab/_vendor/tomli/`) keeps its own MIT license.
+Apache-2.0, see `LICENSE`. The bundled tomli (`src/vmlab/_vendor/tomli/`) keeps its own MIT license.

@@ -5,6 +5,6 @@
   "author": { "name": "Nail Samatov" },
   "homepage": "https://github.com/sanail/vmlab",
   "repository": "https://github.com/sanail/vmlab",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["testing", "virtual-machines", "desktop-apps", "tart", "vmware-fusion"]
 }
