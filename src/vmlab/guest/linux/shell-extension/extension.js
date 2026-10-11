@@ -9,7 +9,9 @@
 //   Version() -> u
 //   Windows() -> s          JSON {"screen": [w, h], "windows": [...]}, bottom to top
 //   Activate(t id) -> b     raise and focus a window
-//   Click(d x, d y)         a left click at a point, through a virtual pointer
+//   Pointer(s events)       JSON [{"do": move|down|up|keydown|keyup|wait, "x", "y", "button", "key", "s"}]:
+//                           moves to stage points, presses and releases a button (Clutter's
+//                           number) or an evdev key, waits s seconds
 //   Keys(au codes)          press evdev key codes in order, release them in reverse
 //   Type(s text)            text into the focused window, whatever the keyboard layout
 //   ClipboardGet() -> s     JSON {"text": s or null}
@@ -27,7 +29,7 @@ import Meta from 'gi://Meta';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-const VERSION = 1;
+const VERSION = 2;
 const PACE_MS = 15;  // between input events, and before a call that sent some returns
 const KEY_ENTER = 28, KEY_TAB = 15;
 
@@ -35,7 +37,7 @@ const IFACE = `<node><interface name="org.vmlab.Shell">
   <method name="Version"><arg type="u" direction="out"/></method>
   <method name="Windows"><arg type="s" direction="out"/></method>
   <method name="Activate"><arg type="t" direction="in"/><arg type="b" direction="out"/></method>
-  <method name="Click"><arg type="d" direction="in"/><arg type="d" direction="in"/></method>
+  <method name="Pointer"><arg type="s" direction="in"/></method>
   <method name="Keys"><arg type="au" direction="in"/></method>
   <method name="Type"><arg type="s" direction="in"/></method>
   <method name="ClipboardGet"><arg type="s" direction="out"/></method>
@@ -120,12 +122,20 @@ export default class VmlabUiExtension {
         return true;
     }
 
-    ClickAsync([x, y], invocation) {
-        this._paced(invocation, [
-            () => this._pointer.notify_absolute_motion(this._now(), x, y),
-            () => this._pointer.notify_button(this._now(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.PRESSED),
-            () => this._pointer.notify_button(this._now(), Clutter.BUTTON_PRIMARY, Clutter.ButtonState.RELEASED),
-        ]);
+    PointerAsync([json], invocation) {
+        const steps = [];
+        for (const e of JSON.parse(json)) {
+            if (e.do === 'move')
+                steps.push(() => this._pointer.notify_absolute_motion(this._now(), e.x, e.y));
+            else if (e.do === 'down' || e.do === 'up')
+                steps.push(() => this._pointer.notify_button(this._now(), e.button, e.do === 'down' ? Clutter.ButtonState.PRESSED : Clutter.ButtonState.RELEASED));
+            else if (e.do === 'keydown' || e.do === 'keyup')
+                steps.push(() => this._keyboard.notify_key(this._now(), e.key, e.do === 'keydown' ? Clutter.KeyState.PRESSED : Clutter.KeyState.RELEASED));
+            else if (e.do === 'wait')
+                for (let n = Math.round(e.s * 1000 / PACE_MS); n > 0; n--)
+                    steps.push(() => {});
+        }
+        this._paced(invocation, steps);
     }
 
     _keySteps(codes) {

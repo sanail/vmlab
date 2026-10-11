@@ -56,7 +56,7 @@ import uuid
 from datetime import datetime, timezone
 
 VERSION = 1
-EXTENSION_VERSION = 1  # of shell-extension/, installed at provisioning
+EXTENSION_VERSION = 2  # of shell-extension/, installed at provisioning
 MAX_NODES = 5000
 MAX_TEXT = 100000  # characters of an element's text
 ATSPI_TIMEOUT_MS = 500
@@ -87,6 +87,8 @@ EVDEV = dict(
     period=52, slash=53, semicolon=39, quote=40, backslash=43, grave=41, leftbracket=26, rightbracket=27,
     ctrl=29, alt=56, shift=42, cmd=125,
 )  # fmt: skip
+BUTTONS = {"left": 1, "middle": 2, "right": 3, "back": 8, "forward": 9}  # X11's numbers, which Clutter's share
+MODIFIERS = ("ctrl", "alt", "shift", "cmd")
 # X keysym names, for xdotool; letters and digits are their own names
 KEYSYMS = dict(
     {"f%d" % n: "F%d" % n for n in range(1, 13)},
@@ -147,6 +149,16 @@ def session():
         fail("the %s session has not published its environment yet; wait for the desktop" % kind)
     os.environ.update(env)
     return kind
+
+
+def click_events(x, y, modifiers=()):
+    """A click's pointer events (vmlab.ui), holding modifiers around it."""
+    at = {"x": x, "y": y}
+    return (
+        [{"do": "keydown", "key": m} for m in modifiers]
+        + [dict(at, do=d) for d in ("move", "down", "up")]
+        + [{"do": "keyup", "key": m} for m in reversed(modifiers)]
+    )
 
 
 def staged_path(path):
@@ -377,8 +389,17 @@ class WaylandShell:
     def activate(self, window):
         self._call("Activate", "t", window.id)
 
-    def click(self, x, y):
-        self._call("Click", "dd", x / self.stage_scale, y / self.stage_scale)
+    def pointer(self, button, events):
+        """events (vmlab.ui) with button's number; points in stage coordinates, keys as evdev codes."""
+        stage = []
+        for e in events:
+            e = dict(e, button=button)
+            if "x" in e:
+                e.update(x=e["x"] / self.stage_scale, y=e["y"] / self.stage_scale)
+            if "key" in e:
+                e["key"] = EVDEV[e["key"]]
+            stage.append(e)
+        self._call("Pointer", "s", json.dumps(stage))
 
     def press(self, key, modifiers):
         self._call("Keys", "au", [EVDEV[m] for m in modifiers] + [EVDEV[key]])
@@ -472,8 +493,19 @@ class X11:
         self.root.send_event(message, event_mask=self.X.SubstructureRedirectMask | self.X.SubstructureNotifyMask)
         self.display.flush()
 
-    def click(self, x, y):
-        run(["xdotool", "mousemove", "--sync", str(x), str(y), "click", "1"], "xdotool click")
+    def pointer(self, button, events):
+        """events (vmlab.ui) with button's number, as one chain of xdotool commands."""
+        argv = ["xdotool"]
+        for e in events:
+            if e["do"] == "move":
+                argv += ["mousemove", "--sync", str(e["x"]), str(e["y"])]
+            elif e["do"] in ("down", "up"):
+                argv += ["mouse" + e["do"], str(button)]
+            elif e["do"] == "wait":
+                argv += ["sleep", str(e["s"])]
+            else:
+                argv += [e["do"], KEYSYMS[e["key"]]]
+        run(argv, "xdotool pointer", timeout=30 + sum(e.get("s", 0) for e in events))
 
     def press(self, key, modifiers):
         chord = "+".join([KEYSYMS[m] for m in modifiers] + [KEYSYMS.get(key, key)])
@@ -784,14 +816,29 @@ class UI:
         except Exception:
             return ""
 
-    def click(self, params):
+    def point(self, params, what):
+        """(x, y) of params, which must be on the screen."""
         try:
             x, y = int(params["x"]), int(params["y"])
         except (KeyError, TypeError, ValueError):
-            fail("click needs x and y")
+            fail("%s needs x and y" % what)
         width, height = self.screen
         if not (0 <= x < width and 0 <= y < height):
             fail("(%d, %d) is off the screen (%dx%d)" % (x, y, width, height))
+        return x, y
+
+    def button(self, params):
+        name = params.get("button") or "left"
+        if name not in BUTTONS:
+            fail("unknown button %s" % name)
+        return BUTTONS[name]
+
+    def click(self, params):
+        x, y = self.point(params, "click")
+        button = self.button(params)
+        modifiers = params.get("modifiers") or []
+        if any(m not in MODIFIERS for m in modifiers):
+            fail("unknown modifier in %s" % modifiers)
         chain = self.under(x, y)
         expect = params.get("expect")
         if expect is not None:
@@ -805,8 +852,22 @@ class UI:
             if not hit:
                 what = '"%s"' % chain[0][0] if chain else "nothing"
                 fail("something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (x, y, what))
-        self.ws.click(x, y)
+        self.ws.pointer(button, click_events(x, y, modifiers))
         emit({"x": x, "y": y, "under": chain[0][0] if chain else None})
+
+    def pointer(self, params):
+        button, events = self.button(params), params.get("events") or []
+        for e in events:
+            if e.get("do") in ("move", "down", "up"):
+                self.point(e, "a pointer event")
+            elif e.get("do") in ("keydown", "keyup"):
+                if e.get("key") not in MODIFIERS:
+                    fail("unknown modifier %s" % e.get("key"))
+            elif e.get("do") != "wait":
+                fail("unknown pointer event %s" % e.get("do"))
+        self.ws.pointer(button, events)
+        located = [e for e in events if "x" in e]
+        emit({"x": located[-1]["x"], "y": located[-1]["y"]} if located else {"x": None, "y": None})
 
     def press(self, key, modifiers):
         table = EVDEV if self.kind == "wayland" else KEYSYMS
@@ -966,7 +1027,7 @@ class UI:
         does not hold in time."""
         b = self.bounds(tab, self.placement(top, window.pid))
         if b:
-            self.ws.click(b["x"] + b["w"] // 3, b["y"] + b["h"] // 2)  # its title, clear of its close button
+            self.ws.pointer(BUTTONS["left"], click_events(b["x"] + b["w"] // 3, b["y"] + b["h"] // 2))  # its title, clear of its close button
 
         def in_front():
             self.refresh()
@@ -1136,6 +1197,8 @@ def main(argv):
         emit({"displays": [{"bounds": {"x": 0, "y": 0, "w": width, "h": height}, "scale": ui.ws.scale, "primary": True}]})
     elif command == "click":
         ui.click(params)
+    elif command == "pointer":
+        ui.pointer(params)
     elif command == "press":
         ui.press(params.get("key"), params.get("modifiers") or [])
         emit({"key": params.get("key"), "modifiers": params.get("modifiers") or []})

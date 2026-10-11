@@ -382,6 +382,38 @@ def scenario(g):
 '''
 
 
+# The pointer, against a window of the Guest's own making (pointer_fixture_*) that prints each button
+# press, release and move with a button held, started as the checks fixture is.
+POINTER_FIXTURES = {"linux": "pointer_fixture_linux.py", "macos": "pointer_fixture_macos.swift", "windows": "pointer_fixture_windows.ps1"}
+POINTER = CHECKS_START + r'''
+def printed(g, fixture):
+    # The fixture's lines of events, without what else it logs (macOS adds lines of its own)
+    return [l.strip() for l in g.get(fixture.log).splitlines() if l.split(" ")[0] in ("down", "move", "up")]
+
+def scenario(g):
+    fixture = start(g)
+    up = g.wait_for(text=NAME, role="window", app=NAME, timeout=60)
+    g.check("the fixture's window is up", up["met"], detail=up)
+    b = up["matches"][0]["bounds"]
+    x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2 + 20  # clear of the title bar
+    g.drag((x - 100, y), (x + 100, y), hold="shift", steps=5)
+    g.pointer("down", x, y - 50, button="middle")
+    g.pointer("move", x + 20, y - 50, button="middle")
+    g.pointer("move", x + 40, y - 50, button="middle")
+    g.pointer("up", x + 40, y - 50, button="middle")
+    for button in ("right", "back"):
+        g.click(at=(x, y), button=button)
+    g.wait_for(log=fixture.log, pattern="up back", timeout=10)
+    seen = printed(g, fixture)
+    runs = [line for i, line in enumerate(seen) if i == 0 or line != seen[i - 1]]
+    g.check("a drag and pointer calls press, move with and release their button, holding their modifiers",
+            runs[:6] == ["down left shift", "move left shift", "up left shift", "down middle -", "move middle -", "up middle -"], detail=seen)
+    g.check("each moved at least twice", seen.count("move left shift") >= 2 and seen.count("move middle -") >= 2, detail=seen)
+    g.check("right and back clicks", runs[6:] == ["down right -", "up right -", "down back -", "up back -"], detail=seen)
+    fixture.stop()
+'''
+
+
 def screen_pixels(png):
     """(width, height, pixel(x, y) -> bytes) of a PNG screenshot, decoded by the Host's sips."""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1247,6 +1279,13 @@ def scenario(g):
             box["x"] <= cx < box["x"] + box["w"] and box["y"] <= cy < box["y"] + box["h"],
             "the changed pixels centre on (%d, %d), outside the box's bounds %s" % (cx, cy, box),
         )
+
+    @ui
+    def test_09c4_ui_drags_pointer_events_and_clicks_with_other_buttons(self):
+        if self.target.provider == "fake":
+            self.skipTest("the Fake draws no window to press on: tests/test_ui.py covers the events it is sent")
+        source = (Path(__file__).resolve().parent / POINTER_FIXTURES[self.target.os]).read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_pointer.py", UI + "SOURCE = %r\n" % source + POINTER))
 
     @ui
     def test_09d_ui_notifications_are_read_and_waited_for(self):

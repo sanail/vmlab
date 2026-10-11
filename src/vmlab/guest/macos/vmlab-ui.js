@@ -150,13 +150,65 @@ function tree(params) {
   };
 }
 
-function click(params) {
-  const point = { x: params.x / SCALE, y: params.y / SCALE };
-  for (const type of [$.kCGEventMouseMoved, $.kCGEventLeftMouseDown, $.kCGEventLeftMouseUp]) {
-    $.CGEventPost($.kCGHIDEventTap, $.CGEventCreateMouseEvent(null, type, point, $.kCGMouseButtonLeft));
+// Modifiers as CGEvent has them: [key code, flag]
+const MODIFIER_KEYS = { cmd: [55, 0x100000], shift: [56, 0x20000], alt: [58, 0x80000], ctrl: [59, 0x40000] };
+// Buttons as CGEvent has them: [button, press, release, move while pressed]
+const OTHER_BUTTON = [$.kCGEventOtherMouseDown, $.kCGEventOtherMouseUp, $.kCGEventOtherMouseDragged];
+const BUTTONS = {
+  left: [$.kCGMouseButtonLeft, $.kCGEventLeftMouseDown, $.kCGEventLeftMouseUp, $.kCGEventLeftMouseDragged],
+  right: [$.kCGMouseButtonRight, $.kCGEventRightMouseDown, $.kCGEventRightMouseUp, $.kCGEventRightMouseDragged],
+  middle: [$.kCGMouseButtonCenter].concat(OTHER_BUTTON),
+  back: [3].concat(OTHER_BUTTON),
+  forward: [4].concat(OTHER_BUTTON),
+};
+
+// Posts a pointer's events in order, as vmlab-ui.swift's pointerEvents does.
+function pointerEvents(button, events) {
+  const b = BUTTONS[button] || fail("unknown button " + button);
+  let flags = 0;
+  let pressed = Object.values(BUTTONS).find((o) => $.CGEventSourceButtonState($.kCGEventSourceStateCombinedSessionState, o[0])) || null;
+  for (const event of events) {
+    if (event.do === "wait") {
+      delay(event.s);
+      continue;
+    }
+    if (event.do === "keydown" || event.do === "keyup") {
+      const m = MODIFIER_KEYS[event.key] || fail("unknown modifier " + event.key);
+      flags = event.do === "keydown" ? flags | m[1] : flags & ~m[1];
+      const key = $.CGEventCreateKeyboardEvent(null, m[0], event.do === "keydown");
+      $.CGEventSetFlags(key, flags);
+      $.CGEventPost($.kCGHIDEventTap, key);
+    } else if (["move", "down", "up"].includes(event.do)) {
+      const point = { x: event.x / SCALE, y: event.y / SCALE };
+      const [type, which] = event.do === "down" ? [b[1], b[0]] : event.do === "up" ? [b[2], b[0]] : pressed ? [pressed[3], pressed[0]] : [$.kCGEventMouseMoved, b[0]];
+      const mouse = $.CGEventCreateMouseEvent(null, type, point, which);
+      $.CGEventSetFlags(mouse, flags | $.CGEventSourceFlagsState($.kCGEventSourceStateCombinedSessionState));
+      $.CGEventPost($.kCGHIDEventTap, mouse);
+      pressed = event.do === "down" ? b : event.do === "up" ? null : pressed;
+    } else {
+      fail("unknown pointer event " + event.do);
+    }
     delay(0.01);
   }
+}
+
+function click(params) {
+  const modifiers = params.modifiers || [];
+  const at = { x: params.x, y: params.y };
+  pointerEvents(
+    params.button || "left",
+    modifiers.map((m) => ({ do: "keydown", key: m }))
+      .concat(["move", "down", "up"].map((d) => Object.assign({ do: d }, at)))
+      .concat(modifiers.slice().reverse().map((m) => ({ do: "keyup", key: m }))),
+  );
   return { x: params.x, y: params.y, under: null };
+}
+
+function pointer(params) {
+  const located = params.events.filter((e) => "x" in e);
+  pointerEvents(params.button || "left", params.events);
+  const last = located[located.length - 1] || {};
+  return { x: last.x, y: last.y };
 }
 
 function press(key, modifiers) {
@@ -423,6 +475,7 @@ function run(argv) {
     case "tree": result = tree(params); break;
     case "displays": result = { displays: [{ bounds: screenBounds(), scale: SCALE, primary: true }] }; break;
     case "click": result = click(params); break;
+    case "pointer": result = pointer(params); break;
     case "press": press(params.key, params.modifiers || []); result = { key: params.key, modifiers: params.modifiers || [] }; break;
     case "type": events.keystroke(params.text); result = { typed: Array.from(params.text).length }; break;
     case "clipboard": result = clipboard(params); break;

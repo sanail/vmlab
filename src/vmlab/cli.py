@@ -297,6 +297,22 @@ def _ui_parser(sub):
     p.add_argument("--index", type=int, default=0, help="which match to click (default: the first)")
     p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="click this screen point instead")
     p.add_argument("--timeout", type=float, help="seconds to wait for the element to be there and uncovered (default: fail at once; --at ignores it)")
+    _pressing_arguments(p, "around the click")
+    p = ui_sub.add_parser("pointer", parents=[common], help="move the pointer to X Y, or press (down) or release (up) a button there")
+    p.add_argument("action", choices=["move", "down", "up"])
+    p.add_argument("x", type=int)
+    p.add_argument("y", type=int)
+    _pressing_arguments(p, "pressed by down and released by up (a move holds them for itself only)")
+    p = ui_sub.add_parser("drag", parents=[common], help="press a button at one element or point, move to another in even steps, release")
+    p.add_argument("--app", help="only elements inside this application")
+    for end in ("from", "to"):
+        p.add_argument("--%s-text" % end, help="the element's name, value or description")
+        p.add_argument("--%s-role" % end, help="the element's role")
+        p.add_argument("--%s-index" % end, type=int, default=0, help="which match (default: the first)")
+        p.add_argument("--%s-at" % end, nargs=2, type=int, metavar=("X", "Y"), help="this screen point instead of an element")
+    p.add_argument("--steps", type=int, default=20, help="moves from one end to the other (default: 20)")
+    p.add_argument("--duration", type=float, default=0.5, help="seconds the moves take (default: 0.5)")
+    _pressing_arguments(p, "for the whole drag")
     p = ui_sub.add_parser("press", parents=[common], help="press a key chord, e.g. cmd+shift+space")
     p.add_argument("chord")
     p = ui_sub.add_parser("type", parents=[common], help="type text into whatever has focus")
@@ -338,6 +354,20 @@ def _ui_parser(sub):
     p.add_argument("--app", help="the editor it is open in (default: TextEdit, Notepad or gnome-text-editor)")
     p = ui_sub.add_parser("screenshot", parents=[common], help="save a PNG of the Guest's screen")
     p.add_argument("--out", help="where to save it (default: .vmlab/runs/<time>-<lab>-screenshot.png)")
+
+
+def _pressing_arguments(p, held):
+    p.add_argument("--button", default="left", help="left (default), right, middle, back or forward")
+    p.add_argument("--hold", metavar="MODIFIERS", help="modifiers held %s, e.g. shift or cmd+alt" % held)
+
+
+def _drag_end(args, end):
+    at, text, role = getattr(args, end + "_at"), getattr(args, end + "_text"), getattr(args, end + "_role")
+    if at:
+        return tuple(at)
+    if text is None and role is None:
+        raise UsageError("drag needs --%s-text, --%s-role or --%s-at" % (end, end, end))
+    return {"text": text, "role": role, "app": args.app, "index": getattr(args, end + "_index")}
 
 
 def _running_guest(project, lab_name):
@@ -424,7 +454,13 @@ def _ui(project, args):
         result = contract.displays()
     elif c == "click":
         at = tuple(args.at) if args.at else None
-        result = contract.click(ui.Query(args.text, args.role, args.app, args.checked), index=args.index, at=at, timeout=args.timeout)
+        query = ui.Query(args.text, args.role, args.app, args.checked)
+        result = contract.click(query, index=args.index, at=at, timeout=args.timeout, button=args.button, hold=args.hold)
+    elif c == "pointer":
+        result = contract.pointer(args.action, args.x, args.y, button=args.button, hold=args.hold)
+    elif c == "drag":
+        ends = (_drag_end(args, "from"), _drag_end(args, "to"))
+        result = contract.drag(*ends, button=args.button, hold=args.hold, steps=args.steps, duration=args.duration)
     elif c == "press":
         result = contract.press(args.chord)
     elif c == "type":

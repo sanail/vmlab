@@ -174,6 +174,9 @@ KEYS = set("abcdefghijklmnopqrstuvwxyz0123456789") | {"f%d" % n for n in range(1
     "pageup", "pagedown", "minus", "equal", "comma", "period", "slash", "semicolon", "quote", "backslash",
     "grave", "leftbracket", "rightbracket",
 }  # fmt: skip
+BUTTONS = ("left", "right", "middle", "back", "forward")  # the wheel is not a button
+# s after a drag's press and before its release: macOS dragging sessions and Windows OLE drag-and-drop miss a drag without them
+DRAG_PAUSE = 0.1
 KEY_ALIASES = {"return": "enter", "esc": "escape", "del": "delete", "pgup": "pageup", "pgdn": "pagedown"}
 
 
@@ -191,6 +194,28 @@ def parse_chord(chord):
         raise UsageError("unknown modifier %r in chord %r; modifiers: ctrl, alt, shift, cmd (Command/Windows/Super)" % (unknown[0], chord))
     wanted = {MODIFIERS[m] for m in mods}
     return key, [m for m in MODIFIER_ORDER if m in wanted]
+
+
+def parse_hold(hold):
+    """A modifier chord to hold, 'cmd+Shift' -> ['shift', 'cmd']; None -> []. UsageError naming what is wrong."""
+    if hold is None:
+        return []
+    parts = [p.strip().lower() for p in str(hold).split("+")]
+    unknown = [p for p in parts if p not in MODIFIERS]
+    if unknown:
+        raise UsageError("hold takes modifiers only, like shift or cmd+alt; %r is not one (modifiers: ctrl, alt, shift, cmd)" % unknown[0])
+    wanted = {MODIFIERS[p] for p in parts}
+    return [m for m in MODIFIER_ORDER if m in wanted]
+
+
+def check_button(button):
+    if button not in BUTTONS:
+        raise UsageError("unknown button %r; buttons: %s" % (button, ", ".join(BUTTONS)))
+    return button
+
+
+def key_events(do, modifiers):
+    return [{"do": do, "key": m} for m in modifiers]
 
 
 def chord_text(key, modifiers):
@@ -733,46 +758,101 @@ class UI:
         found = self._call("displays", {})["displays"]
         return {"displays": [{k: d[k] for k in ("bounds", "scale", "primary")} for d in found]}
 
-    def click(self, query=None, index=0, at=None, timeout=None):
+    def click(self, query=None, index=0, at=None, timeout=None, button="left", hold=None):
         """Click the index-th match's middle, refusing if something else is on top of it; or click at (x, y).
+        button is one of BUTTONS; hold, a modifier chord held around the click.
 
         With timeout (seconds), retry until the element is there and uncovered; when time runs
         out, raise with the last reason. at=(x, y) clicks ignore timeout.
         """
+        pressing = {"button": check_button(button), "modifiers": parse_hold(hold)}
         if at is not None:
             x, y = at
-            result = self._call("click", {"x": x, "y": y})
+            result = self._call("click", dict(pressing, x=x, y=y))
             return {"x": result["x"], "y": result["y"], "element": None, "under": result.get("under")}
         query.require("click")
         if timeout is None:
-            return self._click(query, index)
+            return self._click(query, index, pressing)
         deadline = hostpower.awake_time() + timeout
         while True:
             try:
-                return self._click(query, index)
+                return self._click(query, index, pressing)
             except NotClickable as exc:
                 now = hostpower.awake_time()
                 if now >= deadline:
                     raise GuestError("could not click %s within %gs: %s" % (query, timeout, exc.message), exc.fix)
                 time.sleep(min(POLL_SECONDS, deadline - now))
 
-    def _click(self, query, index):
-        """One try at clicking; NotClickable when the element is not there or is covered."""
+    def _target(self, query, index, doing):
+        """(element, x, y): the middle of the index-th match; NotClickable when it is not there or has no bounds."""
         matches = self.find(query)["matches"]
         if len(matches) <= index:
-            raise NotClickable("no element to click matches %s (%d found)" % (query, len(matches)), "look at `vmlab ui tree` for what is on screen")
+            raise NotClickable("no element to %s matches %s (%d found)" % (doing, query, len(matches)), "look at `vmlab ui tree` for what is on screen")
         element = matches[index]
         b = element["bounds"]
         if not b or b["w"] <= 0 or b["h"] <= 0:
             raise NotClickable("the element matching %s has no bounds on screen" % query, "it may be hidden; wait for it to appear, or click another element")
-        x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
+        return element, b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
+
+    def _click(self, query, index, pressing):
+        """One try at clicking; NotClickable when the element is not there or is covered."""
+        element, x, y = self._target(query, index, "click")
         try:
-            result = self._call("click", {"x": x, "y": y, "expect": {"label": label(element), "bounds": b}})
+            result = self._call("click", dict(pressing, x=x, y=y, expect={"label": label(element), "bounds": element["bounds"]}))
         except GuestError as exc:
             if type(exc) is GuestError and COVERED in exc.message:
                 raise NotClickable(exc.message)
             raise
         return {"x": result["x"], "y": result["y"], "element": element, "under": result.get("under")}
+
+    def pointer(self, action, x, y, button="left", hold=None):
+        """One pointer action at (x, y): "move" there, press the button there ("down") or release it ("up").
+
+        A down presses hold's modifiers before the button and leaves both held; an up releases them
+        after the button; a move holds them for that move only."""
+        modifiers, at = parse_hold(hold), {"x": x, "y": y}
+        if action == "down":
+            events = key_events("keydown", modifiers) + [dict(at, do="move"), dict(at, do="down")]
+        elif action == "up":
+            events = [dict(at, do="move"), dict(at, do="up")] + key_events("keyup", modifiers[::-1])
+        elif action == "move":
+            events = key_events("keydown", modifiers) + [dict(at, do="move")] + key_events("keyup", modifiers[::-1])
+        else:
+            raise UsageError("pointer takes move, down or up, not %r" % (action,))
+        self._call("pointer", {"button": check_button(button), "events": events})
+        return {"action": action, "x": x, "y": y, "button": button, "hold": "+".join(modifiers) or None}
+
+    def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5):
+        """Press the button at source, move to target in steps even moves over duration seconds, release.
+
+        source and target are each (x, y) or an element: its text, or a dict of find's fields plus
+        "index", whose middle is used. hold is a modifier chord held for the whole drag."""
+        if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+            raise UsageError("steps must be a whole number >= 1, not %r" % (steps,))
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
+            raise UsageError("duration must be a number of seconds >= 0, not %r" % (duration,))
+        check_button(button)
+        modifiers = parse_hold(hold)
+        ends = [self._drag_end(end) for end in (source, target)]
+        (x0, y0), (x1, y1) = [(e["x"], e["y"]) for e in ends]
+        wait = {"do": "wait", "s": round(duration / steps, 3)}
+        events = key_events("keydown", modifiers) + [{"do": "move", "x": x0, "y": y0}, {"do": "down", "x": x0, "y": y0}, {"do": "wait", "s": DRAG_PAUSE}]
+        for i in range(1, steps + 1):
+            events += [{"do": "move", "x": round(x0 + (x1 - x0) * i / steps), "y": round(y0 + (y1 - y0) * i / steps)}, wait]
+        events += [{"do": "wait", "s": DRAG_PAUSE}, {"do": "up", "x": x1, "y": y1}] + key_events("keyup", modifiers[::-1])
+        self._call("pointer", {"button": button, "events": events})
+        return {"from": ends[0], "to": ends[1], "button": button, "hold": "+".join(modifiers) or None}
+
+    def _drag_end(self, end):
+        """A drag's end as {"x", "y", "element"}: a point, or the middle of an element (text or find's fields plus "index")."""
+        if isinstance(end, (tuple, list)) and len(end) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in end):
+            return {"x": end[0], "y": end[1], "element": None}
+        fields = {"text": end} if isinstance(end, str) else dict(end) if isinstance(end, dict) else None
+        index = fields.pop("index", 0) if fields is not None else 0
+        if fields is None or not set(fields) <= {"text", "role", "app", "checked"}:
+            raise UsageError("a drag's ends are each (x, y), an element's text, or a dict of text, role, app, checked and index; not %r" % (end,))
+        element, x, y = self._target(Query(**fields).require("drag"), index, "drag")
+        return {"x": x, "y": y, "element": element}
 
     def tray(self, app, choose=None, timeout=None):
         """Read app's Tray menu and, with choose (a label per menu level), choose that item.

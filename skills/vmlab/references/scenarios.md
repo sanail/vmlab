@@ -76,7 +76,9 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.tree(app=None)` | `ui tree [--app APP]` | node tree |
 | `g.find(text=, role=, app=, checked=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
 | `g.displays()` | `ui displays` | `{"displays": [{"bounds", "scale", "primary"}]}` |
-| `g.click(text=, role=, app=, checked=, index=0, timeout=None)`, `g.click(at=(x, y))` | `ui click [--timeout S]` | `{"x", "y", "element", "under"}` |
+| `g.click(text=, role=, app=, checked=, index=0, timeout=None, button="left", hold=None)`, `g.click(at=(x, y))` | `ui click [--timeout S] [--button B] [--hold MODS]` | `{"x", "y", "element", "under"}` |
+| `g.pointer("move"\|"down"\|"up", x, y, button="left", hold=None)` | `ui pointer ACTION X Y` | `{"action", "x", "y", "button", "hold"}` |
+| `g.drag(source, target, button="left", hold=None, steps=20, duration=0.5)` | `ui drag --from-... --to-...` | `{"from": {"x", "y", "element"}, "to": {...}, "button", "hold"}` |
 | `g.press("cmd+shift+space")` | `ui press CHORD` | `{"chord"}` |
 | `g.type(text)` | `ui type TEXT` | `{"typed": n}` |
 | `g.focus(app, window=None)` | `ui focus --app APP [--window T]` | `{"app", "window", "frontmost"}` |
@@ -89,6 +91,8 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.screenshot(name)` | `ui screenshot` | `{"path"}` |
 
 - Coordinates are Desktop pixels on every OS: node `bounds`, `click(at=)` and `displays()` share the screenshot's pixels, so a point picked in a screenshot is where `g.click(at=(x, y))` lands. `displays()` lists the Guest's one Display: its `bounds`, its `scale` (Desktop pixels per logical unit: 2 on macOS under Tart, 1 on Fusion Guests unless scaled) and `primary`. Sizes drawn by the app grow with the scale: a Scenario that offsets from bounds by numbers of its own multiplies them by it.
+- Buttons: `left`, `right`, `middle`, `back`, `forward`. `hold` is modifiers in `press`'s grammar (`"shift"`, `"cmd+alt"`), held around a click, for a whole drag, or from a `pointer("down")` to its `pointer("up")`; what a Scenario leaves held is released at the end of its Run.
+- `g.drag(source, target)` presses at `source`, moves to `target` in `steps` even moves over `duration` seconds and releases: a selection, a slider, dragging an item. Each end is `(x, y)`, an element's text, or a dict of `find`'s fields plus `index`: `g.drag({"text": "Photo", "app": "MyApp"}, {"text": "Trash", "role": "button"})`. For a hover or a long press, use `g.pointer`: `g.pointer("down", x, y)`, `g.wait_for(...)`, `g.pointer("up", x, y)`.
 - A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`, `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`, `enabled`, `checked`, `native_role` and `children`. Applications carry `pid`.
 - `checked` is a checkbox's, radio button's, toggle button's, switch's or checkable menu item's tick state: `True`, `False` or `"mixed"`, and `None` for an element without one (an unticked menu item may read `None`: always on macOS, and on Windows in menus without TogglePattern). `find`, `click` and `wait_for` take `checked=` to match it exactly. To check that a click ticked a box, wait for it rather than reading once:
 

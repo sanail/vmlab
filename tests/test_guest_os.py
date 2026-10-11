@@ -210,7 +210,8 @@ class ChoicesTest(unittest.TestCase):
 
 
 class MacHelperTest(unittest.TestCase):
-    """vmlab-ui is asked its version once: one from before Desktop pixels speaks points, so its calls go to the JXA fallback."""
+    """vmlab-ui is asked its version once: an older one than this vmlab drives (in points, or clicking left for
+    every button) hands its calls to the JXA fallback."""
 
     def helper(self, version):
         calls = []
@@ -222,14 +223,14 @@ class MacHelperTest(unittest.TestCase):
 
         return uihelpers.MacHelper(Provider()), calls
 
-    def test_a_helper_in_desktop_pixels_takes_the_calls(self):
-        helper, calls = self.helper(uihelpers.MACOS_PIXELS_VERSION)
+    def test_a_current_helper_takes_the_calls(self):
+        helper, calls = self.helper(uihelpers.MACOS_HELPER_VERSION)
         helper.call("click", {}, 5)
         helper.call("click", {}, 5)
         self.assertEqual(calls, ["version", "click", "click"])
 
-    def test_a_helper_in_points_hands_the_calls_to_the_fallback(self):
-        helper, calls = self.helper(uihelpers.MACOS_PIXELS_VERSION - 1)
+    def test_an_older_helper_hands_the_calls_to_the_fallback(self):
+        helper, calls = self.helper(uihelpers.MACOS_HELPER_VERSION - 1)
         helper.call("click", {}, 5)
         helper.call("click", {}, 5)
         self.assertEqual(calls, ["version", "jxa", "jxa"])

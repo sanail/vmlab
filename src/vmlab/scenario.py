@@ -96,6 +96,8 @@ class Guest:
         self.screenshots = []
         self.spawned = []  # every process the Scenario spawned (Spawned), stopped at the end of the Run
         self.staged = []  # every Staged document it opened ({"file", "app", "ended"}), closed at the end of the Run
+        self._held_buttons, self._held_keys = [], []  # what its pointer downs hold, released at the end of the Run
+        self._pointer_at = None
         self._spawner = provider.spawner()
         self.channel_use = ChannelUse()  # this Run's calls, including its app reset and launch
 
@@ -190,7 +192,19 @@ class Guest:
                 unreachable.append(str(exc).splitlines()[0])
                 raise
 
+        self._release_held(attempt)
         return self._close_staged_left(attempt), self._end_spawned(attempt, with_output)
+
+    def _release_held(self, attempt):
+        contract = ui.UI(self._provider, lambda what: self._step_timeout)
+        x, y = self._pointer_at or (0, 0)
+        for button in list(self._held_buttons):
+            last = len(self._held_buttons) == 1
+            try:
+                attempt(lambda: contract.pointer("up", x, y, button, "+".join(self._held_keys) if last else None))
+            except Exception:  # best-effort, as closing a Staged document: it never changes the Run's result
+                return
+            self._held_buttons.remove(button)
 
     def _close_staged_left(self, attempt):
         contract = ui.UI(self._provider, lambda what: self._step_timeout)
@@ -254,11 +268,40 @@ class Guest:
         """{"displays": [{"bounds", "scale", "primary"}]}: the Guest's Display, its bounds in Desktop pixels."""
         return self._ui_call(lambda contract: contract.displays())
 
-    def click(self, text=None, role=None, app=None, index=0, at=None, timeout=None, checked=None):
+    def click(self, text=None, role=None, app=None, index=0, at=None, timeout=None, checked=None, button="left", hold=None):
         """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing
         matches or something covers it; with timeout (seconds), first waits for it to be there and
-        uncovered (on the Scenario's clock), then raises with the last reason."""
-        return self._ui_call(lambda contract: contract.click(ui.Query(text, role, app, checked), index=index, at=at, timeout=timeout))
+        uncovered (on the Scenario's clock), then raises with the last reason. button: left, right,
+        middle, back or forward; hold: modifiers held around the click, e.g. "cmd+alt"."""
+        query = ui.Query(text, role, app, checked)
+        return self._ui_call(lambda contract: contract.click(query, index=index, at=at, timeout=timeout, button=button, hold=hold))
+
+    def pointer(self, action, x, y, button="left", hold=None):
+        """One pointer action at (x, y): "move" there, press button there ("down") or release it ("up").
+        A down holds the modifiers of hold until the up that releases the last held button; a move
+        holds them for itself. What is still held when the Scenario ends is released."""
+        ui.check_button(button)
+        modifiers = ui.parse_hold(hold)
+        if action == "up" and self._held_buttons in ([], [button]):
+            modifiers += [m for m in self._held_keys if m not in modifiers]
+        elif action != "up":
+            modifiers = [m for m in modifiers if m not in self._held_keys]
+        if action == "down":  # held before the call: one that fails halfway may have pressed them
+            self._pointer_at = (x, y)
+            self._held_buttons += [button] if button not in self._held_buttons else []
+            self._held_keys += modifiers
+        result = self._ui_call(lambda contract: contract.pointer(action, x, y, button, "+".join(modifiers) or None))
+        self._pointer_at = (x, y)
+        if action == "up":
+            self._held_buttons = [b for b in self._held_buttons if b != button]
+            self._held_keys = [m for m in self._held_keys if m not in modifiers]
+        return result
+
+    def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5):
+        """Press button at source, move to target in steps even moves over duration seconds, release.
+        source and target are each (x, y), an element's text, or a dict of find's fields plus "index"
+        (the element's middle); hold is a modifier chord held for the whole drag."""
+        return self._ui_call(lambda contract: contract.drag(source, target, button=button, hold=hold, steps=steps, duration=duration))
 
     def tray(self, app, choose=None, timeout=None):
         """Read app's Tray menu: {"items": [{"name", "enabled", "checked", "children"}], "chosen"}.

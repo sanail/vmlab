@@ -1,6 +1,6 @@
 ---
 name: vmlab
-description: Test desktop apps inside macOS, Windows and Linux virtual machines on this machine. Use when the user asks to check, test or try their app on macOS, Windows or Linux (click through it, press a hotkey, take a screenshot), to set up VMs for that (Tart, VMware Fusion), or to write or run saved VM tests; or when the project has a .vmlab/ folder.
+description: Test desktop apps inside macOS, Windows and Linux virtual machines on this machine. Use when the user asks to check, test or try their app on macOS, Windows or Linux (click through it, drag, press a hotkey, take a screenshot), to set up VMs for that (Tart, VMware Fusion), or to write or run saved VM tests; or when the project has a .vmlab/ folder.
 ---
 
 # vmlab

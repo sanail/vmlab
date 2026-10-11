@@ -7,6 +7,7 @@ of a tree can be checked on the Host.
 
 import importlib.util
 import io
+import json
 import os
 import shutil
 import tempfile
@@ -170,6 +171,36 @@ class TreeWalkTest(unittest.TestCase):
         [run] = [n for n in walk(node) if n["name"] == "Run"]
         self.assertEqual(run["bounds"], {"x": 140, "y": 170, "w": 160, "h": 40})
         self.assertEqual(self.ui.under(220, 190)[0][0], "Run")
+
+
+class PointerTest(unittest.TestCase):
+    """A drag's events as each session's input sends them: one xdotool chain, or the Shell extension's Pointer."""
+
+    EVENTS = [{"do": "keydown", "key": "shift"}, {"do": "move", "x": 10, "y": 20}, {"do": "down", "x": 10, "y": 20},
+              {"do": "wait", "s": 0.1}, {"do": "move", "x": 30, "y": 40}, {"do": "up", "x": 30, "y": 40}, {"do": "keyup", "key": "shift"}]
+
+    def setUp(self):
+        self.helper = load_helper()
+
+    def test_x11_sends_one_xdotool_chain(self):
+        x11 = self.helper.X11.__new__(self.helper.X11)
+        with mock.patch.object(self.helper, "run") as run:
+            x11.pointer(self.helper.BUTTONS["back"], self.EVENTS)
+        self.assertEqual(run.call_args[0][0], [
+            "xdotool", "keydown", "shift", "mousemove", "--sync", "10", "20", "mousedown", "8", "sleep", "0.1",
+            "mousemove", "--sync", "30", "40", "mouseup", "8", "keyup", "shift",
+        ])  # fmt: skip
+
+    def test_wayland_sends_stage_points_and_evdev_keys(self):
+        shell = self.helper.WaylandShell.__new__(self.helper.WaylandShell)
+        shell.stage_scale, calls = 2.0, []
+        shell._call = lambda *args: calls.append(args)
+        shell.pointer(self.helper.BUTTONS["right"], self.EVENTS)
+        [(method, signature, sent)] = calls
+        sent = json.loads(sent)
+        self.assertEqual((method, signature), ("Pointer", "s"))
+        self.assertEqual(sent[0], {"do": "keydown", "key": 42, "button": 3})
+        self.assertEqual(sent[4], {"do": "move", "x": 15, "y": 20, "button": 3})
 
 
 class TickStateTest(unittest.TestCase):

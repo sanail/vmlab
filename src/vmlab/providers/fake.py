@@ -209,7 +209,7 @@ class FakeProvider(Provider):
         """The UI contract without a helper: the scripted tree, plus a text editor with a window per
         Staged document, the front one first: stage-text opens one, close-staged closes one.
 
-        Clicks, key presses and the items tray chooses are recorded; a click on a scripted element with "covered_by" refuses,
+        Clicks, pointer events, key presses and the items tray chooses are recorded; a click on a scripted element with "covered_by" refuses,
         as a helper does when something else is on top of it. In the editor, a click focuses the text
         area, cmd+a selects all, cmd+c / cmd+v copy and paste (or ctrl+...), and typing replaces
         the selection. The clipboard and the editor live in the Guest's filesystem,
@@ -241,6 +241,9 @@ class FakeProvider(Provider):
                 area["focused"], state["selected"] = True, False
             self._save_ui_state(state)
             return {"x": params["x"], "y": params["y"], "under": None}
+        if command == "pointer":
+            last = [e for e in params["events"] if "x" in e][-1]
+            return {"x": last["x"], "y": last["y"]}
         if command == "press":
             shortcut = _shortcut(params)
             if area and area["focused"]:

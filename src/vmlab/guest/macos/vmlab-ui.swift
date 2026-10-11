@@ -11,7 +11,8 @@
 //   version
 //   tree        {"app": name?, "depth": n?}
 //   displays    {}: [{"bounds", "scale", "primary"}], the one display
-//   click       {"x": n, "y": n, "expect": {"label": s?, "bounds": {x,y,w,h}?}?}
+//   click       {"x": n, "y": n, "button": name, "modifiers": [...], "expect": {"label": s?, "bounds": {x,y,w,h}?}?}
+//   pointer     {"button": name, "events": [{"do": move|down|up, "x", "y"} | {"do": wait, "s"} | {"do": keydown|keyup, "key": modifier}]}
 //   press       {"key": name, "modifiers": [cmd|ctrl|alt|shift]}
 //   type        {"text": s}: returns once the focused element holds s (see awaitTyped)
 //   clipboard   {"set": s?}
@@ -41,7 +42,7 @@ import ApplicationServices
 import Foundation
 import SQLite3
 
-let VERSION = 2  // 2: Desktop pixels (uihelpers.MACOS_PIXELS_VERSION)
+let VERSION = 3  // vmlab drives no version older than uihelpers.MACOS_HELPER_VERSION
 let MAX_NODES = 5000
 let STAGE = "vmlab-stage-"  // + 8 hex digits: the name of every file stage-text opens
 let SELECT_WAIT = 2.0  // s for a select-all to select a Staged document's text, before it is pressed again
@@ -294,6 +295,75 @@ func press(_ key: String, _ modifiers: [String]) {
     }
 }
 
+// Buttons as CGEvent has them: (button, press, release, move while pressed)
+let BUTTONS: [String: (CGMouseButton, CGEventType, CGEventType, CGEventType)] = [
+    "left": (.left, .leftMouseDown, .leftMouseUp, .leftMouseDragged),
+    "right": (.right, .rightMouseDown, .rightMouseUp, .rightMouseDragged),
+    "middle": (.center, .otherMouseDown, .otherMouseUp, .otherMouseDragged),
+    "back": (CGMouseButton(rawValue: 3)!, .otherMouseDown, .otherMouseUp, .otherMouseDragged),
+    "forward": (CGMouseButton(rawValue: 4)!, .otherMouseDown, .otherMouseUp, .otherMouseDragged),
+]
+
+/// A point in Desktop pixels as a point on the screen; fails when it is off the screen.
+func screenPoint(_ event: [String: Any]) -> CGPoint {
+    guard let x = event["x"] as? Double ?? (event["x"] as? Int).map(Double.init),
+          let y = event["y"] as? Double ?? (event["y"] as? Int).map(Double.init) else { fail("a pointer event needs x and y") }
+    let point = CGPoint(x: x / SCALE, y: y / SCALE)
+    guard screenFrame().contains(point) else {
+        let size = screenFrame().size
+        fail("(\(Int(x)), \(Int(y))) is off the screen (\(Int(size.width * SCALE))x\(Int(size.height * SCALE)))")
+    }
+    return point
+}
+
+/// Posts a pointer's events in order. A move while a button is pressed (by these events or an
+/// earlier call) is that button's drag event, which dragging sessions need; mouse events carry the
+/// modifiers keydown pressed, which is how AppKit reads them.
+func pointerEvents(_ button: String, _ events: [[String: Any]]) {
+    guard let (mouse, downType, upType, _) = BUTTONS[button] else { fail("unknown button \(button)") }
+    // All checked before any is posted: a failure halfway would leave a button or key held.
+    for event in events {
+        switch event["do"] as? String ?? "" {
+        case "keydown", "keyup": if MODIFIERS[event["key"] as? String ?? ""] == nil { fail("unknown modifier \(event["key"] ?? "")") }
+        case "move", "down", "up": _ = screenPoint(event)
+        case "wait": break
+        default: fail("unknown pointer event \(event["do"] ?? "")")
+        }
+    }
+    var flags: CGEventFlags = []
+    var pressed = BUTTONS.values.first { CGEventSource.buttonState(.combinedSessionState, button: $0.0) }
+    for event in events {
+        let kind = event["do"] as? String ?? ""
+        switch kind {
+        case "keydown", "keyup":
+            guard let m = MODIFIERS[event["key"] as? String ?? ""] else { fail("unknown modifier \(event["key"] ?? "")") }
+            if kind == "keydown" { flags.insert(m.1) } else { flags.remove(m.1) }
+            let key = CGEvent(keyboardEventSource: source, virtualKey: m.0, keyDown: kind == "keydown")
+            key?.flags = flags
+            post(key)
+        case "wait":
+            usleep(useconds_t(((event["s"] as? Double ?? (event["s"] as? Int).map(Double.init)) ?? 0) * 1_000_000))
+        case "move", "down", "up":
+            let point = screenPoint(event)
+            let (type, which): (CGEventType, CGMouseButton) =
+                kind == "down" ? (downType, mouse) : kind == "up" ? (upType, mouse) : pressed.map { ($0.3, $0.0) } ?? (.mouseMoved, mouse)
+            let mouseEvent = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: which)
+            mouseEvent?.flags = flags.union(CGEventSource.flagsState(.combinedSessionState))
+            post(mouseEvent)
+            if kind == "down" { pressed = BUTTONS[button] } else if kind == "up" { pressed = nil }
+        default:
+            fail("unknown pointer event \(kind)")
+        }
+    }
+}
+
+func pointer(_ params: [String: Any]) {
+    let events = params["events"] as? [[String: Any]] ?? []
+    pointerEvents(params["button"] as? String ?? "left", events)
+    let last = events.last { $0["x"] != nil } ?? [:]
+    emit(["x": last["x"] ?? NSNull(), "y": last["y"] ?? NSNull()])
+}
+
 func pressCommand(_ params: [String: Any]) {
     guard let key = params["key"] as? String else { fail("press needs a key") }
     let modifiers = params["modifiers"] as? [String] ?? []
@@ -377,25 +447,21 @@ func owner(_ element: AXUIElement) -> String {
 }
 
 func click(_ params: [String: Any]) {
-    guard let x = params["x"] as? Double ?? (params["x"] as? Int).map(Double.init),
-          let y = params["y"] as? Double ?? (params["y"] as? Int).map(Double.init) else { fail("click needs x and y") }
-    let point = CGPoint(x: x / SCALE, y: y / SCALE)
-    guard screenFrame().contains(point) else {
-        let size = screenFrame().size
-        fail("(\(Int(x)), \(Int(y))) is off the screen (\(Int(size.width * SCALE))x\(Int(size.height * SCALE)))")
-    }
+    let point = screenPoint(params)
+    let (x, y) = (Int((point.x * SCALE).rounded()), Int((point.y * SCALE).rounded()))
     let under = elementAt(point)
     if let expect = params["expect"] as? [String: Any] {
         // Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
         guard let hit = under, hits(hit, expect: expect) else {
             let what = under.map { "\(text($0, kAXRoleAttribute as String) ?? "?") \"\(label($0))\" of \(owner($0))" } ?? "nothing"
-            fail("something else is at (\(Int(x)), \(Int(y))): \(what); the element may be covered or scrolled out of view")
+            fail("something else is at (\(x), \(y)): \(what); the element may be covered or scrolled out of view")
         }
     }
-    for type in [CGEventType.mouseMoved, .leftMouseDown, .leftMouseUp] {
-        post(CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left))
-    }
-    emit(["x": Int(x), "y": Int(y), "under": under.map { label($0) } as Any? ?? NSNull()])
+    let modifiers = params["modifiers"] as? [String] ?? []
+    let at: [String: Any] = ["x": x, "y": y]
+    pointerEvents(params["button"] as? String ?? "left", modifiers.map { ["do": "keydown", "key": $0] }
+        + ["move", "down", "up"].map { at.merging(["do": $0]) { a, _ in a } } + modifiers.reversed().map { ["do": "keyup", "key": $0] })
+    emit(["x": x, "y": y, "under": under.map { label($0) } as Any? ?? NSNull()])
 }
 
 // MARK: - Clipboard and staging
@@ -738,6 +804,7 @@ case "version": emit(["helper": "swift", "version": VERSION, "trusted": trusted(
 case "tree": tree(params)
 case "displays": displays()
 case "click": click(params)
+case "pointer": pointer(params)
 case "press": pressCommand(params)
 case "type": typeCommand(params)
 case "clipboard": clipboard(params)

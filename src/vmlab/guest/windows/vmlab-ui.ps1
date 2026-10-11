@@ -181,7 +181,7 @@ public static class Helper {
         return 1;
     }
 
-    static readonly string[] inputCommands = { "click", "press", "type", "focus", "stage-text", "close-staged", "tray" };
+    static readonly string[] inputCommands = { "click", "pointer", "press", "type", "focus", "stage-text", "close-staged", "tray" };
 
     static object Dispatch(string command, Dictionary<string, object> p) {
         if (Array.IndexOf(inputCommands, command) >= 0) MoveBannersAside();
@@ -190,6 +190,7 @@ public static class Helper {
             case "tree": return Tree(p);
             case "displays": return Obj("displays", new object[] { Obj("bounds", Screen(), "scale", Scale(), "primary", true) });
             case "click": return Click(p);
+            case "pointer": return Pointer(p);
             case "press": {
                 string key = Str(p, "key");
                 List<string> modifiers = Strings(p, "modifiers");
@@ -668,13 +669,86 @@ public static class Helper {
                 throw new Fail("something else is at (" + x + ", " + y + "): " + what + "; the element may be covered or scrolled out of view");
             }
         }
-        Native.SetCursorPos(x, y);
-        Thread.Sleep(50);
-        Mouse(0x0002);  // MOUSEEVENTF_LEFTDOWN
-        Thread.Sleep(30);
-        Mouse(0x0004);  // MOUSEEVENTF_LEFTUP
-        Thread.Sleep(100);
+        List<string> modifiers = Strings(p, "modifiers");
+        List<object> events = new List<object>();
+        foreach (string m in modifiers) events.Add(Obj("do", "keydown", "key", m));
+        events.Add(Obj("do", "move", "x", x, "y", y));
+        events.Add(Obj("do", "wait", "s", 0.05));
+        events.Add(Obj("do", "down", "x", x, "y", y));
+        events.Add(Obj("do", "up", "x", x, "y", y));
+        for (int i = modifiers.Count - 1; i >= 0; i--) events.Add(Obj("do", "keyup", "key", modifiers[i]));
+        PointerEvents(Str(p, "button") ?? "left", events);
         return Obj("x", x, "y", y, "under", chain.Count > 0 ? chain[0].Key : null);
+    }
+
+    // Buttons as SendInput has them: press flag, release flag, mouseData
+    static Dictionary<string, uint[]> BUTTONS = new Dictionary<string, uint[]> {
+        { "left", new uint[] { 0x0002, 0x0004, 0 } }, { "right", new uint[] { 0x0008, 0x0010, 0 } },
+        { "middle", new uint[] { 0x0020, 0x0040, 0 } },
+        { "back", new uint[] { 0x0080, 0x0100, 1 } }, { "forward", new uint[] { 0x0080, 0x0100, 2 } },  // XBUTTON1, XBUTTON2
+    };
+
+    /// Sends a pointer's events in order (vmlab.ui). Moves are absolute SendInput moves, which
+    /// OLE drag-and-drop follows as it follows a mouse.
+    static void PointerEvents(string button, IEnumerable events) {
+        uint[] b;
+        if (!BUTTONS.TryGetValue(button, out b)) throw new Fail("unknown button " + button);
+        Dictionary<string, object> screen = Screen();
+        int sx = (int)screen["x"], sy = (int)screen["y"], sw = (int)screen["w"], sh = (int)screen["h"];
+        // All checked before any is sent: a failure halfway would leave a button or key held.
+        foreach (object item in events) {
+            Dictionary<string, object> e = item as Dictionary<string, object> ?? new Dictionary<string, object>();
+            string kind = Str(e, "do"), key = Str(e, "key");
+            if ((kind == "keydown" || kind == "keyup") && (key == null || !VK.ContainsKey(key))) throw new Fail("unknown modifier " + key);
+            if (kind == "move" || kind == "down" || kind == "up") {
+                int px = (int)Num(e, "x", 0), py = (int)Num(e, "y", 0);
+                if (px < sx || py < sy || px >= sx + sw || py >= sy + sh)
+                    throw new Fail("(" + px + ", " + py + ") is off the screen (" + sw + "x" + sh + ")");
+            } else if (kind != "wait" && kind != "keydown" && kind != "keyup") {
+                throw new Fail("unknown pointer event " + kind);
+            }
+        }
+        foreach (object item in events) {
+            Dictionary<string, object> e = item as Dictionary<string, object> ?? new Dictionary<string, object>();
+            string kind = Str(e, "do");
+            if (kind == "wait") {
+                Thread.Sleep((int)(Num(e, "s", 0) * 1000));
+                continue;
+            }
+            if (kind == "keydown" || kind == "keyup") {
+                Send(new List<Native.INPUT> { VirtualKey(Str(e, "key"), kind == "keyup") });
+                Thread.Sleep(KEY_PAUSE_MS);
+                continue;
+            }
+            int x = (int)Num(e, "x", 0), y = (int)Num(e, "y", 0);
+            Native.INPUT input = new Native.INPUT();
+            input.type = 0;  // INPUT_MOUSE
+            if (kind == "move") {
+                // Normalized to 0..65535 over the virtual desktop, rounded up so that it maps back to this very pixel.
+                input.u.mi.dx = (int)(((long)(x - sx) * 65536 + sw - 1) / sw);
+                input.u.mi.dy = (int)(((long)(y - sy) * 65536 + sh - 1) / sh);
+                input.u.mi.dwFlags = 0x0001 | 0x8000 | 0x4000;  // MOUSEEVENTF_MOVE, ABSOLUTE, VIRTUALDESK
+            } else if (kind == "down" || kind == "up") {
+                input.u.mi.dwFlags = kind == "down" ? b[0] : b[1];
+                input.u.mi.mouseData = b[2];
+            }
+            Send(new List<Native.INPUT> { input });
+            Thread.Sleep(kind == "move" ? 10 : 30);
+        }
+        Thread.Sleep(100);  // let the target handle it before the next call looks
+    }
+
+    static Dictionary<string, object> Pointer(Dictionary<string, object> p) {
+        object events;
+        p.TryGetValue("events", out events);
+        IEnumerable list = events as IEnumerable ?? new object[0];
+        PointerEvents(Str(p, "button") ?? "left", list);
+        object x = null, y = null;
+        foreach (object item in list) {
+            Dictionary<string, object> e = item as Dictionary<string, object>;
+            if (e != null && e.ContainsKey("x")) { x = e["x"]; y = e["y"]; }
+        }
+        return Obj("x", x, "y", y);
     }
 
     static bool SameBounds(Dictionary<string, object> a, Dictionary<string, object> b) {
