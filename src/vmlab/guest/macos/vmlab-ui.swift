@@ -11,8 +11,8 @@
 //   version
 //   tree        {"app": name?, "depth": n?}
 //   displays    {}: [{"bounds", "scale", "primary"}], the one display
-//   click       {"x": n, "y": n, "button": name, "modifiers": [...], "expect": {"label": s?, "bounds": {x,y,w,h}?}?}
-//   pointer     {"button": name, "events": [{"do": move|down|up, "x", "y"} | {"do": wait, "s"} | {"do": keydown|keyup, "key": modifier}]}
+//   pointer     {"button": name, "events": [{"do": move|down|up, "x", "y"} | {"do": wait, "s"} | {"do": keydown|keyup, "key": modifier}],
+//                "expect": {"label": s?, "bounds": {x,y,w,h}?}?}: what must lie under the press (a click is these events too)
 //   press       {"key": name, "modifiers": [cmd|ctrl|alt|shift]}
 //   type        {"text": s}: returns once the focused element holds s (see awaitTyped)
 //   clipboard   {"set": s?}
@@ -42,7 +42,7 @@ import ApplicationServices
 import Foundation
 import SQLite3
 
-let VERSION = 3  // vmlab drives no version older than uihelpers.MACOS_HELPER_VERSION
+let VERSION = 4  // vmlab drives no version older than uihelpers.MACOS_HELPER_VERSION
 let MAX_NODES = 5000
 let STAGE = "vmlab-stage-"  // + 8 hex digits: the name of every file stage-text opens
 let SELECT_WAIT = 2.0  // s for a select-all to select a Staged document's text, before it is pressed again
@@ -359,9 +359,20 @@ func pointerEvents(_ button: String, _ events: [[String: Any]]) {
 
 func pointer(_ params: [String: Any]) {
     let events = params["events"] as? [[String: Any]] ?? []
+    let located = events.filter { $0["x"] != nil }
+    // What lies under the press (or the one point): refused rather than pressed blind when it is not
+    // what vmlab meant, since an element scrolled out of view, or covered, still has bounds.
+    var under: AXUIElement?
+    if let at = events.first(where: { $0["do"] as? String == "down" }) ?? located.first {
+        let point = screenPoint(at)
+        under = elementAt(point)
+        if let expect = params["expect"] as? [String: Any], !(under.map { hits($0, expect: expect) } ?? false) {
+            let what = under.map { "\(text($0, kAXRoleAttribute as String) ?? "?") \"\(label($0))\" of \(owner($0))" } ?? "nothing"
+            fail("something else is at (\(at["x"] ?? ""), \(at["y"] ?? "")): \(what); the element may be covered or scrolled out of view")
+        }
+    }
     pointerEvents(params["button"] as? String ?? "left", events)
-    let last = events.last { $0["x"] != nil } ?? [:]
-    emit(["x": last["x"] ?? NSNull(), "y": last["y"] ?? NSNull()])
+    emit(["x": located.last?["x"] ?? NSNull(), "y": located.last?["y"] ?? NSNull(), "under": under.map { label($0) } as Any? ?? NSNull()])
 }
 
 func pressCommand(_ params: [String: Any]) {
@@ -444,24 +455,6 @@ func owner(_ element: AXUIElement) -> String {
     var pid: pid_t = 0
     guard AXUIElementGetPid(element, &pid) == .success, let app = NSRunningApplication(processIdentifier: pid) else { return "?" }
     return app.localizedName ?? app.bundleIdentifier ?? "pid \(pid)"
-}
-
-func click(_ params: [String: Any]) {
-    let point = screenPoint(params)
-    let (x, y) = (Int((point.x * SCALE).rounded()), Int((point.y * SCALE).rounded()))
-    let under = elementAt(point)
-    if let expect = params["expect"] as? [String: Any] {
-        // Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
-        guard let hit = under, hits(hit, expect: expect) else {
-            let what = under.map { "\(text($0, kAXRoleAttribute as String) ?? "?") \"\(label($0))\" of \(owner($0))" } ?? "nothing"
-            fail("something else is at (\(x), \(y)): \(what); the element may be covered or scrolled out of view")
-        }
-    }
-    let modifiers = params["modifiers"] as? [String] ?? []
-    let at: [String: Any] = ["x": x, "y": y]
-    pointerEvents(params["button"] as? String ?? "left", modifiers.map { ["do": "keydown", "key": $0] }
-        + ["move", "down", "up"].map { at.merging(["do": $0]) { a, _ in a } } + modifiers.reversed().map { ["do": "keyup", "key": $0] })
-    emit(["x": x, "y": y, "under": under.map { label($0) } as Any? ?? NSNull()])
 }
 
 // MARK: - Clipboard and staging
@@ -803,7 +796,6 @@ switch args[1] {
 case "version": emit(["helper": "swift", "version": VERSION, "trusted": trusted()])
 case "tree": tree(params)
 case "displays": displays()
-case "click": click(params)
 case "pointer": pointer(params)
 case "press": pressCommand(params)
 case "type": typeCommand(params)

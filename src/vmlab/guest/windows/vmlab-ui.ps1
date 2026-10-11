@@ -181,7 +181,7 @@ public static class Helper {
         return 1;
     }
 
-    static readonly string[] inputCommands = { "click", "pointer", "press", "type", "focus", "stage-text", "close-staged", "tray" };
+    static readonly string[] inputCommands = { "pointer", "press", "type", "focus", "stage-text", "close-staged", "tray" };
 
     static object Dispatch(string command, Dictionary<string, object> p) {
         if (Array.IndexOf(inputCommands, command) >= 0) MoveBannersAside();
@@ -189,7 +189,6 @@ public static class Helper {
             case "version": return Version();
             case "tree": return Tree(p);
             case "displays": return Obj("displays", new object[] { Obj("bounds", Screen(), "scale", Scale(), "primary", true) });
-            case "click": return Click(p);
             case "pointer": return Pointer(p);
             case "press": {
                 string key = Str(p, "key");
@@ -634,53 +633,6 @@ public static class Helper {
         return best;
     }
 
-    static Dictionary<string, object> Click(Dictionary<string, object> p) {
-        if (!p.ContainsKey("x") || !p.ContainsKey("y")) throw new Fail("click needs x and y");
-        int x = (int)Num(p, "x", 0), y = (int)Num(p, "y", 0);
-        Dictionary<string, object> screen = Screen();
-        int sx = (int)screen["x"], sy = (int)screen["y"], sw = (int)screen["w"], sh = (int)screen["h"];
-        if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
-            throw new Fail("(" + x + ", " + y + ") is off the screen (" + sw + "x" + sh + ")");
-        // The chain from the deepest element at the point up to its window, as (label, bounds).
-        List<KeyValuePair<string, Dictionary<string, object>>> chain = new List<KeyValuePair<string, Dictionary<string, object>>>();
-        try {
-            System.Windows.Point at = new System.Windows.Point(x, y);
-            AutomationElement e = Deepest(AutomationElement.FromPoint(at), at);
-            TreeWalker walker = TreeWalker.ControlViewWalker;
-            while (e != null && chain.Count < 12 && !Automation.Compare(e, AutomationElement.RootElement)) {
-                chain.Add(new KeyValuePair<string, Dictionary<string, object>>(Label(e), Bounds(e.Current.BoundingRectangle)));
-                e = walker.GetParent(e);
-            }
-        } catch (ElementNotAvailableException) { }
-        object expect;
-        if (p.TryGetValue("expect", out expect) && expect is Dictionary<string, object>) {
-            // Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
-            Dictionary<string, object> want = (Dictionary<string, object>)expect;
-            string label = Str(want, "label") ?? "";
-            object wb;
-            want.TryGetValue("bounds", out wb);
-            bool hit = chain.Count > 0 && (
-                (label.Length > 0 && chain[0].Key == label)
-                || (wb is Dictionary<string, object> && chain.Exists(delegate(KeyValuePair<string, Dictionary<string, object>> link) {
-                    return SameBounds(link.Value, (Dictionary<string, object>)wb); }))
-                || (label.Length == 0 && wb == null));
-            if (!hit) {
-                string what = chain.Count > 0 ? "\"" + chain[0].Key + "\"" : "nothing";
-                throw new Fail("something else is at (" + x + ", " + y + "): " + what + "; the element may be covered or scrolled out of view");
-            }
-        }
-        List<string> modifiers = Strings(p, "modifiers");
-        List<object> events = new List<object>();
-        foreach (string m in modifiers) events.Add(Obj("do", "keydown", "key", m));
-        events.Add(Obj("do", "move", "x", x, "y", y));
-        events.Add(Obj("do", "wait", "s", 0.05));
-        events.Add(Obj("do", "down", "x", x, "y", y));
-        events.Add(Obj("do", "up", "x", x, "y", y));
-        for (int i = modifiers.Count - 1; i >= 0; i--) events.Add(Obj("do", "keyup", "key", modifiers[i]));
-        PointerEvents(Str(p, "button") ?? "left", events);
-        return Obj("x", x, "y", y, "under", chain.Count > 0 ? chain[0].Key : null);
-    }
-
     // Buttons as SendInput has them: press flag, release flag, mouseData
     static Dictionary<string, uint[]> BUTTONS = new Dictionary<string, uint[]> {
         { "left", new uint[] { 0x0002, 0x0004, 0 } }, { "right", new uint[] { 0x0008, 0x0010, 0 } },
@@ -708,9 +660,11 @@ public static class Helper {
                 throw new Fail("unknown pointer event " + kind);
             }
         }
+        string previous = null;
         foreach (object item in events) {
             Dictionary<string, object> e = item as Dictionary<string, object> ?? new Dictionary<string, object>();
-            string kind = Str(e, "do");
+            string kind = Str(e, "do"), before = previous;
+            previous = kind;
             if (kind == "wait") {
                 Thread.Sleep((int)(Num(e, "s", 0) * 1000));
                 continue;
@@ -729,6 +683,7 @@ public static class Helper {
                 input.u.mi.dy = (int)(((long)(y - sy) * 65536 + sh - 1) / sh);
                 input.u.mi.dwFlags = 0x0001 | 0x8000 | 0x4000;  // MOUSEEVENTF_MOVE, ABSOLUTE, VIRTUALDESK
             } else if (kind == "down" || kind == "up") {
+                if (kind == "down" && before == "move") Thread.Sleep(40);  // the pointer rests a moment before the press, as a hand's does
                 input.u.mi.dwFlags = kind == "down" ? b[0] : b[1];
                 input.u.mi.mouseData = b[2];
             }
@@ -742,13 +697,55 @@ public static class Helper {
         object events;
         p.TryGetValue("events", out events);
         IEnumerable list = events as IEnumerable ?? new object[0];
-        PointerEvents(Str(p, "button") ?? "left", list);
-        object x = null, y = null;
+        // The press, or the only point: what lies under it is checked before anything is sent.
+        Dictionary<string, object> pressed = null, last = null;
         foreach (object item in list) {
             Dictionary<string, object> e = item as Dictionary<string, object>;
-            if (e != null && e.ContainsKey("x")) { x = e["x"]; y = e["y"]; }
+            if (e == null || !e.ContainsKey("x")) continue;
+            if (pressed == null || (Str(pressed, "do") != "down" && Str(e, "do") == "down")) pressed = e;
+            last = e;
         }
-        return Obj("x", x, "y", y);
+        string under = null;
+        if (pressed != null) under = CheckUnder((int)Num(pressed, "x", 0), (int)Num(pressed, "y", 0), p);
+        PointerEvents(Str(p, "button") ?? "left", list);
+        return Obj("x", last == null ? null : last["x"], "y", last == null ? null : last["y"], "under", under);
+    }
+
+    /// The label of what lies at (x, y); fails when p's "expect" (label, bounds) is not it.
+    static string CheckUnder(int x, int y, Dictionary<string, object> p) {
+        Dictionary<string, object> screen = Screen();
+        int sx = (int)screen["x"], sy = (int)screen["y"], sw = (int)screen["w"], sh = (int)screen["h"];
+        if (x < sx || y < sy || x >= sx + sw || y >= sy + sh)
+            throw new Fail("(" + x + ", " + y + ") is off the screen (" + sw + "x" + sh + ")");
+        // The chain from the deepest element at the point up to its window, as (label, bounds).
+        List<KeyValuePair<string, Dictionary<string, object>>> chain = new List<KeyValuePair<string, Dictionary<string, object>>>();
+        try {
+            System.Windows.Point at = new System.Windows.Point(x, y);
+            AutomationElement e = Deepest(AutomationElement.FromPoint(at), at);
+            TreeWalker walker = TreeWalker.ControlViewWalker;
+            while (e != null && chain.Count < 12 && !Automation.Compare(e, AutomationElement.RootElement)) {
+                chain.Add(new KeyValuePair<string, Dictionary<string, object>>(Label(e), Bounds(e.Current.BoundingRectangle)));
+                e = walker.GetParent(e);
+            }
+        } catch (ElementNotAvailableException) { }
+        object expect;
+        if (p.TryGetValue("expect", out expect) && expect is Dictionary<string, object>) {
+            // Refuse rather than press blind: an element scrolled out of view, or covered, still has bounds.
+            Dictionary<string, object> want = (Dictionary<string, object>)expect;
+            string label = Str(want, "label") ?? "";
+            object wb;
+            want.TryGetValue("bounds", out wb);
+            bool hit = chain.Count > 0 && (
+                (label.Length > 0 && chain[0].Key == label)
+                || (wb is Dictionary<string, object> && chain.Exists(delegate(KeyValuePair<string, Dictionary<string, object>> link) {
+                    return SameBounds(link.Value, (Dictionary<string, object>)wb); }))
+                || (label.Length == 0 && wb == null));
+            if (!hit) {
+                string what = chain.Count > 0 ? "\"" + chain[0].Key + "\"" : "nothing";
+                throw new Fail("something else is at (" + x + ", " + y + "): " + what + "; the element may be covered or scrolled out of view");
+            }
+        }
+        return chain.Count > 0 ? chain[0].Key : null;
     }
 
     static bool SameBounds(Dictionary<string, object> a, Dictionary<string, object> b) {

@@ -312,6 +312,7 @@ def _ui_parser(sub):
         p.add_argument("--%s-at" % end, nargs=2, type=int, metavar=("X", "Y"), help="this screen point instead of an element")
     p.add_argument("--steps", type=int, default=20, help="moves from one end to the other (default: 20)")
     p.add_argument("--duration", type=float, default=0.5, help="seconds the moves take (default: 0.5)")
+    p.add_argument("--timeout", type=float, help="seconds to wait for the elements to be there and the one pressed on uncovered (default: fail at once)")
     _pressing_arguments(p, "for the whole drag")
     p = ui_sub.add_parser("press", parents=[common], help="press a key chord, e.g. cmd+shift+space")
     p.add_argument("chord")
@@ -460,7 +461,7 @@ def _ui(project, args):
         result = contract.pointer(args.action, args.x, args.y, button=args.button, hold=args.hold)
     elif c == "drag":
         ends = (_drag_end(args, "from"), _drag_end(args, "to"))
-        result = contract.drag(*ends, button=args.button, hold=args.hold, steps=args.steps, duration=args.duration)
+        result = contract.drag(*ends, button=args.button, hold=args.hold, steps=args.steps, duration=args.duration, timeout=args.timeout)
     elif c == "press":
         result = contract.press(args.chord)
     elif c == "type":

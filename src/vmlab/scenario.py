@@ -198,13 +198,12 @@ class Guest:
     def _release_held(self, attempt):
         contract = ui.UI(self._provider, lambda what: self._step_timeout)
         x, y = self._pointer_at or (0, 0)
-        for button in list(self._held_buttons):
-            last = len(self._held_buttons) == 1
+        for i, button in enumerate(self._held_buttons):
+            last = i == len(self._held_buttons) - 1
             try:
                 attempt(lambda: contract.pointer("up", x, y, button, "+".join(self._held_keys) if last else None))
             except Exception:  # best-effort, as closing a Staged document: it never changes the Run's result
-                return
-            self._held_buttons.remove(button)
+                pass
 
     def _close_staged_left(self, attempt):
         contract = ui.UI(self._provider, lambda what: self._step_timeout)
@@ -297,11 +296,12 @@ class Guest:
             self._held_keys = [m for m in self._held_keys if m not in modifiers]
         return result
 
-    def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5):
+    def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None):
         """Press button at source, move to target in steps even moves over duration seconds, release.
         source and target are each (x, y), an element's text, or a dict of find's fields plus "index"
-        (the element's middle); hold is a modifier chord held for the whole drag."""
-        return self._ui_call(lambda contract: contract.drag(source, target, button=button, hold=hold, steps=steps, duration=duration))
+        (the element's middle); hold is a modifier chord held for the whole drag. Raises if an element
+        at source is covered; with timeout (seconds), first waits for the elements as click does."""
+        return self._ui_call(lambda contract: contract.drag(source, target, button=button, hold=hold, steps=steps, duration=duration, timeout=timeout))
 
     def tray(self, app, choose=None, timeout=None):
         """Read app's Tray menu: {"items": [{"name", "enabled", "checked", "children"}], "chosen"}.

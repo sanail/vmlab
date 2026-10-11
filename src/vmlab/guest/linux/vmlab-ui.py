@@ -833,28 +833,6 @@ class UI:
             fail("unknown button %s" % name)
         return BUTTONS[name]
 
-    def click(self, params):
-        x, y = self.point(params, "click")
-        button = self.button(params)
-        modifiers = params.get("modifiers") or []
-        if any(m not in MODIFIERS for m in modifiers):
-            fail("unknown modifier in %s" % modifiers)
-        chain = self.under(x, y)
-        expect = params.get("expect")
-        if expect is not None:
-            # Refuse rather than click blind: an element scrolled out of view, or covered, still has bounds.
-            wanted_label, wanted_bounds = expect.get("label") or "", expect.get("bounds")
-            hit = bool(chain) and (
-                (wanted_label and chain[0][0] == wanted_label)
-                or (wanted_bounds is not None and any(b == wanted_bounds for _, b in chain[:12]))
-                or (not wanted_label and wanted_bounds is None)
-            )
-            if not hit:
-                what = '"%s"' % chain[0][0] if chain else "nothing"
-                fail("something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (x, y, what))
-        self.ws.pointer(button, click_events(x, y, modifiers))
-        emit({"x": x, "y": y, "under": chain[0][0] if chain else None})
-
     def pointer(self, params):
         button, events = self.button(params), params.get("events") or []
         for e in events:
@@ -865,9 +843,24 @@ class UI:
                     fail("unknown modifier %s" % e.get("key"))
             elif e.get("do") != "wait":
                 fail("unknown pointer event %s" % e.get("do"))
-        self.ws.pointer(button, events)
         located = [e for e in events if "x" in e]
-        emit({"x": located[-1]["x"], "y": located[-1]["y"]} if located else {"x": None, "y": None})
+        pressed = next((e for e in located if e["do"] == "down"), located[0] if located else None)
+        chain = self.under(pressed["x"], pressed["y"]) if pressed else []
+        expect = params.get("expect")
+        if expect is not None and pressed:
+            # Refuse rather than press blind: an element scrolled out of view, or covered, still has bounds.
+            wanted_label, wanted_bounds = expect.get("label") or "", expect.get("bounds")
+            hit = bool(chain) and (
+                (wanted_label and chain[0][0] == wanted_label)
+                or (wanted_bounds is not None and any(b == wanted_bounds for _, b in chain[:12]))
+                or (not wanted_label and wanted_bounds is None)
+            )
+            if not hit:
+                what = '"%s"' % chain[0][0] if chain else "nothing"
+                fail("something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (pressed["x"], pressed["y"], what))
+        self.ws.pointer(button, events)
+        last = located[-1] if located else {}
+        emit({"x": last.get("x"), "y": last.get("y"), "under": chain[0][0] if chain else None})
 
     def press(self, key, modifiers):
         table = EVDEV if self.kind == "wayland" else KEYSYMS
@@ -1195,8 +1188,6 @@ def main(argv):
     elif command == "displays":
         width, height = ui.screen
         emit({"displays": [{"bounds": {"x": 0, "y": 0, "w": width, "h": height}, "scale": ui.ws.scale, "primary": True}]})
-    elif command == "click":
-        ui.click(params)
     elif command == "pointer":
         ui.pointer(params)
     elif command == "press":

@@ -218,6 +218,11 @@ def key_events(do, modifiers):
     return [{"do": do, "key": m} for m in modifiers]
 
 
+def click_events(x, y, modifiers):
+    at = {"x": x, "y": y}
+    return key_events("keydown", modifiers) + [dict(at, do=d) for d in ("move", "down", "up")] + key_events("keyup", modifiers[::-1])
+
+
 def chord_text(key, modifiers):
     return "+".join(list(modifiers) + [key])
 
@@ -765,22 +770,32 @@ class UI:
         With timeout (seconds), retry until the element is there and uncovered; when time runs
         out, raise with the last reason. at=(x, y) clicks ignore timeout.
         """
-        pressing = {"button": check_button(button), "modifiers": parse_hold(hold)}
+        button, modifiers = check_button(button), parse_hold(hold)
         if at is not None:
             x, y = at
-            result = self._call("click", dict(pressing, x=x, y=y))
-            return {"x": result["x"], "y": result["y"], "element": None, "under": result.get("under")}
+            result = self._pointer(button, click_events(x, y, modifiers))
+            return {"x": x, "y": y, "element": None, "under": result.get("under")}
         query.require("click")
+
+        def attempt():
+            element, x, y = self._target(query, index, "click")
+            result = self._pointer(button, click_events(x, y, modifiers), element)
+            return {"x": x, "y": y, "element": element, "under": result.get("under")}
+
+        return self._retrying("click %s" % query, timeout, attempt)
+
+    def _retrying(self, doing, timeout, attempt):
+        """attempt(); with timeout (seconds), tried again while it raises NotClickable, then raised with the last reason."""
         if timeout is None:
-            return self._click(query, index, pressing)
+            return attempt()
         deadline = hostpower.awake_time() + timeout
         while True:
             try:
-                return self._click(query, index, pressing)
+                return attempt()
             except NotClickable as exc:
                 now = hostpower.awake_time()
                 if now >= deadline:
-                    raise GuestError("could not click %s within %gs: %s" % (query, timeout, exc.message), exc.fix)
+                    raise GuestError("could not %s within %gs: %s" % (doing, timeout, exc.message), exc.fix)
                 time.sleep(min(POLL_SECONDS, deadline - now))
 
     def _target(self, query, index, doing):
@@ -794,16 +809,18 @@ class UI:
             raise NotClickable("the element matching %s has no bounds on screen" % query, "it may be hidden; wait for it to appear, or click another element")
         return element, b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
 
-    def _click(self, query, index, pressing):
-        """One try at clicking; NotClickable when the element is not there or is covered."""
-        element, x, y = self._target(query, index, "click")
+    def _pointer(self, button, events, element=None):
+        """Send events with button. With element, the helper first checks that it is what lies under
+        the press (the first down), and refuses (NotClickable) when something else is."""
+        params = {"button": button, "events": events}
+        if element is not None:
+            params["expect"] = {"label": label(element), "bounds": element["bounds"]}
         try:
-            result = self._call("click", dict(pressing, x=x, y=y, expect={"label": label(element), "bounds": element["bounds"]}))
+            return self._call("pointer", params)
         except GuestError as exc:
             if type(exc) is GuestError and COVERED in exc.message:
                 raise NotClickable(exc.message)
             raise
-        return {"x": result["x"], "y": result["y"], "element": element, "under": result.get("under")}
 
     def pointer(self, action, x, y, button="left", hold=None):
         """One pointer action at (x, y): "move" there, press the button there ("down") or release it ("up").
@@ -819,29 +836,34 @@ class UI:
             events = key_events("keydown", modifiers) + [dict(at, do="move")] + key_events("keyup", modifiers[::-1])
         else:
             raise UsageError("pointer takes move, down or up, not %r" % (action,))
-        self._call("pointer", {"button": check_button(button), "events": events})
+        self._pointer(check_button(button), events)
         return {"action": action, "x": x, "y": y, "button": button, "hold": "+".join(modifiers) or None}
 
-    def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5):
+    def drag(self, source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None):
         """Press the button at source, move to target in steps even moves over duration seconds, release.
 
         source and target are each (x, y) or an element: its text, or a dict of find's fields plus
-        "index", whose middle is used. hold is a modifier chord held for the whole drag."""
+        "index", whose middle is used. hold is a modifier chord held for the whole drag. An element
+        at source must be what lies under the press; with timeout (seconds), the drag waits for
+        both elements to be there and the source uncovered, as click does."""
         if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
             raise UsageError("steps must be a whole number >= 1, not %r" % (steps,))
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
             raise UsageError("duration must be a number of seconds >= 0, not %r" % (duration,))
-        check_button(button)
-        modifiers = parse_hold(hold)
-        ends = [self._drag_end(end) for end in (source, target)]
-        (x0, y0), (x1, y1) = [(e["x"], e["y"]) for e in ends]
-        wait = {"do": "wait", "s": round(duration / steps, 3)}
-        events = key_events("keydown", modifiers) + [{"do": "move", "x": x0, "y": y0}, {"do": "down", "x": x0, "y": y0}, {"do": "wait", "s": DRAG_PAUSE}]
-        for i in range(1, steps + 1):
-            events += [{"do": "move", "x": round(x0 + (x1 - x0) * i / steps), "y": round(y0 + (y1 - y0) * i / steps)}, wait]
-        events += [{"do": "wait", "s": DRAG_PAUSE}, {"do": "up", "x": x1, "y": y1}] + key_events("keyup", modifiers[::-1])
-        self._call("pointer", {"button": button, "events": events})
-        return {"from": ends[0], "to": ends[1], "button": button, "hold": "+".join(modifiers) or None}
+        button, modifiers = check_button(button), parse_hold(hold)
+
+        def attempt():
+            ends = [self._drag_end(end) for end in (source, target)]
+            (x0, y0), (x1, y1) = [(e["x"], e["y"]) for e in ends]
+            wait, pause = {"do": "wait", "s": round(duration / steps, 3)}, {"do": "wait", "s": DRAG_PAUSE}
+            events = key_events("keydown", modifiers) + [{"do": "move", "x": x0, "y": y0}, {"do": "down", "x": x0, "y": y0}, pause]
+            for i in range(1, steps + 1):
+                events += [{"do": "move", "x": round(x0 + (x1 - x0) * i / steps), "y": round(y0 + (y1 - y0) * i / steps)}, wait]
+            events += [pause, {"do": "up", "x": x1, "y": y1}] + key_events("keyup", modifiers[::-1])
+            self._pointer(button, events, ends[0]["element"])
+            return {"from": ends[0], "to": ends[1], "button": button, "hold": "+".join(modifiers) or None}
+
+        return self._retrying("drag from %r" % (source,), timeout, attempt)
 
     def _drag_end(self, end):
         """A drag's end as {"x", "y", "element"}: a point, or the middle of an element (text or find's fields plus "index")."""

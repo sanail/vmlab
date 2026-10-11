@@ -192,23 +192,11 @@ function pointerEvents(button, events) {
   }
 }
 
-function click(params) {
-  const modifiers = params.modifiers || [];
-  const at = { x: params.x, y: params.y };
-  pointerEvents(
-    params.button || "left",
-    modifiers.map((m) => ({ do: "keydown", key: m }))
-      .concat(["move", "down", "up"].map((d) => Object.assign({ do: d }, at)))
-      .concat(modifiers.slice().reverse().map((m) => ({ do: "keyup", key: m }))),
-  );
-  return { x: params.x, y: params.y, under: null };
-}
-
 function pointer(params) {
   const located = params.events.filter((e) => "x" in e);
   pointerEvents(params.button || "left", params.events);
   const last = located[located.length - 1] || {};
-  return { x: last.x, y: last.y };
+  return { x: last.x, y: last.y, under: null };
 }
 
 function press(key, modifiers) {
@@ -474,7 +462,6 @@ function run(argv) {
     case "version": result = { helper: "jxa", version: VERSION, trusted: $.AXIsProcessTrusted() }; break;
     case "tree": result = tree(params); break;
     case "displays": result = { displays: [{ bounds: screenBounds(), scale: SCALE, primary: true }] }; break;
-    case "click": result = click(params); break;
     case "pointer": result = pointer(params); break;
     case "press": press(params.key, params.modifiers || []); result = { key: params.key, modifiers: params.modifiers || [] }; break;
     case "type": events.keystroke(params.text); result = { typed: Array.from(params.text).length }; break;

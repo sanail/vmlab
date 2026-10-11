@@ -32,8 +32,9 @@ from vmlab.providers.base import ChannelError, GuestError
 from vmlab.providers.windows import helper_call
 
 MACOS_HELPER = "/usr/local/vmlab/bin/vmlab-ui"
-# vmlab-ui's oldest version this vmlab drives: an older one speaks points, or clicks left for every button
-MACOS_HELPER_VERSION = 3
+# vmlab-ui's oldest version this vmlab drives: an older one speaks points, clicks left for every
+# button, or presses without checking what lies under the press
+MACOS_HELPER_VERSION = 4
 MISSING = 127
 # exit 127 when the helper is not installed, whatever the Channel does with a missing program
 MACOS_GUARD = 'h=%s; [ -x "$h" ] || exit %d; exec "$h" "$@"' % (MACOS_HELPER, MISSING)

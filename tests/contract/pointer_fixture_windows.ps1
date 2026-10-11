@@ -6,29 +6,41 @@
 # Its window, titled TITLE, prints a line per button press, release and move with a button
 # held: "down|move|up BUTTON MODIFIERS", BUTTON left, right, middle, back or forward,
 # MODIFIERS like ctrl+shift, or - for none. Windows PowerShell and .NET only: the Guest installs nothing.
+#
+# The handlers are C#, compiled before the window is up: Windows keeps only the last of the moves
+# an app has not yet taken, and a PowerShell handler readied on its first call cost a drag its moves.
 param([string]$Title)
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -ReferencedAssemblies System.Windows.Forms, System.Drawing -TypeDefinition @'
+using System;
+using System.Windows.Forms;
 
-$buttons = @{ Left = 'left'; Right = 'right'; Middle = 'middle'; XButton1 = 'back'; XButton2 = 'forward' }
+public class PointerPad : Form {
+    static string ButtonName(MouseButtons button) {
+        switch (button) {
+            case MouseButtons.Left: return "left";
+            case MouseButtons.Right: return "right";
+            case MouseButtons.Middle: return "middle";
+            case MouseButtons.XButton1: return "back";
+            case MouseButtons.XButton2: return "forward";
+        }
+        return button.ToString();
+    }
 
-function Line($what, $button) {
-    $keys = [System.Windows.Forms.Control]::ModifierKeys
-    $held = @()
-    if ($keys -band [System.Windows.Forms.Keys]::Control) { $held += 'ctrl' }
-    if ($keys -band [System.Windows.Forms.Keys]::Alt) { $held += 'alt' }
-    if ($keys -band [System.Windows.Forms.Keys]::Shift) { $held += 'shift' }
-    "$what $($buttons[[string]$button]) $(if ($held) { $held -join '+' } else { '-' })"
+    static void Say(string what, MouseButtons button) {
+        Keys keys = Control.ModifierKeys;
+        string held = ((keys & Keys.Control) != 0 ? "+ctrl" : "") + ((keys & Keys.Alt) != 0 ? "+alt" : "") + ((keys & Keys.Shift) != 0 ? "+shift" : "");
+        Console.Out.WriteLine(what + " " + ButtonName(button) + " " + (held.Length > 0 ? held.Substring(1) : "-"));
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e) { Say("down", e.Button); base.OnMouseDown(e); }
+    protected override void OnMouseMove(MouseEventArgs e) { if (e.Button != MouseButtons.None) Say("move", e.Button); base.OnMouseMove(e); }
+    protected override void OnMouseUp(MouseEventArgs e) { Say("up", e.Button); base.OnMouseUp(e); }
 }
+'@
 
-# PowerShell compiles a function on its first call, and Windows keeps only the last of the moves
-# an app has not yet taken: compiled during the drag's press, Line cost the drag all but one move.
-$null = Line 'down' 'Left'
-
-$form = New-Object System.Windows.Forms.Form
+$form = New-Object PointerPad
 $form.Text = $Title
 $form.Width, $form.Height = 600, 400
-$form.add_MouseDown({ param($s, $e) [Console]::Out.WriteLine((Line 'down' $e.Button)) })
-$form.add_MouseMove({ param($s, $e) if ($e.Button -ne 'None') { [Console]::Out.WriteLine((Line 'move' $e.Button)) } })
-$form.add_MouseUp({ param($s, $e) [Console]::Out.WriteLine((Line 'up' $e.Button)) })
 'window up'
 [System.Windows.Forms.Application]::Run($form)

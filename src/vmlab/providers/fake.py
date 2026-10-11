@@ -209,8 +209,8 @@ class FakeProvider(Provider):
         """The UI contract without a helper: the scripted tree, plus a text editor with a window per
         Staged document, the front one first: stage-text opens one, close-staged closes one.
 
-        Clicks, pointer events, key presses and the items tray chooses are recorded; a click on a scripted element with "covered_by" refuses,
-        as a helper does when something else is on top of it. In the editor, a click focuses the text
+        Pointer events, key presses and the items tray chooses are recorded; a press on a scripted element with "covered_by" refuses,
+        as a helper does when something else is on top of it. In the editor, a press focuses the text
         area, cmd+a selects all, cmd+c / cmd+v copy and paste (or ctrl+...), and typing replaces
         the selection. The clipboard and the editor live in the Guest's filesystem,
         so restoring Clean state clears them.
@@ -232,18 +232,16 @@ class FakeProvider(Provider):
             return dict(tree, bounds=self._display_bounds(), children=apps)
         if command == "displays":
             return {"displays": [{"bounds": self._display_bounds(), "scale": 1, "primary": True}]}
-        if command == "click":
+        if command == "pointer":
+            located = [e for e in params["events"] if "x" in e]
             cover = _cover(self._scripted_tree(), params.get("expect", {}).get("bounds"))
             if cover:
-                x, y = params["x"], params["y"]
-                raise GuestError("UI click failed in the Guest (fake): something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (x, y, cover))
-            if area and _inside(area["bounds"], params["x"], params["y"]):
+                x, y = located[0]["x"], located[0]["y"]
+                raise GuestError("UI pointer failed in the Guest (fake): something else is at (%d, %d): %s; the element may be covered or scrolled out of view" % (x, y, cover))
+            if area and any(e["do"] == "down" and _inside(area["bounds"], e["x"], e["y"]) for e in located):
                 area["focused"], state["selected"] = True, False
-            self._save_ui_state(state)
-            return {"x": params["x"], "y": params["y"], "under": None}
-        if command == "pointer":
-            last = [e for e in params["events"] if "x" in e][-1]
-            return {"x": last["x"], "y": last["y"]}
+                self._save_ui_state(state)
+            return {"x": located[-1]["x"], "y": located[-1]["y"], "under": None}
         if command == "press":
             shortcut = _shortcut(params)
             if area and area["focused"]:

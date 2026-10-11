@@ -162,6 +162,18 @@ class TreeWalkTest(unittest.TestCase):
         chain = self.ui.under(50, 70)
         self.assertEqual(chain[0][0], "Run", chain)
 
+    def test_a_press_on_something_else_than_expected_is_refused_before_any_event(self):
+        sent = []
+        self.ui.ws.pointer = lambda button, events: sent.append(events)
+        events = [{"do": "move", "x": 50, "y": 70}, {"do": "down", "x": 50, "y": 70}, {"do": "up", "x": 50, "y": 70}]
+        with redirect_stdout(io.StringIO()) as out:
+            self.ui.pointer({"events": events, "expect": {"label": "Run"}})
+        self.assertEqual(json.loads(out.getvalue())["under"], "Run")
+        with mock.patch("sys.stderr", io.StringIO()) as err, self.assertRaises(SystemExit):
+            self.ui.pointer({"events": events, "expect": {"label": "Save"}})
+        self.assertIn('something else is at (50, 70): "Run"', err.getvalue())
+        self.assertEqual(len(sent), 1)
+
     def test_at_scale_2_toolkit_units_become_desktop_pixels(self):
         # Wayland at scale 2: the window manager's frame already in Desktop pixels, the toolkit's extents logical.
         self.ui.ws.toolkit_scale = 2.0

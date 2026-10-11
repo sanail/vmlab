@@ -396,20 +396,22 @@ def scenario(g):
     g.check("the fixture's window is up", up["met"], detail=up)
     b = up["matches"][0]["bounds"]
     x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2 + 20  # clear of the title bar
-    g.drag((x - 100, y), (x + 100, y), hold="shift", steps=5)
+    dragged = g.drag({"text": NAME, "role": "window", "app": NAME}, (x + 100, y), hold="shift", steps=5)
+    g.check("a drag from an element presses at its middle", dragged["from"]["element"]["name"] == NAME, detail=dragged)
     g.pointer("down", x, y - 50, button="middle")
     g.pointer("move", x + 20, y - 50, button="middle")
     g.pointer("move", x + 40, y - 50, button="middle")
     g.pointer("up", x + 40, y - 50, button="middle")
-    for button in ("right", "back"):
+    for button in ("right", "middle", "back", "forward"):
         g.click(at=(x, y), button=button)
-    g.wait_for(log=fixture.log, pattern="up back", timeout=10)
+    g.wait_for(log=fixture.log, pattern="up forward", timeout=10)
     seen = printed(g, fixture)
     runs = [line for i, line in enumerate(seen) if i == 0 or line != seen[i - 1]]
     g.check("a drag and pointer calls press, move with and release their button, holding their modifiers",
             runs[:6] == ["down left shift", "move left shift", "up left shift", "down middle -", "move middle -", "up middle -"], detail=seen)
     g.check("each moved at least twice", seen.count("move left shift") >= 2 and seen.count("move middle -") >= 2, detail=seen)
-    g.check("right and back clicks", runs[6:] == ["down right -", "up right -", "down back -", "up back -"], detail=seen)
+    g.check("right, middle, back and forward clicks", runs[6:] == [
+        "down right -", "up right -", "down middle -", "up middle -", "down back -", "up back -", "down forward -", "up forward -"], detail=seen)
     fixture.stop()
 '''
 

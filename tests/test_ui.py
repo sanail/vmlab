@@ -878,12 +878,33 @@ class PointerTest(UiTestCase):
     def test_drag_from_nothing_fails_naming_what_was_sought(self):
         self.assertIn("no element to drag matches text='Nope'", self.ui("drag", "--from-text", "Nope", "--to-at", "1", "1", code=1).err)
 
-    def test_click_takes_a_button_and_hold(self):
+    def test_a_click_is_pointer_events_expecting_the_element_under_its_press(self):
         self.ui("click", "--text", "Run", "--app", "MyApp", "--button", "back", "--hold", "cmd+alt")
         self.ui("click", "--at", "5", "7")
-        named, plain = self.calls("click")
-        self.assertEqual((named["button"], named["modifiers"]), ("back", ["alt", "cmd"]))
-        self.assertEqual((plain["button"], plain["modifiers"]), ("left", []))
+        named, plain = self.calls("pointer")
+        self.assertEqual(named, {"button": "back", "expect": {"label": "Run", "bounds": {"x": 220, "y": 350, "w": 60, "h": 20}}, "events": [
+            {"do": "keydown", "key": "alt"}, {"do": "keydown", "key": "cmd"},
+            move(250, 360), dict(move(250, 360), do="down"), dict(move(250, 360), do="up"),
+            {"do": "keyup", "key": "cmd"}, {"do": "keyup", "key": "alt"},
+        ]})  # fmt: skip
+        self.assertEqual(plain, {"button": "left", "events": [move(5, 7), dict(move(5, 7), do="down"), dict(move(5, 7), do="up")]})
+        self.assertEqual(self.calls("click"), [])
+
+    def test_drag_from_a_covered_element_fails_at_once_naming_what_covers_it(self):
+        self.write_tree(covered_by="loginwindow")
+        r = self.ui("drag", "--from-text", "Run", "--from-role", "button", "--app", "MyApp", "--to-at", "1", "1", code=1)
+        self.assertIn("loginwindow", r.err)
+
+    def test_drag_with_a_timeout_waits_for_its_element_to_be_uncovered(self):
+        self.write_tree(covered_by="loginwindow")
+        self.later(1, self.write_tree)
+        dragged = self.ui("drag", "--from-text", "Run", "--from-role", "button", "--app", "MyApp", "--to-at", "1", "1", "--timeout", "10")
+        self.assertEqual(dragged["from"]["element"]["name"], "Run")
+        self.assertEqual(self.calls("pointer")[-1]["expect"]["label"], "Run")
+
+    def test_drag_from_a_point_expects_nothing(self):
+        self.ui("drag", "--from-at", "0", "0", "--to-at", "1", "1")
+        self.assertNotIn("expect", self.calls("pointer")[0])
 
     def test_unknown_buttons_and_keys_in_hold_are_refused(self):
         self.assertIn("buttons: left, right, middle, back, forward", self.ui("pointer", "down", "1", "1", "--button", "wheel", code=2).err)
@@ -905,6 +926,18 @@ class PointerTest(UiTestCase):
         # shift is held already: only alt is pressed and released around the move
         self.assertEqual(moved["events"], [{"do": "keydown", "key": "alt"}, move(30, 40), {"do": "keyup", "key": "alt"}])
         self.assertEqual(released, {"button": "left", "events": [move(30, 40), dict(move(30, 40), do="up"), {"do": "keyup", "key": "shift"}]})
+
+    def test_every_held_button_is_released_and_the_modifiers_with_the_last(self):
+        self.project.scenario("two.py", """
+            def scenario(g):
+                g.pointer("down", 10, 20, button="right", hold="shift")
+                g.pointer("down", 10, 20)
+                g.check("held", True)
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+        released = [c for c in self.calls("pointer") if c["events"][-1]["do"] in ("up", "keyup")]
+        self.assertEqual([c["button"] for c in released], ["right", "left"])
+        self.assertEqual(released[-1]["events"][-1], {"do": "keyup", "key": "shift"})
 
     def test_an_up_in_a_scenario_releases_what_its_down_held(self):
         self.project.scenario("up.py", """
