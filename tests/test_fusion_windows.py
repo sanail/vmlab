@@ -264,6 +264,27 @@ class WindowsLanguageTest(WindowsTestCase):
         self.assertEqual(self.base_calls("start"), [])
         self.assertIn("setting the new copy to ru-RU", r.out)
 
+    def test_a_scale_is_set_in_one_extra_boot_before_clean_state(self):
+        self.project.config(WINDOWS_LAB + "scale = 1.5\n")
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("setting the new copy to scale 1.5", r.out)
+        self.assertEqual(self.base_calls("start"), [], "en-US is the Base guest's: no language pack")
+        [vm] = self.clones().values()
+        self.assertNotIn("vmlab-clean", vm["snapshots"], "Clean state only once the scale is set")
+        self.assertEqual(self.clone_record()[1]["scale"], 1.5)
+
+    def test_a_changed_scale_makes_the_copy_again(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.project.config(WINDOWS_LAB + "scale = 2\n")
+
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+
     def test_an_english_copy_stays_current_after_a_language_is_installed(self):
         self.vmlab("up")
         self.vmlab("down")

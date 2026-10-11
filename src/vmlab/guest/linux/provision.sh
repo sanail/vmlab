@@ -59,6 +59,14 @@ fi
 
 say "power: the Guest never suspends (an idle GNOME would, and take VMware Tools with it)"
 sudo -n systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target >/dev/null 2>&1
+# An app with unsaved work makes the session block shutdown, and logind then refuses the
+# VMware Tools' halt: the Guest shut down only when vmlab powered it off, minutes later.
+say "power: a shutdown from the Host goes ahead whatever the session blocks"
+sudo -n mkdir -p /etc/vmware-tools/scripts/poweroff-vm-default.d
+printf '#!/bin/sh
+exec systemctl poweroff --check-inhibitors=no
+' | sudo -n tee /etc/vmware-tools/scripts/poweroff-vm-default.d/90-vmlab-poweroff >/dev/null
+sudo -n chmod 755 /etc/vmware-tools/scripts/poweroff-vm-default.d/90-vmlab-poweroff
 
 say "no update notifier: its banners and dialogs cover the app under test"
 mkdir -p ~/.config/autostart

@@ -688,6 +688,17 @@ def _put_back(vm, snapshot):
         pass
 
 
+def set_scale(ssh, scale):
+    """Give a running copy's autologin user the Lab's scale (Windows' custom scaling, LogPixels), which
+    the next sign-in shows."""
+    script = ("$k = 'HKCU:\\Control Panel\\Desktop'; Set-ItemProperty $k -Name LogPixels -Value %d -Type DWord; "
+              "Set-ItemProperty $k -Name Win8DpiScaling -Value 1 -Type DWord" % round(96 * scale))
+    result = ssh.exec(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], CALL_TIMEOUT, {})
+    if not result.ok:
+        raise GuestError("setting the copy's scale failed: %s" % ((result.stderr or result.stdout).strip() or "exit %s" % result.code),
+                         "run `vmlab up` again: the copy is made again")  # fmt: skip
+
+
 def set_language(ssh, language):
     """Give a running copy's autologin user, the welcome screen and new users the Lab language: its
     display language, regional formats and keyboard next to US, which stays the default. The next

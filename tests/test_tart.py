@@ -545,3 +545,22 @@ class CleanTest(TartTestCase):
         self.assertExit(r, 0)
         self.assertIn("vmlab-gone-1-mac", r.out)
         self.assertEqual(list(tart_dir.iterdir()), [])
+
+
+class TartScaleTest(TartTestCase):
+    """Tart shows macOS at scale 2 on a display given in points; a Lab at scale 1 gets it in pixels."""
+
+    def setUp(self):
+        super().setUp()
+        self.tart_state(local=["vmlab-base-macos-tahoe"], oci=[], running=[])
+        self.base_record()
+
+    def displays(self):
+        return [c[c.index("--display") + 1] for c in self.tart_calls() if c[0] == "set" and "--display" in c]
+
+    def test_the_display_is_in_points_unless_the_lab_is_at_scale_1(self):
+        for scale, display in (("", "1920x1080"), ("scale = 2\n", "1920x1080"), ("scale = 1\n", "1920x1080px")):
+            with self.subTest(scale or "no scale"):
+                self.project.config(TART_LAB + scale)
+                self.vmlab("up")  # the fake tart never boots a VM
+                self.assertEqual(self.displays()[-1], display)

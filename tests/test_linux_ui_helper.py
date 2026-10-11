@@ -214,6 +214,16 @@ class PointerTest(unittest.TestCase):
         self.assertEqual(sent[0], {"do": "keydown", "key": 42, "button": 3})
         self.assertEqual(sent[4], {"do": "move", "x": 15, "y": 20, "button": 3})
 
+    def test_wayland_takes_an_apps_tooltip_for_no_window_of_its_own(self):
+        # A tab's tooltip, up while the pointer rests on the tab, is the app's topmost window, and never takes the focus.
+        shell = self.helper.WaylandShell.__new__(self.helper.WaylandShell)
+        shell.stage_scale = 1.0
+        window = {"pid": 7, "frame": [0, 0, 700, 520], "buffer": [0, 0, 700, 520], "focused": False, "hidden": False}
+        shell._call = lambda *args: (json.dumps({"screen": [1280, 800], "windows": [
+            dict(window, id=1, title="doc.txt - Text Editor", type=0), dict(window, id=2, title="", type=11)]}),)
+        _, windows = shell.state()
+        self.assertEqual([w.background for w in windows], [False, True])
+
 
 class TickStateTest(unittest.TestCase):
     """How AT-SPI states become a node's "checked"."""
@@ -392,3 +402,32 @@ class StageTextTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SetScaleTest(unittest.TestCase):
+    """set-scale.py picks the mode that keeps the Desktop about its size at scale 1."""
+
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("vmlab_set_scale", str(HELPER.parent / "set-scale.py"))
+        self.script = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.script)
+        # GetCurrentState of a Fusion Guest at 1280x800, its modes cut to a few (id, w, h, rate, preferred scale, scales, props)
+        modes = [
+            ("2560x1600@59.987", 2560, 1600, 59.986587524414062, 1.0, [1.0, 1.25, 1.3333333730697632, 1.6666666269302368, 2.0, 2.5], {}),
+            ("1920x1200@59.950", 1920, 1200, 59.950172424316406, 1.0, [1.0, 1.25, 1.3333333730697632, 1.5, 1.6666666269302368, 2.0], {}),
+            ("1792x1344@60.000", 1792, 1344, 59.999790191650391, 1.0, [1.0, 1.3333333730697632, 1.75, 2.0], {}),
+            ("1680x1050@59.954", 1680, 1050, 59.954250335693359, 1.0, [1.0, 1.25, 1.5, 1.6666666269302368, 1.75, 2.0], {}),
+            ("1600x900@60.000", 1600, 900, 60.0, 1.0, [1.0, 1.25, 1.3333333730697632, 1.6666666269302368], {}),
+            ("1280x800@60.000", 1280, 800, 60.0, 1.0, [1.0, 1.25, 1.3333333730697632], {"is-current": True, "is-preferred": True}),
+        ]
+        self.state = (1, [(("Virtual-1", "unknown", "unknown", "unknown"), modes, {})], [], {})
+
+    def test_each_scale_gets_the_mode_nearest_the_desktops_size(self):
+        for scale, size in ((1, (1280, 800)), (1.25, (1600, 900)), (1.5, (1920, 1200)), (1.75, (1792, 1344)), (2, (2560, 1600))):
+            with self.subTest(scale):
+                self.assertEqual(self.script.choose(self.state, scale)[1][:2], size)
+
+    def test_monitors_xml_names_the_monitor_its_mode_and_scale(self):
+        xml = self.script.monitors_xml(*self.script.choose(self.state, 1.5))
+        for part in ("<connector>Virtual-1</connector>", "<width>1920</width>", "<rate>59.950172424316406</rate>", "<scale>1.5</scale>"):
+            self.assertIn(part, xml)

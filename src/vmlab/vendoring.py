@@ -42,6 +42,7 @@ TEMPLATE = """\
 # os = "macos"             # macos | windows | linux
 # arch = "arm64"           # arm64 | x86_64; defaults to the Host's
 # language = "en-US"       # the Lab language (ll-RR): system element names come in it; en-US by default
+# scale = 2                # Display scale: macOS 1 or 2, Windows and GNOME 1 to 2 by 0.25, Xfce 1 or 2; left out: the Guest's own
 # memory_gb = 4            # Host RAM the Guest takes; `run --parallel` queues Labs whose memory or `cpu` doesn't fit
 # boot_timeout = 300       # seconds from power-on until the Guest must be reachable (the Host's sleep does not count)
 # step_timeout = 60        # default seconds per Guest call

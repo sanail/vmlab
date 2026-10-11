@@ -265,7 +265,7 @@ class FusionDoctorTest(FusionTestCase):
         self.base_guest("first")
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"].update(dict({"provisioned": 8}, **record))
+        records["ubuntu-26.04"].update(dict({"provisioned": 9}, **record))
         path.write_text(json.dumps(records))
         if credentials:
             (self.project.home / "fusion" / "vmlab-base-ubuntu-26.04.credentials.json").write_text('{"user": "vmlab", "password": "pw"}')
@@ -281,7 +281,7 @@ class FusionDoctorTest(FusionTestCase):
 
         self.assertExit(r, 0)
         self.assertRegex(r.out, r"ok\s+linux: Provider fusion")
-        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v8\)")
+        self.assertRegex(r.out, r"ok\s+linux: Base guest ubuntu-26.04: provisioned \(v9\)")
         self.assertRegex(r.out, r"info\s+linux: Clone: none yet")
 
     def test_a_base_guest_provisioned_by_an_older_vmlab_is_a_warning(self):
@@ -290,7 +290,7 @@ class FusionDoctorTest(FusionTestCase):
 
         r = self.vmlab("doctor")
 
-        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v8\)")
+        self.assertRegex(r.out, r"warn\s+linux: Base guest ubuntu-26.04: provisioned by an older vmlab \(v1; this one provisions v9\)")
 
     def test_a_base_guest_without_its_provisioned_snapshot_fails(self):
         self.project.config(FUSION_LAB)
@@ -674,6 +674,37 @@ class FusionCloneTest(FusionTestCase):
         self.assertEqual(len(self.calls("deleteVM")), 1)
         self.assertEqual(len(self.calls("clone")), 2)
 
+    def test_a_scale_gets_clean_state_only_once_it_is_set(self):
+        # Set in the booted clone, before vmlab-clean is taken, as the language is; no Guest boots here.
+        self.project.config(FUSION_LAB + "scale = 1.5\n")
+
+        r = self.vmlab("up")
+
+        self.assertExit(r, 1)
+        self.assertIn("scale 1.5", r.err)
+        [vm] = self.clones().values()
+        self.assertNotIn("vmlab-clean", vm["snapshots"])
+        self.assertFalse(vm["running"], "a clone left half-prepared is stopped")
+
+    def test_changing_the_scale_recreates_the_clone(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.project.config(FUSION_LAB + "scale = 2\n")
+
+        self.assertRegex(self.vmlab("doctor").out, r"info\s+linux: Clone: made at the scale the Guest had; `vmlab up linux` makes it again at scale 2")
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+        self.assertEqual(len(self.calls("clone")), 2)
+
+    def test_xfce_takes_scale_1_or_2(self):
+        self.project.config(FUSION_LAB + 'scale = 1.5\n[labs.linux.fusion]\nsession = "x11"\n')
+
+        r = self.vmlab("status")
+
+        self.assertExit(r, 2)
+        self.assertIn("labs.linux.scale: this Lab's linux shows 1 or 2, not 1.5", r.err)
+
     def test_the_clone_starts_without_a_sound_device(self):
         # A Guest must not play through the Host's speakers or take its Bluetooth headset. Reverting
         # to a snapshot brings back the sound of the moment it was taken: turned off at every start.
@@ -826,7 +857,7 @@ class FusionOldSnapshotsTest(FusionTestCase):
         self.base_guest(provisioned_id)
         path = self.project.home / "bases.json"
         records = json.loads(path.read_text())
-        records["ubuntu-26.04"]["provisioned"] = 8  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
+        records["ubuntu-26.04"]["provisioned"] = 9  # this vmlab's PROVISION_VERSION: `base create` finds it ready (as ready_base)
         path.write_text(json.dumps(records))
         self.set_state(self.base_vmx_path(), snapshots=old + ["vmlab-provisioned-%s" % provisioned_id])
 

@@ -66,6 +66,7 @@ class Target:
         status = self.status()
         self.os = status["os"]
         self.language = status["language"]
+        self.scale = status["scale"]
         self.provider = status["provider"]
         # The Fake Provider emulates the UI contract on every OS; real Guests have helpers per OS.
         self.has_ui = self.provider == "fake" or self.os in UI_OSES
@@ -1099,6 +1100,18 @@ def scenario(g):
         r = g.exec(["powershell", "-NoProfile", "-Command", WINDOWS_UI_LANGUAGE + "; (Get-Culture).Name"])
         g.check("the display language and the regional formats", r.stdout.split() == [g.language, g.language], detail=r.stdout)
 """ % (self.target.provider == "fake", self.target.language) + "WINDOWS_UI_LANGUAGE = %r\n" % WINDOWS_UI_LANGUAGE))
+
+    @ui
+    def test_07c2_the_guest_shows_the_labs_scale(self):
+        if self.target.scale is None:
+            self.skipTest("the Lab sets no scale: its Guest keeps its Provider's")
+        self.assertPassed(*self.target.scenario("scale.py", """
+SCALE = %r
+
+def scenario(g):
+    shown = g.displays()["displays"][0]["scale"]
+    g.check("the Display is at scale %%g" %% SCALE, abs(shown - SCALE) < 0.01, detail=shown)
+""" % self.target.scale))
 
     @ui
     def test_07d_ui_a_stock_app_names_its_elements_in_the_lab_language(self):

@@ -26,13 +26,15 @@ reaches the Host, and they cannot take its Bluetooth headset.
 
 The Linux desktop session is GNOME on Wayland, or Xfce on X11 for Labs that
 ask for it; a Lab language other than en-US (the Base guest's) is set in the
-clone too, with its GNOME/GTK translations downloaded. A new clone of such a
-Lab boots once to switch its autologin session and language before its Clean
-state is taken. Commands run with the session's environment (DISPLAY,
-WAYLAND_DISPLAY, LANG, ...), as a terminal on its desktop would. A Windows
-copy in another language than its Base guest's display language boots once
-to switch to it too, from a language pack vmlab installs into the Base guest
-the first time a Lab needs it (fusion_windows.add_language).
+clone too, with its GNOME/GTK translations downloaded, and so is a Lab's scale
+(guest/linux/set-scale.py). A new clone of such a Lab boots once to switch its
+autologin session, language and scale before its Clean state is taken.
+Commands run with the session's environment (DISPLAY, WAYLAND_DISPLAY, LANG,
+...), as a terminal on its desktop would. A Windows copy in another language
+than its Base guest's display language boots once to switch to it too, from a
+language pack vmlab installs into the Base guest the first time a Lab needs it
+(fusion_windows.add_language); a copy at a Lab's scale boots once to set it,
+which the next sign-in shows.
 
 Options, under [labs.<name>.fusion]:
 
@@ -89,7 +91,7 @@ PROBE_TIMEOUT = 15  # s per reachability probe; vmrun may hang while the Guest b
 INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads updates
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 1800
-PROVISION_VERSION = 8  # bump when provision.sh, the Shell extension or the recorder changes; `base create` then re-provisions
+PROVISION_VERSION = 9  # bump when provision.sh, the Shell extension or the recorder changes; `base create` then re-provisions
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
@@ -908,6 +910,12 @@ class FusionProvider(Provider):
             raise ConfigError(config_path, key + ".session", "must be one of: %s" % ", ".join(sorted(SESSIONS)), 'e.g. session = "x11"')
 
     @classmethod
+    def scales(cls, options, os_name):
+        if os_name == "linux" and options.get("session", DEFAULTS["session"]) == "x11":
+            return (1, 2)  # Xfce scales by whole numbers
+        return super().scales(options, os_name)
+
+    @classmethod
     def base_of(cls, options, os_name):
         return options.get("base", defaults(os_name)["base"])
 
@@ -1022,6 +1030,10 @@ class FusionProvider(Provider):
         made_in = _clone_language(self.guest_id, self._base_language(record))
         if made_in.lower() != self.lab.language.lower():
             return [("Clone", INFO, "made in %s; %s in %s" % (made_in, up, self.lab.language), None)]
+        made_at = clone.get("scale")
+        if made_at != self.lab.scale:
+            at = lambda scale: "at the scale the Guest had" if scale is None else "at scale %g" % scale  # noqa: E731
+            return [("Clone", INFO, "made %s; %s %s" % (at(made_at), up, at(self.lab.scale)), None)]
         try:
             clean = CLEAN_SNAPSHOT in self.vm.snapshots()
         except GuestError as exc:
@@ -1120,8 +1132,9 @@ class FusionProvider(Provider):
             record = self._copy()
             made_from = bases.provisioning(record)
             self._write_clone_record(made_from)
-            if self.lab.language.lower() != self._base_language(record).lower():
-                self._prepare_copy()
+            language = self.lab.language if self.lab.language.lower() != self._base_language(record).lower() else None
+            if language or self.lab.scale is not None:
+                self._prepare_copy(language)
             self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         elif not self.vm.exists():
             base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
@@ -1131,7 +1144,7 @@ class FusionProvider(Provider):
                 base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
                 made_from = bases.provisioning(record)
                 self._write_clone_record(made_from)
-                if self.session != DEFAULTS["session"] or self.lab.language != DEFAULT_LANGUAGE:
+                if self.session != DEFAULTS["session"] or self.lab.language != DEFAULT_LANGUAGE or self.lab.scale is not None:
                     self._prepare_clone()
                 self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
@@ -1142,19 +1155,20 @@ class FusionProvider(Provider):
 
     def _clone_is_current(self, record):
         """Whether the existing clone is one start() keeps: made from the Base guest's current
-        provisioning, for the Lab's session and language, with its Clean state taken."""
+        provisioning, for the Lab's session, language and scale, with its Clean state taken."""
         clone = _clone_record(self.guest_id)
         return (
             clone.get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
             and clone.get("session", DEFAULTS["session"]) == self.session
             and _clone_language(self.guest_id, self._base_language(record)).lower() == self.lab.language.lower()
+            and clone.get("scale") == self.lab.scale
             and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its session switch did not finish
         )
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {
             "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
-            "session": self.session, "language": self.lab.language,
+            "session": self.session, "language": self.lab.language, "scale": self.lab.scale,
         })  # fmt: skip
 
     def _base_language(self, record):
@@ -1185,21 +1199,25 @@ class FusionProvider(Provider):
                 self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
         return record
 
-    def _prepare_copy(self):
-        """Boot a new Windows copy once to give it the Lab language, then stop it: the next sign-in shows it."""
+    def _prepare_copy(self, language):
+        """Boot a new Windows copy once to give it the Lab language and scale, then stop it: the next sign-in shows them."""
         from vmlab.providers import fusion_windows
 
         record = bases.Registry().get(self.base_name) or {}
         base_vm = record.get("vm", bases.vm_name(self.base_name))
         ssh = windows.WindowsSshChannel(record.get("user", GUEST_USER), self.vm.ip, base_vm, self.guest_id)
-        with self.progress.step("setting the new copy to %s (one extra boot)" % self.lab.language):
+        what = " and ".join(([language] if language else []) + ([] if self.lab.scale is None else ["scale %g" % self.lab.scale]))
+        with self.progress.step("setting the new copy to %s (one extra boot)" % what):
             self._configure()
             self.vm.start(self.lab.boot_timeout)
             try:
-                fusion_windows.wait_for_ssh(self.vm, ssh, self.lab.boot_timeout, "the new copy of Lab %s was not set to %s" % (self.lab.name, self.lab.language))
-                fusion_windows.set_language(ssh, self.lab.language)
+                fusion_windows.wait_for_ssh(self.vm, ssh, self.lab.boot_timeout, "the new copy of Lab %s was not set to %s" % (self.lab.name, what))
+                if language:
+                    fusion_windows.set_language(ssh, language)
+                if self.lab.scale is not None:
+                    fusion_windows.set_scale(ssh, self.lab.scale)
             except GuestError as exc:
-                raise GuestError("the new copy of Lab %s could not be set to %s: %s" % (self.lab.name, self.lab.language, exc.message), exc.fix)
+                raise GuestError("the new copy of Lab %s could not be set to %s: %s" % (self.lab.name, what, exc.message), exc.fix)
             finally:
                 ssh.close()
                 self.stop()
@@ -1212,10 +1230,11 @@ class FusionProvider(Provider):
 
     def _prepare_clone(self):
         """Boot a new Linux clone once to make the Lab's session its autologin session and give it the
-        Lab language, then stop it."""
+        Lab language and scale, then stop it."""
         name = SESSION_NAMES[self.session]
         what = " and ".join(([] if self.session == DEFAULTS["session"] else ["switched to the %s session" % name])
-                            + ([] if self.lab.language == DEFAULT_LANGUAGE else ["set to %s" % self.lab.language]))  # fmt: skip
+                            + ([] if self.lab.language == DEFAULT_LANGUAGE else ["set to %s" % self.lab.language])
+                            + ([] if self.lab.scale is None else ["set to scale %g" % self.lab.scale]))  # fmt: skip
         self._configure()
         self.vm.start(self.lab.boot_timeout)
         try:
@@ -1234,8 +1253,20 @@ class FusionProvider(Provider):
                     )
             if self.lab.language != DEFAULT_LANGUAGE:
                 self._set_language()
+            if self.lab.scale is not None:
+                self._set_scale()
         finally:
             self.stop()
+
+    def _set_scale(self):
+        with tempfile.TemporaryFile() as script:
+            script.write(pkgutil.get_data("vmlab", "guest/linux/set-scale.py"))
+            result = self.exec(["python3", "-", repr(float(self.lab.scale)), self.session], CALL_TIMEOUT, stdin=script)
+        if not result.ok:
+            raise GuestError(
+                "setting Lab %s to scale %g failed: %s" % (self.lab.name, self.lab.scale, "\n".join(result.stderr.strip().splitlines()[-5:]) or "exit %s" % result.code),
+                "look at the Guest's display modes (vmlab exec --lab %s -- gnome-monitor-config list); leave scale out to keep the scale it has" % self.lab.name,
+            )
 
     def _set_language(self):
         locale, language = language_forms(self.lab.language)["linux"], self.lab.language.split("-")[0]
@@ -1258,11 +1289,11 @@ class FusionProvider(Provider):
                 "re-provision its Base guest, which installs every locale: vmlab base create %s --reprovision" % self.base_name,
             )
 
-    def up(self):
-        booted = self._booting
-        super().up()
+    def _boot(self):
+        booting = self._booting
+        booted = super()._boot()
         self._booting = False
-        if booted:
+        if booting:
             self._screen_shown()
         if self.session and self._seen_session != self.session:
             raise GuestError(
@@ -1270,6 +1301,7 @@ class FusionProvider(Provider):
                 "look at its screen (vmlab ui screenshot --lab %s); `vmlab down %s && vmlab up %s` boots it again"
                 % (self.lab.name, self.lab.name, self.lab.name),
             )
+        return booted
 
     def _screen_shown(self):
         """A Guest that just booted must show Fusion its screen. Once, every screenshot of a Linux Guest

@@ -15,11 +15,14 @@ A Lab in another language than en-US (the Base guest's) gets it when its clone
 is made: one boot writes the Guest user's AppleLanguages and AppleLocale, and
 the next boot shows the whole desktop in it, menus and panels included.
 
+A Lab's display is in points: at scale 2 (Tart's on a Retina Host) the Guest
+shows twice as many Desktop pixels; at scale 1 it is given in pixels.
+
 Options, under [labs.<name>.tart]:
 
     base = "macos-tahoe"      # Base guest to clone (vmlab base list)
     cpu = 4
-    display = "1920x1080"     # fixed, so coordinates stay stable between Runs
+    display = "1920x1080"     # in points; fixed, so coordinates stay stable between Runs
     channels = ["ssh", "exec"]
 """
 
@@ -414,7 +417,8 @@ class TartProvider(Provider):
 
     def _configure(self):
         memory_mb = int(self.lab.memory_gb * 1024)
-        tart_ok(["set", self.guest_id, "--cpu", self.options["cpu"], "--memory", memory_mb, "--display", self.options["display"]], CALL_TIMEOUT)
+        display = self.options["display"] + ("px" if self.lab.scale == 1 else "")
+        tart_ok(["set", self.guest_id, "--cpu", self.options["cpu"], "--memory", memory_mb, "--display", display], CALL_TIMEOUT)
 
     def _set_language(self):
         """Boot a new clone once to give its user the Lab language, then stop it: the next boot shows it."""

@@ -139,3 +139,56 @@ class LabLanguageTest(VmlabTestCase):
         r = self.project.vmlab("status")
         self.assertExit(r, 2)
         self.assertIn("labs.mac.language", r.err)
+
+
+SCALE_SCENARIO = """
+def scenario(g):
+    g.check("scale %s" % g.displays()["displays"][0]["scale"], True)
+"""
+
+
+class LabScaleTest(VmlabTestCase):
+    """[labs.NAME] scale: the Display scale vmlab gives the Guest; without it the Guest keeps its Provider's."""
+
+    assertConfigError = ConfigErrorTest.assertConfigError
+
+    def test_a_lab_has_no_scale_unless_it_says_so(self):
+        self.project.config(FAKE_LAB)
+        [row] = json.loads(self.project.vmlab("status", "--json").out)
+        self.assertIsNone(row["scale"])
+
+    def test_status_shows_the_scale(self):
+        self.project.config(FAKE_LAB + "scale = 2\n")
+        [row] = json.loads(self.project.vmlab("status", "--json").out)
+        self.assertEqual(row["scale"], 2)
+
+    def test_the_guest_shows_the_labs_scale(self):
+        self.project.config(FAKE_LAB.replace('"macos"', '"windows"') + "scale = 1.25\n")
+        self.project.scenario("scale.py", SCALE_SCENARIO)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
+        [check] = self.project.report()["scenarios"][0]["checks"]
+        self.assertEqual(check["name"], "scale 1.25")
+
+    def test_a_scale_the_guest_os_cannot_show_lists_those_it_can(self):
+        self.project.config(FAKE_LAB + "scale = 1.5\n")
+        self.assertConfigError("labs.mac.scale", "macos shows 1 or 2", "scale = 2")
+
+    def test_windows_and_linux_take_quarter_steps_up_to_2(self):
+        for os_name in ("windows", "linux"):
+            with self.subTest(os_name):
+                self.project.config(FAKE_LAB.replace('"macos"', '"%s"' % os_name) + "scale = 2.25\n")
+                self.assertConfigError("labs.mac.scale", "1, 1.25, 1.5, 1.75 or 2")
+
+    def test_a_scale_must_be_a_number(self):
+        for value in ('"2"', "true"):
+            with self.subTest(value):
+                self.project.config(FAKE_LAB + "scale = %s\n" % value)
+                self.assertConfigError("labs.mac.scale", "must be")
+
+    def test_up_fails_when_the_guest_shows_another_scale(self):
+        (self.project.dir / "tree.json").write_text(json.dumps({"role": "desktop", "name": "", "scale": 2, "children": []}))
+        self.project.config(FAKE_LAB + "scale = 1\n[labs.mac.fake]\nui_tree = \"tree.json\"\n")
+        r = self.project.vmlab("up")
+        self.assertExit(r, 1)
+        self.assertIn("Lab mac asks for scale 1, but its Guest shows 2", r.err)

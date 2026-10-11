@@ -134,6 +134,13 @@ class Provider:
         """Raise ConfigError if this Provider's [labs.<name>.<provider>] table is wrong."""
 
     @classmethod
+    def scales(cls, options, os_name):
+        """The Display scales a Lab with these (valid) options can set."""
+        from vmlab.config import SCALES
+
+        return SCALES[os_name]
+
+    @classmethod
     def base_of(cls, options, os_name):
         """The Base guest a Lab with these (valid) options clones, or None for Providers without them."""
         return None
@@ -309,8 +316,18 @@ class Provider:
 
     def up(self):
         """Start the Guest if needed and wait until it is reachable. Idempotent."""
-        if not self.is_running():
+        if self._boot() and self.lab.scale is not None:
+            self._check_scale()
+
+    def _boot(self):
+        """Start the Guest if needed and wait until it is reachable; whether it was started."""
+        booted = not self.is_running()
+        if booted:
             self.start()
+        self._wait_reachable()
+        return booted
+
+    def _wait_reachable(self):
         # boot_timeout counts the Host's awake time: while the Host sleeps, its Guests do too.
         deadline = hostpower.awake_time() + self.lab.boot_timeout
         if self.is_reachable():
@@ -322,6 +339,16 @@ class Provider:
                 time.sleep(BOOT_POLL_SECONDS)
                 if self.is_reachable():
                     return
+
+    def _check_scale(self):
+        """A Guest that just booted shows the Lab's scale, as the UI contract reads it."""
+        shown = self.ui_call("displays", {}, self.lab.step_timeout)["displays"][0]["scale"]
+        if abs(shown - self.lab.scale) > 0.01:
+            name = self.lab.name
+            raise GuestError(
+                "Lab %s asks for scale %g, but its Guest shows %g" % (name, self.lab.scale, shown),
+                "look at its screen (vmlab ui screenshot --lab %s); leave scale out of [labs.%s] to keep the scale the Guest has" % (name, name),
+            )
 
     def _boot_timeout(self):
         """The error for a Guest not reachable in time: a slow boot only when its OS came up."""

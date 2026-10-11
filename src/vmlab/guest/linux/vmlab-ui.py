@@ -44,6 +44,7 @@ Traps (README: "Linux Guests with VMware Fusion"):
   timeout each: timeouts are short.
 - On Wayland, stage and toolkit coordinates are logical: they are multiplied by
   the Display scale into Desktop pixels, and a point to click is divided back.
+  On X11 only the toolkit's are: the window manager and xdotool use X pixels.
 """
 
 import json
@@ -319,6 +320,9 @@ class Tray:
         emit({"icon": True, "items": items, "chosen": chosen or None, "failed": None})
 
 
+BACKGROUND_TYPES = (1, 2, 6, 9, 10, 11, 12, 13, 14)
+
+
 class Window:
     """A top-level window as the window manager sees it. frame is what shows on screen,
     buffer includes a client-side shadow; both (x, y, w, h) in screen coordinates."""
@@ -379,9 +383,10 @@ class WaylandShell:
         def px(values):
             return [round(v * self.stage_scale) for v in values]
 
-        # Meta.WindowType: 1 desktop, 2 dock
+        # Meta.WindowType: 1 desktop, 2 dock, and popups no app is brought to the front by: 6 menu,
+        # 9 to 13 dropdown and popup menus, tooltips, notifications and combo boxes, 14 drag and drop
         windows = [
-            Window(w["id"], w["pid"], w["title"], px(w["frame"]), px(w["buffer"]), w["focused"], w["hidden"], w.get("type") in (1, 2))
+            Window(w["id"], w["pid"], w["title"], px(w["frame"]), px(w["buffer"]), w["focused"], w["hidden"], w.get("type") in BACKGROUND_TYPES)
             for w in data["windows"]
         ]
         return tuple(px(data["screen"])), windows
@@ -428,14 +433,11 @@ class X11:
         except Exception as exc:
             fail("cannot open the X display %s: %s" % (os.environ.get("DISPLAY"), exc))
         self.root = self.display.screen().root
-        # ponytail: toolkits are taken to report pixels; unproven at an Xfce scale other than 1
-        self.stage_scale = self.toolkit_scale = 1.0
-
-    @property
-    def scale(self):
-        """Xfce's window scaling, which GTK follows."""
+        # Xfce's window scaling: GTK draws at it and reports AT-SPI extents in logical units, while
+        # the window manager and xdotool work in X pixels.
         found = output(["xfconf-query", "-c", "xsettings", "-p", "/Gdk/WindowScalingFactor"])
-        return float(found) if found and found.strip().isdigit() else 1.0
+        self.scale = self.toolkit_scale = float(found) if found and found.strip().isdigit() else 1.0
+        self.stage_scale = 1.0
 
     def describe(self):
         return "xdotool"

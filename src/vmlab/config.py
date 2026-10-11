@@ -18,7 +18,7 @@ CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
-LAB_KEYS = ("provider", "os", "arch", "language", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
+LAB_KEYS = ("provider", "os", "arch", "language", "scale", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
 # ...plus one options table named after each Provider
 APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "process", "quit_timeout", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
 # [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
@@ -31,6 +31,8 @@ DEFAULT_LANGUAGE = "en-US"
 # The Lab language: a language and a region, in BCP 47 form (ru-RU, de-DE). One tag names both the
 # language and the regional formats; vmlab translates it to each Guest OS's own form (language_forms).
 LANGUAGE = re.compile(r"^([a-z]{2,3})-([A-Z]{2})$")
+# The Display scales each Guest OS can be given; a Provider may allow fewer (Provider.scales).
+SCALES = {"macos": (1, 2), "windows": (1, 1.25, 1.5, 1.75, 2), "linux": (1, 1.25, 1.5, 1.75, 2)}
 DEFAULT_BOOT_TIMEOUT = 300
 DEFAULT_STEP_TIMEOUT = 60
 DEFAULT_SCENARIO_TIMEOUT = 600
@@ -59,6 +61,7 @@ class Lab:
         self.os = os
         self.arch = arch
         self.language = settings.get("language", DEFAULT_LANGUAGE)  # the Lab language, e.g. ru-RU
+        self.scale = settings.get("scale")  # the Display scale vmlab gives the Guest; None: its Provider's
         self.options = options  # provider-specific table, e.g. [labs.<name>.fake]
         self.memory_gb = settings.get("memory_gb", DEFAULT_MEMORY_GB)  # Host RAM the Guest takes when running
         self.boot_timeout = settings.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)  # s from power-on until reachable
@@ -212,6 +215,7 @@ def load(start):
             raise ConfigError(path, "%s.%s" % (key, provider), "must be a table", "write it as [%s.%s]" % (key, provider))
         PROVIDERS[provider].validate_options(path, "%s.%s" % (key, provider), options, os_name)
         language = _language(path, table, key)
+        scale = _scale(path, table, key, PROVIDERS[provider].scales(options, os_name), os_name)
         base = PROVIDERS[provider].base_of(options, os_name)
         if base:
             _check_base_os(path, "%s.%s.base" % (key, provider), base, os_name, PROVIDERS[provider].base_of({}, os_name))
@@ -223,6 +227,7 @@ def load(start):
             arch,
             options,
             language=language,
+            scale=scale,
             memory_gb=_positive_number(path, table, key, "memory_gb", DEFAULT_MEMORY_GB, "GB"),
             boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),
             step_timeout=_positive_number(path, table, key, "step_timeout", DEFAULT_STEP_TIMEOUT),
@@ -250,6 +255,19 @@ def _language(path, table, key):
             path, key + ".language", "must be a language and a region, ll-RR (got %r)" % (value,),
             'e.g. language = "ru-RU" (Russian in Russia); the default is "%s"' % DEFAULT_LANGUAGE,
         )  # fmt: skip
+    return value
+
+
+def _scale(path, table, key, allowed, os_name):
+    if "scale" not in table:
+        return None
+    value = table["scale"]
+    listed = " or ".join(", ".join("%g" % s for s in allowed).rsplit(", ", 1))
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(path, key + ".scale", "must be a number (got %r)" % (value,), "e.g. scale = 2; this Lab's %s shows %s" % (os_name, listed))
+    if value not in allowed:
+        raise ConfigError(path, key + ".scale", "this Lab's %s shows %s, not %g" % (os_name, listed, value),
+                          "e.g. scale = %g, or leave scale out to keep the scale the Guest has" % allowed[-1])  # fmt: skip
     return value
 
 

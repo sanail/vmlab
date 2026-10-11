@@ -11,7 +11,8 @@ editor for stage-text and close-staged (ui_call). Options, under [labs.<name>.fa
                                     # whose "menuitem" children (with "enabled", "checked" and
                                     # their own children) are its Tray menu; the root's
                                     # "tray_detail" (a reason) shows no Tray icons at all, and
-                                    # its "bounds" are the Display's (default 1024x768, scale 1)
+                                    # its "bounds" and "scale" are the Display's (default
+                                    # 1024x768, and the Lab's scale or 1)
     notifications = "notifications.json"  # Notifications the Guest's OS recorded, relative to the
                                     # config file: a list of {"app", "title", "body", "time"}, time
                                     # in ISO 8601 (the Fake's Guest clock is the Host's); read on
@@ -231,7 +232,8 @@ class FakeProvider(Provider):
                 apps = [a for a in apps if a.get("role") == "application" and wanted in (a.get("name", "").lower(), (a.get("bundle_id") or "").lower())]
             return dict(tree, bounds=self._display_bounds(), children=apps)
         if command == "displays":
-            return {"displays": [{"bounds": self._display_bounds(), "scale": 1, "primary": True}]}
+            scale = self._scripted_tree().get("scale", self.lab.scale or 1)
+            return {"displays": [{"bounds": self._display_bounds(), "scale": scale, "primary": True}]}
         if command == "pointer":
             located = [e for e in params["events"] if "x" in e]
             cover = _cover(self._scripted_tree(), params.get("expect", {}).get("bounds"))
