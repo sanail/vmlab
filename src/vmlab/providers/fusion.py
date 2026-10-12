@@ -507,8 +507,11 @@ def sound_findings():
     effect = "it plays through the Host's speakers or headset while it runs, and can take a Bluetooth headset"
     findings = []
     for vm, running in sorted(vms.items()):
-        if not FusionVM(vmx_path(vm)).has_sound():
-            continue
+        try:
+            if not FusionVM(vmx_path(vm)).has_sound():
+                continue
+        except OSError:
+            continue  # another vmlab deleted it after it was listed, to clone or copy it again
         clone = _clone_record(vm)
         if vm in base_names:
             what, fix = "Base guest %s" % base_names[vm], "vmlab base create %s   (shuts it down if it runs, then takes the device away)" % base_names[vm]

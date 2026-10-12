@@ -48,6 +48,12 @@ FAKE_VMRUN = textwrap.dedent(
     if encrypted and auth.get("-vp") != state.get("vm_password"):
         fail("Cannot open VM: %s, A password is required for this operation" % args[1])
     if command == "list":
+        delete = state.get("delete_on_list")  # another vmlab deletes a VM while this one lists them
+        if delete and delete["after"] == 0:
+            os.remove(delete.pop("vmx"))
+        elif delete:
+            delete["after"] -= 1
+        save()
         running = [p for p, v in state["vms"].items() if v["running"]]
         print("Total running VMs: %d" % len(running))
         for p in running:
@@ -400,6 +406,18 @@ class FusionDoctorTest(FusionTestCase):
         self.assertIn("sound device off", r.out)
         self.assertNoSound(self.base_vmx_path())
         self.assertNotIn("Guest sound", self.vmlab("doctor").out)
+
+    def test_doctor_skips_a_vm_another_vmlab_deletes_while_it_looks_for_sound_devices(self):
+        self.project.config(FUSION_LAB)
+        self.ready_base()
+        state = json.loads(self.state_path.read_text())
+        state["delete_on_list"] = {"vmx": str(self.base_vmx_path()), "after": 1}  # the first list asks if Fusion answers
+        self.state_path.write_text(json.dumps(state))
+
+        r = self.vmlab("doctor")
+
+        self.assertNotIn("Traceback", r.err)
+        self.assertNotIn("Guest sound", r.out)
 
     def test_base_create_shuts_a_running_base_guest_down_to_take_its_sound_device_away(self):
         # Fusion rewrites a running VM's .vmx, and a headless Base guest has no window to shut it down in.

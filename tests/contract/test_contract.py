@@ -587,7 +587,7 @@ class ContractTest(unittest.TestCase):
 
     def test_02_every_channel_works(self):
         proc = self.target.vmlab("doctor", self.target.lab, "--json")
-        self.assertEqual(proc.returncode, 0, proc.stdout)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         findings = json.loads(proc.stdout)
         channels = [f for f in findings if f["check"].startswith("Channel ")]
         self.assertTrue(channels, proc.stdout)
