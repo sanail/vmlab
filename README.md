@@ -72,6 +72,12 @@ publishes a GitHub Release with `vmlab-X.Y.Z.pyz` and the commit's body as its n
 the body is empty), and fast-forwards `stable` to the tag.
 Users get it from `stable`; projects stay on their pinned version.
 
+A tag `vX.Y.Z-beta.N` (the same version in all three files) publishes a prerelease and moves only the `beta` branch,
+which every release moves too.
+To try one, install the skill from `beta` instead of `stable`
+(`npx skills add https://github.com/sanail/vmlab/tree/beta/skills/vmlab`) and run `scripts/vmlab self-update` in the
+project; its release moves the project on from the beta.
+
 ## The skill
 
 `skills/vmlab/` holds the agent skill: `SKILL.md`, a short router,

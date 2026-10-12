@@ -194,6 +194,18 @@ class SelfUpdateTest(VmlabTestCase):
         self.assertExit(r, 0)
         self.assertTrue(r.out.rstrip().endswith("(from %s)" % build.resolve()), r.out)
 
+    def test_self_update_takes_a_beta_and_then_its_release_but_not_an_earlier_beta(self):
+        self.assertExit(self.project.vmlab("init"), 0)
+        for version in ("9.1.0-beta.1", "9.1.0"):
+            r = self.project.vmlab("self-update", "--from", fake_zipapp(self.project.root / version / "vmlab.pyz", version))
+            self.assertExit(r, 0)
+            self.assertEqual(pinned(self.project.dir / "vmlab")[0], version)
+
+        r = self.project.vmlab("self-update", "--from", fake_zipapp(self.project.root / "b2" / "vmlab.pyz", "9.1.0-beta.2"))
+
+        self.assertExit(r, 2)
+        self.assertIn("older than the vendored 9.1.0", r.err)
+
     def test_self_update_refuses_to_downgrade(self):
         self.assertExit(self.project.vmlab("init"), 0)
         older = fake_zipapp(self.project.root / "old" / "vmlab.pyz", "0.0.1")

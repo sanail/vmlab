@@ -213,11 +213,13 @@ def _running_zipapp(required=True):
 
 def _version_of(pyz):
     proc = subprocess.run([sys.executable, str(pyz), "version"], capture_output=True, text=True, timeout=60)
-    match = re.match(r"vmlab (\d+(?:\.\d+)*)\s*$", proc.stdout)
+    match = re.match(r"vmlab (\d+\.\d+\.\d+(?:-beta\.\d+)?)\s*$", proc.stdout)
     if proc.returncode != 0 or not match:
         raise ConfigError(pyz, None, "is not a working vmlab zipapp", "delete it, then run `SKILL_DIR/scripts/vmlab self-update` from the skill")
     return match.group(1)
 
 
 def _parse(version):
-    return tuple(int(n) for n in version.split("."))
+    """2.0.0-beta.1 sorts after 1.1.1 and before 2.0.0."""
+    release, _, beta = version.partition("-beta.")
+    return tuple(int(n) for n in release.split(".")) + ((0, int(beta)) if beta else (1, 0))
