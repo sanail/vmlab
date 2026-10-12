@@ -15,7 +15,12 @@ Up to 1.x each OS used its own space.
   margin, a size it compares bounds to), multiplies those numbers by the Display's scale:
   `g.displays()["displays"][0]["scale"]`.
   A Scenario that clicks elements (`g.click(text=...)`) or computes only from bounds it read needs nothing.
-- **Windows and Linux** at scale 1 (every Fusion Guest unless its Display was scaled by hand): nothing changes.
+- **Windows**: bounds and `click(at=)` were already pixels, so they keep their numbers at any scale, the default 2 on a
+  Retina Mac included.
+  Numbers of the Scenario's own that stand for a logical size (an inset, a tolerance) were pixels too and still are:
+  they fit only the scale they were written at, so a Scenario run at several scales multiplies them by the scale,
+  as on macOS.
+- **Linux** at scale 1 (every Fusion Linux Guest without a Lab `scale`): nothing changes.
 - **A Linux Wayland Guest scaled by hand**: bounds and points were GNOME's logical coordinates; they are now pixels,
   as on macOS.
 

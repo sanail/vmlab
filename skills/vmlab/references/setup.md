@@ -144,6 +144,9 @@ keeping every comment the user has written:
 - `scale` under `[labs.NAME]` is the Display scale, for a project that tests its app on a scaled display (one Lab per
   scale, e.g. `win` and `win-150`): macOS 1 or 2, Windows and GNOME 1 to 2 in steps of 0.25, Xfce 1 or 2.
   Leave it out to keep the Guest's own (2 on macOS and Windows on a Retina Mac, 1 on Linux).
+  A scale the Lab's Guest OS cannot show (`scale = 1.5` on Xfce) is a config error,
+  and like any config error it stops every command that reads the project's config (`status`, `up`, `run` and the rest)
+  for every Lab.
 - `arch` is the Build artifact's; leave it out for the Host's own.
 
 Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the Host, installed,
