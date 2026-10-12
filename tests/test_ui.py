@@ -942,6 +942,26 @@ class PointerTest(UiTestCase):
         self.assertExit(self.project.vmlab("run"), 0)
         self.assertEqual(self.calls("pointer")[0]["expect"], {"label": "Run", "bounds": {"x": 220, "y": 350, "w": 60, "h": 20}})
 
+    def test_a_scenario_points_at_fractional_desktop_pixels_and_the_guest_gets_whole_ones(self):
+        self.project.scenario("scaled.py", """
+            def scenario(g):
+                dragged = g.drag((280.0, 382.5), [281, 383.4], steps=1, duration=0)
+                g.check("ends rounded", (dragged["from"], dragged["to"]) == ({"x": 280, "y": 382, "element": None}, {"x": 281, "y": 383, "element": None}))
+                g.click(at=(280.6, 383.0))
+                g.pointer("move", 1.5, 2.5)
+                for end in ((True, 1), (1, 2, 3), (1, "2")):
+                    try:
+                        g.drag(end, (1, 1))
+                        g.check("refused %r" % (end,), False)
+                    except Exception as exc:
+                        g.check("refused %r" % (end,), "a drag's ends" in str(exc), detail=str(exc))
+        """)
+        self.assertExit(self.project.vmlab("run"), 0)
+        dragged, clicked, moved = self.calls("pointer")
+        self.assertEqual([e for e in dragged["events"] if "x" in e], [move(280, 382), dict(move(280, 382), do="down"), move(281, 383), dict(move(281, 383), do="up")])
+        self.assertEqual(clicked["events"][0], move(281, 383))
+        self.assertEqual(moved["events"], [move(2, 2)])
+
     def test_every_held_button_is_released_and_the_modifiers_with_the_last(self):
         self.project.scenario("two.py", """
             def scenario(g):

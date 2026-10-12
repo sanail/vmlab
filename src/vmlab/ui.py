@@ -226,6 +226,11 @@ def middle(element, named):
     return b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
 
 
+def desktop_point(x, y):
+    """(x, y) as whole Desktop pixels: a Scenario multiplying by a fractional scale passes floats."""
+    return round(x), round(y)
+
+
 def click_events(x, y, modifiers):
     at = {"x": x, "y": y}
     return key_events("keydown", modifiers) + [dict(at, do=d) for d in ("move", "down", "up")] + key_events("keyup", modifiers[::-1])
@@ -780,7 +785,7 @@ class UI:
         """
         button, modifiers = check_button(button), parse_hold(hold)
         if at is not None:
-            x, y = at
+            x, y = desktop_point(*at)
             result = self._pointer(button, click_events(x, y, modifiers))
             return {"x": x, "y": y, "element": None, "under": result.get("under")}
         query.require("click")
@@ -831,6 +836,7 @@ class UI:
 
         A down presses hold's modifiers before the button and leaves both held; an up releases them
         after the button; a move holds them for that move only."""
+        x, y = desktop_point(x, y)
         modifiers, at = parse_hold(hold), {"x": x, "y": y}
         if action == "down":
             events = key_events("keydown", modifiers) + [dict(at, do="move"), dict(at, do="down")]
@@ -872,8 +878,9 @@ class UI:
     def _drag_end(self, end):
         """A drag's end as {"x", "y", "element"}: a point, or the middle of an element (one find found,
         or its text or find's fields plus "index", found now)."""
-        if isinstance(end, (tuple, list)) and len(end) == 2 and all(isinstance(v, int) and not isinstance(v, bool) for v in end):
-            return {"x": end[0], "y": end[1], "element": None}
+        if isinstance(end, (tuple, list)) and len(end) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in end):
+            x, y = desktop_point(*end)
+            return {"x": x, "y": y, "element": None}
         if isinstance(end, dict) and "bounds" in end:  # a node: where it was when found; the press checks it is still there
             node = dict(NODE_DEFAULTS, **end)
             x, y = middle(node, "the %s %r" % (node.get("role", "element"), label(node)))

@@ -226,6 +226,20 @@ class PointerTest(unittest.TestCase):
         self.assertEqual([w.background for w in windows], [False, True])
 
 
+class DisplaysTest(unittest.TestCase):
+    def displays(self, scale):
+        helper = load_helper()
+        fake = types.SimpleNamespace(screen=(2560, 1600), ws=types.SimpleNamespace(scale=scale))
+        with mock.patch.object(helper, "session", lambda: "wayland"), mock.patch.object(helper, "UI", lambda kind: fake), \
+                redirect_stdout(io.StringIO()) as out:  # fmt: skip
+            helper.main(["vmlab-ui", "displays"])
+        return json.loads(out.getvalue())["displays"][0]["scale"]
+
+    def test_a_whole_scale_is_an_int_as_on_macos_and_windows(self):
+        self.assertEqual(repr(self.displays(2.0)), "2")
+        self.assertEqual(self.displays(1.25), 1.25)
+
+
 class TickStateTest(unittest.TestCase):
     """How AT-SPI states become a node's "checked"."""
 

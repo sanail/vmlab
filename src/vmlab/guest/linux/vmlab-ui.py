@@ -1189,7 +1189,8 @@ def main(argv):
         ui.tree(params)
     elif command == "displays":
         width, height = ui.screen
-        emit({"displays": [{"bounds": {"x": 0, "y": 0, "w": width, "h": height}, "scale": ui.ws.scale, "primary": True}]})
+        scale = int(ui.ws.scale) if ui.ws.scale == int(ui.ws.scale) else ui.ws.scale  # 2, not 2.0, as macOS and Windows tell it
+        emit({"displays": [{"bounds": {"x": 0, "y": 0, "w": width, "h": height}, "scale": scale, "primary": True}]})
     elif command == "pointer":
         ui.pointer(params)
     elif command == "press":
