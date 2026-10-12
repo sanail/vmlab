@@ -1024,16 +1024,10 @@ class FusionProvider(Provider):
             return [("Clone", INFO, "none yet; `vmlab up %s` clones Base guest %s" % (self.lab.name, self.base_name), None)]
         if clone.get("made_from") != bases.provisioning(record):
             return [("Clone", INFO, "made from an earlier provisioning of %s; %s" % (self.base_name, up), None)]
-        made_for = clone.get("session", DEFAULTS["session"])
-        if made_for != self.session:
-            return [("Clone", INFO, "made for the %s session; %s for %s" % (SESSION_NAMES.get(made_for, made_for), up, SESSION_NAMES[self.session]), None)]
-        made_in = _clone_language(self.guest_id, self._base_language(record))
-        if made_in.lower() != self.lab.language.lower():
-            return [("Clone", INFO, "made in %s; %s in %s" % (made_in, up, self.lab.language), None)]
-        made_at = clone.get("scale")
-        if made_at != self.lab.scale:
-            at = lambda scale: "at the scale the Guest had" if scale is None else "at scale %g" % scale  # noqa: E731
-            return [("Clone", INFO, "made %s; %s %s" % (at(made_at), up, at(self.lab.scale)), None)]
+        made, wanted = self._made_with(record), self._settings()
+        for key, said in CLONE_SETTINGS.items():
+            if not _same(key, made[key], wanted[key]):
+                return [("Clone", INFO, "made %s; %s %s" % (said(made[key]), up, said(wanted[key])), None)]
         try:
             clean = CLEAN_SNAPSHOT in self.vm.snapshots()
         except GuestError as exc:
@@ -1132,9 +1126,9 @@ class FusionProvider(Provider):
             record = self._copy()
             made_from = bases.provisioning(record)
             self._write_clone_record(made_from)
-            language = self.lab.language if self.lab.language.lower() != self._base_language(record).lower() else None
-            if language or self.lab.scale is not None:
-                self._prepare_copy(language)
+            to_set = self._to_set(record)
+            if to_set:
+                self._prepare_copy(to_set)
             self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         elif not self.vm.exists():
             base_vm = FusionVM(record["vmx"], secrets=self.vm.secrets)
@@ -1144,8 +1138,9 @@ class FusionProvider(Provider):
                 base_vm.clone_linked(self.vm, record["snapshot"], self.lab.boot_timeout)
                 made_from = bases.provisioning(record)
                 self._write_clone_record(made_from)
-                if self.session != DEFAULTS["session"] or self.lab.language != DEFAULT_LANGUAGE or self.lab.scale is not None:
-                    self._prepare_clone()
+                to_set = self._to_set(record)
+                if to_set:
+                    self._prepare_clone(to_set)
                 self.vm.snapshot(CLEAN_SNAPSHOT, self.lab.boot_timeout)
         self._write_clone_record(made_from)
         self._configure()
@@ -1156,20 +1151,33 @@ class FusionProvider(Provider):
     def _clone_is_current(self, record):
         """Whether the existing clone is one start() keeps: made from the Base guest's current
         provisioning, for the Lab's session, language and scale, with its Clean state taken."""
-        clone = _clone_record(self.guest_id)
+        made, wanted = self._made_with(record), self._settings()
         return (
-            clone.get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
-            and clone.get("session", DEFAULTS["session"]) == self.session
-            and _clone_language(self.guest_id, self._base_language(record)).lower() == self.lab.language.lower()
-            and clone.get("scale") == self.lab.scale
-            and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its session switch did not finish
+            _clone_record(self.guest_id).get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
+            and all(_same(key, made[key], wanted[key]) for key in wanted)
+            and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its prep boot did not finish
         )
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {
             "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
-            "session": self.session, "language": self.lab.language, "scale": self.lab.scale,
+            **self._settings(),
         })  # fmt: skip
+
+    def _settings(self):
+        """What the Lab asks of its clone, which the clone's record keeps: it is made again when they differ."""
+        return {"session": self.session, "language": self.lab.language, "scale": self.lab.scale}
+
+    def _made_with(self, record):
+        """The settings the existing clone was made with; a record from before a setting has the untouched clone's."""
+        clone = _clone_record(self.guest_id)
+        return {"session": clone.get("session", DEFAULTS["session"]), "language": _clone_language(self.guest_id, self._base_language(record)),
+                "scale": clone.get("scale")}  # fmt: skip
+
+    def _to_set(self, record):
+        """The settings a new clone gets in a boot of its own: those the Lab asks for that an untouched clone lacks."""
+        untouched = {"session": None if self.windows else DEFAULTS["session"], "language": self._base_language(record), "scale": None}
+        return {key: value for key, value in self._settings().items() if not _same(key, value, untouched[key])}
 
     def _base_language(self, record):
         """The language a clone shows unless vmlab sets another: its Base guest's display language on
@@ -1199,23 +1207,23 @@ class FusionProvider(Provider):
                 self.vm.revert(record["snapshot"], self.lab.boot_timeout)  # the copy's snapshots came along
         return record
 
-    def _prepare_copy(self, language):
-        """Boot a new Windows copy once to give it the Lab language and scale, then stop it: the next sign-in shows them."""
+    def _prepare_copy(self, to_set):
+        """Boot a new Windows copy once to give it the settings to_set (_to_set), then stop it: the next sign-in shows them."""
         from vmlab.providers import fusion_windows
 
         record = bases.Registry().get(self.base_name) or {}
         base_vm = record.get("vm", bases.vm_name(self.base_name))
         ssh = windows.WindowsSshChannel(record.get("user", GUEST_USER), self.vm.ip, base_vm, self.guest_id)
-        what = " and ".join(([language] if language else []) + ([] if self.lab.scale is None else ["scale %g" % self.lab.scale]))
+        what = " and ".join(([to_set["language"]] if "language" in to_set else []) + (["scale %g" % to_set["scale"]] if "scale" in to_set else []))
         with self.progress.step("setting the new copy to %s (one extra boot)" % what):
             self._configure()
             self.vm.start(self.lab.boot_timeout)
             try:
                 fusion_windows.wait_for_ssh(self.vm, ssh, self.lab.boot_timeout, "the new copy of Lab %s was not set to %s" % (self.lab.name, what))
-                if language:
-                    fusion_windows.set_language(ssh, language)
-                if self.lab.scale is not None:
-                    fusion_windows.set_scale(ssh, self.lab.scale)
+                if "language" in to_set:
+                    fusion_windows.set_language(ssh, to_set["language"])
+                if "scale" in to_set:
+                    fusion_windows.set_scale(ssh, to_set["scale"])
             except GuestError as exc:
                 raise GuestError("the new copy of Lab %s could not be set to %s: %s" % (self.lab.name, what, exc.message), exc.fix)
             finally:
@@ -1228,13 +1236,13 @@ class FusionProvider(Provider):
         # A hardware clock in UTC, whatever the Mac's time zone (UTC_CLOCK).
         self.vm.set_config({"numvcpus": self.options["cpu"], "memsize": int(self.lab.memory_gb * 1024), "sound.present": "FALSE", **UTC_CLOCK})
 
-    def _prepare_clone(self):
-        """Boot a new Linux clone once to make the Lab's session its autologin session and give it the
-        Lab language and scale, then stop it."""
+    def _prepare_clone(self, to_set):
+        """Boot a new Linux clone once to give it the settings to_set (_to_set): the Lab's session as its
+        autologin session, the Lab language and scale. Then stop it."""
         name = SESSION_NAMES[self.session]
-        what = " and ".join(([] if self.session == DEFAULTS["session"] else ["switched to the %s session" % name])
-                            + ([] if self.lab.language == DEFAULT_LANGUAGE else ["set to %s" % self.lab.language])
-                            + ([] if self.lab.scale is None else ["set to scale %g" % self.lab.scale]))  # fmt: skip
+        what = " and ".join((["switched to the %s session" % name] if "session" in to_set else [])
+                            + (["set to %s" % to_set["language"]] if "language" in to_set else [])
+                            + (["set to scale %g" % to_set["scale"]] if "scale" in to_set else []))  # fmt: skip
         self._configure()
         self.vm.start(self.lab.boot_timeout)
         try:
@@ -1244,16 +1252,16 @@ class FusionProvider(Provider):
                     late = self._boot_timeout()
                     raise GuestError("the new clone of Lab %s was not %s: %s" % (self.lab.name, what, late.message), late.fix)
                 time.sleep(BOOT_POLL_SECONDS)
-            if self.session != DEFAULTS["session"]:
+            if "session" in to_set:
                 result = self.exec(["/bin/sh", "-c", SWITCH_SESSION, "sh", SESSIONS[self.session], self.session], CALL_TIMEOUT)
                 if not result.ok:
                     raise GuestError(
                         "switching Lab %s to the %s session failed: %s" % (self.lab.name, name, result.stderr.strip()),
                         "re-provision its Base guest, which then installs it: vmlab base create %s --reprovision" % self.base_name,
                     )
-            if self.lab.language != DEFAULT_LANGUAGE:
+            if "language" in to_set:
                 self._set_language()
-            if self.lab.scale is not None:
+            if "scale" in to_set:
                 self._set_scale()
         finally:
             self.stop()
@@ -1479,6 +1487,19 @@ def _clone_record(vm):
         return json.loads((fusion_dir() / (vm + CLONE_RECORD)).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+
+
+# How doctor names each clone setting's value, as in "made for the X11 session"
+CLONE_SETTINGS = {
+    "session": lambda session: "for the %s session" % SESSION_NAMES.get(session, session),
+    "language": lambda language: "in %s" % language,
+    "scale": lambda scale: "at the scale the Guest had" if scale is None else "at scale %g" % scale,
+}
+
+
+def _same(key, a, b):
+    """Whether two values of a clone setting are the same: language tags in any case."""
+    return a.lower() == b.lower() if key == "language" else a == b
 
 
 def _clone_language(vm, base_language=DEFAULT_LANGUAGE):
