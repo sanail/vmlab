@@ -11,10 +11,12 @@ scaling (Xfce scales by whole numbers only).
 
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 XORG_CONF = "/etc/X11/xorg.conf.d/90-vmlab-scale.conf"
+XSETTINGS = Path.home() / ".config" / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xsettings.xml"
 
 MONITORS = """<monitors version="2">
   <configuration>
@@ -83,6 +85,18 @@ def monitors_xml(spec, mode, scale):
     return MONITORS.format(scale=float(scale), connector=connector, vendor=vendor, product=product, serial=serial, width=width, height=height, rate=rate)
 
 
+def xsettings_xml(existing, scale):
+    """Xfce's xsettings channel with Gdk/WindowScalingFactor at scale."""
+    channel = ET.fromstring(existing) if existing else ET.Element("channel", name="xsettings", version="1.0")
+    gdk = channel.find("./property[@name='Gdk']")
+    if gdk is None:
+        gdk = ET.SubElement(channel, "property", name="Gdk", type="empty")
+    for old in gdk.findall("./property[@name='WindowScalingFactor']"):
+        gdk.remove(old)
+    ET.SubElement(gdk, "property", name="WindowScalingFactor", type="int", value=str(int(scale)))
+    return ET.tostring(channel, encoding="unicode", xml_declaration=True) + "\n"
+
+
 def main(scale, session):
     spec, mode, scale = choose(current_state(), scale)
     if session == "wayland":
@@ -94,9 +108,10 @@ def main(scale, session):
     written = subprocess.run(["sudo", "-n", "sh", "-c", 'mkdir -p "${1%/*}" && cat > "$1"', "sh", XORG_CONF], input=conf, text=True)
     if written.returncode:
         fail("writing %s failed" % XORG_CONF)
-    factor = subprocess.run(["xfconf-query", "-c", "xsettings", "-p", "/Gdk/WindowScalingFactor", "-n", "-t", "int", "-s", str(int(scale))])
-    if factor.returncode:
-        fail("setting Xfce's window scaling failed")
+    # Written directly, not via xfconf-query: xfconfd saves lazily, and the clone powers off right after.
+    existing = XSETTINGS.read_text(encoding="utf-8") if XSETTINGS.exists() else None
+    XSETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    XSETTINGS.write_text(xsettings_xml(existing, scale), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ import threading
 import time
 import types
 import unittest
+import xml.etree.ElementTree as ET
 from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
@@ -431,3 +432,26 @@ class SetScaleTest(unittest.TestCase):
         xml = self.script.monitors_xml(*self.script.choose(self.state, 1.5))
         for part in ("<connector>Virtual-1</connector>", "<width>1920</width>", "<rate>59.950172424316406</rate>", "<scale>1.5</scale>"):
             self.assertIn(part, xml)
+
+    def test_xsettings_xml_sets_the_window_scaling_in_a_new_channel(self):
+        channel = ET.fromstring(self.script.xsettings_xml(None, 2))
+        self.assertEqual(channel.get("name"), "xsettings")
+        factor = channel.find("./property[@name='Gdk']/property[@name='WindowScalingFactor']")
+        self.assertEqual((factor.get("type"), factor.get("value")), ("int", "2"))
+
+    def test_xsettings_xml_keeps_the_rest_of_an_existing_channel(self):
+        existing = """<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xsettings" version="1.0">
+  <property name="Net" type="empty">
+    <property name="ThemeName" type="string" value="Greybird"/>
+  </property>
+  <property name="Gdk" type="empty">
+    <property name="WindowScalingFactor" type="empty"/>
+  </property>
+</channel>
+"""
+        channel = ET.fromstring(self.script.xsettings_xml(existing, 2))
+        self.assertEqual(channel.find("./property[@name='Net']/property[@name='ThemeName']").get("value"), "Greybird")
+        factors = channel.findall("./property[@name='Gdk']/property[@name='WindowScalingFactor']")
+        self.assertEqual([(f.get("type"), f.get("value")) for f in factors], [("int", "2")])
