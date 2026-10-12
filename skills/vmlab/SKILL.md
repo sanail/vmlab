@@ -5,18 +5,30 @@ description: Test desktop apps inside macOS, Windows and Linux virtual machines 
 
 # vmlab
 
-This skill runs a desktop app inside **Guests** (virtual machines) on this **Host** and drives its UI. A project describes its Guests as **Labs** in `.vmlab/vmlab.toml`; a **Scenario** is a Python file of steps and **Checks**; a **Run** executes one Scenario on one Lab and writes reports and screenshots.
+This skill runs a desktop app inside **Guests** (virtual machines) on this **Host** and drives its UI.
+A project describes its Guests as **Labs** in `.vmlab/vmlab.toml`;
+a **Scenario** is a Python file of steps and **Checks**; a **Run** executes one Scenario on one Lab and writes reports
+and screenshots.
 
 ## The CLI
 
-In a project, `vmlab` means `.vmlab/vmlab`, run from the project root: the version pinned in the project. Before `.vmlab/` exists, it is `scripts/vmlab` in this skill's folder, which downloads its vmlab release on first use. Every command has `--help`. When `self-update` moves a project to a new major version, read [references/migrating.md](references/migrating.md) and fix its Scenarios before their next Run.
+In a project, `vmlab` means `.vmlab/vmlab`, run from the project root: the version pinned in the project.
+Before `.vmlab/` exists, it is `scripts/vmlab` in this skill's folder, which downloads its vmlab release on first use.
+Every command has `--help`.
+When `self-update` moves a project to a new major version, read [references/migrating.md](references/migrating.md) and
+fix its Scenarios before their next Run.
 
 ## Route
 
 Pick the one workflow that fits and read it before acting:
 
-- **Setup**: no `.vmlab/` yet, no Lab for the OS the user wants, `vmlab doctor` shows FAIL, or the user asks to set up Guests. Read [references/setup.md](references/setup.md).
-- **Ad-hoc run**: the user describes something to check in their app now ("open X, press Y, check Z appears, take a screenshot"). Read [references/ad-hoc-run.md](references/ad-hoc-run.md).
-- **Regression**: the user wants saved Scenarios written, changed, measured, run as a suite or checked for flakiness. Read [references/regression.md](references/regression.md).
+- **Setup**: no `.vmlab/` yet, no Lab for the OS the user wants, `vmlab doctor` shows FAIL,
+  or the user asks to set up Guests.
+  Read [references/setup.md](references/setup.md).
+- **Ad-hoc run**: the user describes something to check in their app now ("open X, press Y, check Z appears, take a
+  screenshot").
+  Read [references/ad-hoc-run.md](references/ad-hoc-run.md).
+- **Regression**: the user wants saved Scenarios written, changed, measured, run as a suite or checked for flakiness.
+  Read [references/regression.md](references/regression.md).
 
 A workflow that hits a setup problem (a Lab missing, `doctor` failing) switches to Setup, then returns.

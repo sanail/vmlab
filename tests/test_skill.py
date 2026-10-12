@@ -14,7 +14,8 @@ from harness import REPO, VmlabTestCase, zipapp_path
 
 LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 TOML_BLOCK = re.compile(r"^```toml\n(.*?)^```", re.M | re.S)
-COMMAND = re.compile(r"(?:^|`)vmlab ((?:ui |base )?[a-z][a-z-]*)", re.M)  # in code: `vmlab run`, or a code block line
+COMMAND = r"vmlab ((?:ui |base )?[a-z][a-z-]*)"
+FENCE = re.compile(r"^```.*?^```", re.M | re.S)
 
 
 def skill_dir():
@@ -62,7 +63,10 @@ class SkillPackageTest(VmlabTestCase):
     def test_every_vmlab_command_the_documents_name_exists(self):
         top = self.help()
         for doc in self.docs():
-            for command in set(COMMAND.findall(doc.read_text())):
+            text = doc.read_text()
+            # in inline code (`vmlab run`) or at the start of a code block line; prose may start a line with "vmlab"
+            commands = set(re.findall("`" + COMMAND, text)) | set(re.findall("^" + COMMAND, "".join(FENCE.findall(text)), re.M))
+            for command in commands:
                 words = command.split()
                 if len(words) == 2:
                     self.assertIn(words[1], self.help(words[0]), "%s names `vmlab %s`" % (doc.name, command))

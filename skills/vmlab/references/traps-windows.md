@@ -1,71 +1,154 @@
 # Windows Guest traps
 
-Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process), console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout, typing and chord pace, output encoding (UTF-8 everywhere), sound (Guests have no sound device, so nothing reaches the Host's speakers), OneDrive's prompts (OneDrive is off), and Notifications' banners, which in an idle Guest stay up and take the front when the window before them closes (moved to Notification Center before each input, so the Notifications stay recorded).
+Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them:
+bringing a window to the front (Windows refuses `SetForegroundWindow` from a background process),
+console windows stealing focus from the app (calls run headless), 200 % scaling, chords on any keyboard layout,
+typing and chord pace, output encoding (UTF-8 everywhere), sound (Guests have no sound device, so nothing reaches the
+Host's speakers), OneDrive's prompts (OneDrive is off), and Notifications' banners,
+which in an idle Guest stay up and take the front when the window before them closes (moved to Notification Center
+before each input, so the Notifications stay recorded).
 
 ## Installing needs elevation
 
 **Symptom**: `install` fails with "access denied", or exits 0 and nothing is installed.
 
-**Cause**: every Guest call runs as the logged-in user, unelevated. A per-machine installer (MSI, an NSIS installer for all users) needs an administrator token.
+**Cause**: every Guest call runs as the logged-in user, unelevated.
+A per-machine installer (MSI, an NSIS installer for all users) needs an administrator token.
 
-**Do**: elevate inside the recipe: `Start-Process -Verb RunAs -Wait msiexec "/i $env:VMLAB_ARTIFACT /qn"`. Base guests let administrators elevate without a prompt, so no one has to click. A per-user installer needs no elevation.
+**Do**: elevate inside the recipe: `Start-Process -Verb RunAs -Wait msiexec "/i $env:VMLAB_ARTIFACT /qn"`.
+Base guests let administrators elevate without a prompt, so no one has to click.
+A per-user installer needs no elevation.
 
 ## Web content arrives late in the tree
 
-**Symptom**: `ui find` sees the window's title bar and Close button but none of the page (WebView2: Tauri, Electron, .NET WebView2), and a Check reading the page fails.
+**Symptom**: `ui find` sees the window's title bar and Close button but none of the page (WebView2: Tauri, Electron,
+.NET WebView2), and a Check reading the page fails.
 
-**Cause**: WebView2 turns on accessibility when the first UI Automation client arrives, and fills the page's subtree after the window's frame is already there.
+**Cause**: WebView2 turns on accessibility when the first UI Automation client arrives,
+and fills the page's subtree after the window's frame is already there.
 
-**Do**: wait for the page itself, `g.wait_for(role="Document", app=APP)`, or better an element of your own page by its text, then read. Match the page by role or by the app's own text: the frame's names are localised (e.g. "MyApp — Web content" in the Guest's display language).
+**Do**: wait for the page itself, `g.wait_for(role="Document", app=APP)`,
+or better an element of your own page by its text, then read.
+Match the page by role or by the app's own text: the frame's names are localised (e.g.
+"MyApp — Web content" in the Guest's display language).
 
 ## Controls inside WebView2 refuse UI Automation
 
-**Symptom**: focusing an element fails ("the target element cannot receive focus") while its window is in front; expanding a combo box returns without opening it.
+**Symptom**: focusing an element fails ("the target element cannot receive focus") while its window is in front;
+expanding a combo box returns without opening it.
 
-**Do**: drive the page with keys: `tab` until the element is focused (check `focused` in the tree), `alt+down` to open a combo box.
+**Do**: drive the page with keys: `tab` until the element is focused (check `focused` in the tree),
+`alt+down` to open a combo box.
 
-**Popups belong to another process**: an open drop-down list is drawn by `msedgewebview2` in its own window, not by the app's process, so `--app APP` never finds it. Look at the whole tree, and check what opened by comparing it before and after.
+**Popups belong to another process**: an open drop-down list is drawn by `msedgewebview2` in its own window,
+not by the app's process, so `--app APP` never finds it.
+Look at the whole tree, and check what opened by comparing it before and after.
 
 ## Theme, language and layout settings
 
-Element names come in the Guest's display language: `g.find(text="Close")` finds nothing on a German Windows. vmlab sets a Windows Lab's copy to the Lab language (`[labs.NAME] language`, default `en-US`): display language, regional formats, the sign-in screen, and the language's keyboard next to US, which stays active. The first Lab in a language the English Base guest lacks installs its language pack into the Base guest (several hundred MB from Windows Update, about half an hour; the Mac must be online); later copies only switch. Some inbox apps and system names can stay English after a pack install: prefer the app's own text in Checks. Console programs stay English in every Lab language: in a UTF-8 console (which vmlab's Channels need) Windows gives them an English UI, so `(Get-UICulture).Name` in `g.exec` reads `en-US` while apps show the Lab language; `(Get-Culture).Name` has the regional formats, and `g.language` the Lab language. Match your own app's text, which you control, before the system's; see "Language-dependent apps" in [scenarios.md](scenarios.md).
+Element names come in the Guest's display language: `g.find(text="Close")` finds nothing on a German Windows. vmlab sets
+a Windows Lab's copy to the Lab language (`[labs.NAME] language`, default `en-US`): display language,
+regional formats, the sign-in screen, and the language's keyboard next to US, which stays active.
+The first Lab in a language the English Base guest lacks installs its language pack into the Base guest (several hundred
+MB from Windows Update, about half an hour; the Mac must be online); later copies only switch.
+Some inbox apps and system names can stay English after a pack install: prefer the app's own text in Checks.
+Console programs stay English in every Lab language: in a UTF-8 console (which vmlab's Channels need) Windows gives them
+an English UI, so `(Get-UICulture).Name` in `g.exec` reads `en-US` while apps show the Lab language;
+`(Get-Culture).Name` has the regional formats, and `g.language` the Lab language.
+Match your own app's text, which you control, before the system's;
+see "Language-dependent apps" in [scenarios.md](scenarios.md).
 
-A web view reads the Windows theme (`AppsUseLightTheme`) once, when it is created. A Scenario that tests a theme sets it before launch: `LAUNCH = False`, set the registry value with `g.exec`, then `g.launch()`. The same goes for any setting an app reads at start. A Check that depends on the keyboard layout sets the layout explicitly and records it, since a Guest's default is whatever its Windows install chose.
+A web view reads the Windows theme (`AppsUseLightTheme`) once, when it is created.
+A Scenario that tests a theme sets it before launch: `LAUNCH = False`, set the registry value with `g.exec`,
+then `g.launch()`.
+The same goes for any setting an app reads at start.
+A Check that depends on the keyboard layout sets the layout explicitly and records it,
+since a Guest's default is whatever its Windows install chose.
 
 ## Taskbar and tray
 
-Whether a window has a taskbar button cannot be read from its styles: frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched. Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`. The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the old icon (install the old version, show its window), or it never goes red.
+Whether a window has a taskbar button cannot be read from its styles:
+frameworks remove buttons through `ITaskbarList`, which leaves the styles untouched.
+Ask the taskbar: `g.find(role="button", text="MyApp", app="explorer")`.
+The shell caches button icons across reinstalls and reboots: a Check about an icon after an update must first plant the
+old icon (install the old version, show its window), or it never goes red.
 
-Read and choose from an app's Tray menu with `g.tray(APP, choose=...)` (APP: its process name). A new app's Tray icon waits among the hidden icons; `g.tray` moves it onto the taskbar without pressing a key (through `IsPromoted` under `HKCU:\Control Panel\NotifyIconSettings`), and it stays there until the next restore. Waiting for the icon, `g.wait_for(tray=APP)` or `ready = { tray = "APP" }`, moves it the same way and does nothing more: no click, no menu, the foreground window stays. Reading the menu, `g.tray` then opens it with a right click on the icon, as a user does, so the app becomes the foreground app for a moment, and opens each submenu to list its items (a WinForms submenu lists them only while it is open). An app known to Windows by an icon GUID only, with no registry entry of its own, is not found. The Tray icon itself is one of `explorer`'s buttons, which `g.click` reaches.
+Read and choose from an app's Tray menu with `g.tray(APP, choose=...)`
+(APP: its process name).
+A new app's Tray icon waits among the hidden icons; `g.tray` moves it onto the taskbar without pressing a key (through
+`IsPromoted` under `HKCU:\Control Panel\NotifyIconSettings`), and it stays there until the next restore.
+Waiting for the icon, `g.wait_for(tray=APP)` or `ready = { tray = "APP" }`,
+moves it the same way and does nothing more: no click, no menu, the foreground window stays.
+Reading the menu, `g.tray` then opens it with a right click on the icon, as a user does,
+so the app becomes the foreground app for a moment, and opens each submenu to list its items (a WinForms submenu lists
+them only while it is open).
+An app known to Windows by an icon GUID only, with no registry entry of its own, is not found.
+The Tray icon itself is one of `explorer`'s buttons, which `g.click` reaches.
 
 ## Notifications
 
-Read the app's Notifications with `g.wait_for(notification=NONCE)` and `g.notifications()` ([Scenario API](scenarios.md)), not from the screen: they come from the Action Center's store, by the app's AppUserModelID. That is the id the app's installer gives its Start menu shortcut (a Tauri app's: its identifier), so the app must be installed by its installer: a bare `.exe` has no AppUserModelID, Windows keeps none of its Notifications, and the list stays empty. Put a nonce in what the app sends.
+Read the app's Notifications with `g.wait_for(notification=NONCE)` and `g.notifications()` ([Scenario
+API](scenarios.md)), not from the screen: they come from the Action Center's store, by the app's AppUserModelID.
+That is the id the app's installer gives its Start menu shortcut (a Tauri app's: its identifier),
+so the app must be installed by its installer: a bare `.exe` has no AppUserModelID,
+Windows keeps none of its Notifications, and the list stays empty.
+Put a nonce in what the app sends.
 
 ## No sound device
 
-A Guest has no sound device, so Windows shows a crossed-out speaker in the tray, and nothing covers the app for it. Playing a sound succeeds without error and nobody hears it. An app that refuses to start or shows its own "no audio output" error without one behaves the same on a user's PC with no speakers: a Check can expect it. A Scenario cannot test what the app sounds like; vmlab has no setting that gives a Guest sound.
+A Guest has no sound device, so Windows shows a crossed-out speaker in the tray, and nothing covers the app for it.
+Playing a sound succeeds without error and nobody hears it.
+An app that refuses to start or shows its own "no audio output" error without one behaves the same on a user's PC with
+no speakers: a Check can expect it.
+A Scenario cannot test what the app sounds like; vmlab has no setting that gives a Guest sound.
 
 ## No OneDrive
 
-Provisioning turns OneDrive off by policy (`DisableFileSyncNGSC`): it quits as soon as anything starts it, so its "Turn On Windows Backup" prompt never covers the app. A Scenario cannot test what the app does with OneDrive (syncing, files on demand, backed-up folders); Documents and Desktop are plain local folders.
+Provisioning turns OneDrive off by policy (`DisableFileSyncNGSC`): it quits as soon as anything starts it,
+so its "Turn On Windows Backup" prompt never covers the app.
+A Scenario cannot test what the app does with OneDrive (syncing, files on demand, backed-up folders);
+Documents and Desktop are plain local folders.
 
 ## No updates, no recent documents
 
-Provisioning turns Windows Update off, the Microsoft Store's app updates with it (Notepad among them, which the Store otherwise updates minutes after every boot of a Guest), and keeps no Recent Items (`NoRecentDocsHistory`), since every Run opens files. An app that installs through the Store or needs a Windows update cannot get it in a Base guest. An app's jump list and the shell's recent files stay empty: a Scenario that tests them removes that policy first (`Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' NoRecentDocsHistory`) and restarts `explorer`.
+Provisioning turns Windows Update off, the Microsoft Store's app updates with it (Notepad among them, which the Store
+otherwise updates minutes after every boot of a Guest), and keeps no Recent Items (`NoRecentDocsHistory`),
+since every Run opens files.
+An app that installs through the Store or needs a Windows update cannot get it in a Base guest.
+An app's jump list and the shell's recent files stay empty: a Scenario that tests them removes that policy first
+(`Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies\Explorer' NoRecentDocsHistory`) and
+restarts `explorer`.
 
 ## Clock hours off
 
-**Symptom**: times the Guest reports (`g.notifications()`, file times, the app's own logs) are hours off the Host's, and `vmlab doctor` warns `Clock: Windows does not keep its clock in UTC` or `Clock: ... its clock runs ... the Host's`.
+**Symptom**: times the Guest reports (`g.notifications()`, file times, the app's own logs) are hours off the Host's,
+and `vmlab doctor` warns `Clock: Windows does not keep its clock in UTC` or `Clock: ... its clock runs ... the Host's`.
 
-**Cause**: every Guest runs in UTC: vmlab sets Fusion's hardware clock to UTC and provisioning makes Windows read it as UTC, in time zone UTC. A Base guest provisioned by an older vmlab left Windows in its own time zone, reading Fusion's clock, which followed the Mac's zone, in it: hours off whenever the two differ. A Guest of the current provisioning whose zone is not UTC had it changed after its Clean state (by the app, a Scenario or a person).
+**Cause**: every Guest runs in UTC: vmlab sets Fusion's hardware clock to UTC and provisioning makes Windows read it as
+UTC, in time zone UTC.
+A Base guest provisioned by an older vmlab left Windows in its own time zone, reading Fusion's clock,
+which followed the Mac's zone, in it: hours off whenever the two differ.
+A Guest of the current provisioning whose zone is not UTC had it changed after its Clean state (by the app, a Scenario
+or a person).
 
-**Do**: relay doctor's fix. An older Base guest: `vmlab base create windows-11`, run by the user in a terminal window of their own (it provisions again, asking for nothing about the time; Labs copy it again at their next start). A zone changed in the Guest: a Scenario that changes it declares `FRESH`, or the Run uses `--fresh`. A Guest in UTC that is still off: `vmlab down LAB && vmlab up LAB`. An app under test sees UTC as local time; a Scenario that needs another zone sets it with `tzutil /s "<Windows zone id>"`.
+**Do**: relay doctor's fix.
+An older Base guest: `vmlab base create windows-11`, run by the user in a terminal window of their own (it provisions
+again, asking for nothing about the time; Labs copy it again at their next start).
+A zone changed in the Guest: a Scenario that changes it declares `FRESH`, or the Run uses `--fresh`.
+A Guest in UTC that is still off: `vmlab down LAB && vmlab up LAB`.
+An app under test sees UTC as local time; a Scenario that needs another zone sets it with
+`tzutil /s "<Windows zone id>"`.
 
 ## PowerShell parses twice
 
-`g.exec(["powershell", "-Command", ...])` hands PowerShell a string it parses again: unquoted spaces split arguments, and a comma turns a value into an array. Pass arguments as argv items to a script file (`-File`), or write test data to a file with `g.put` and pass its path (`g.exec` takes no stdin). For the clipboard, `g.clipboard()` and `g.set_clipboard()`.
+`g.exec(["powershell", "-Command", ...])` hands PowerShell a string it parses again:
+unquoted spaces split arguments, and a comma turns a value into an array.
+Pass arguments as argv items to a script file (`-File`), or write test data to a file with `g.put` and pass its path
+(`g.exec` takes no stdin).
+For the clipboard, `g.clipboard()` and `g.set_clipboard()`.
 
 ## x64 builds under emulation
 
-On an Apple Silicon Host an x64 build runs under Windows' emulation. It proves the build starts and behaves; it says nothing about x64 hardware. Tell the user so when reporting.
+On an Apple Silicon Host an x64 build runs under Windows' emulation.
+It proves the build starts and behaves; it says nothing about x64 hardware.
+Tell the user so when reporting.
