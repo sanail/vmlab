@@ -25,7 +25,7 @@ class DocsTest(unittest.TestCase):
     def test_markdown_prose_lines_fit_120_characters(self):
         docs = subprocess.run(["git", "ls-files", "*.md"], cwd=REPO, capture_output=True, text=True, check=True).stdout.split()
         found = ["%s:%d: %s…" % (doc, n, line[:60]) for doc in docs for n, line in long_lines((REPO / doc).read_text())]
-        self.assertEqual(found, [], "wrap these lines at a sentence or phrase, keeping inline code whole")
+        self.assertEqual(found, [], "python3 tools/wrap_md.py rewraps them")
 
 
 if __name__ == "__main__":

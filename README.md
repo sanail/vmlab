@@ -44,6 +44,7 @@ Python 3.9+ and the standard library only.
 
 ```sh
 python3 tools/build.py                   # -> dist/vmlab.pyz
+python3 tools/wrap_md.py                 # one sentence per line, 120 at most, in every tracked .md (tests/test_docs.py)
 python3 -m unittest discover -s tests    # Seam 1: drives the built zipapp as a subprocess; a few tests load one part
                                          # directly against stand-ins (the Linux UI helper, the Windows ssh Channel)
 # Seam 2, the Provider/Channel contract against a real Lab (docs/adding-a-provider.md):
