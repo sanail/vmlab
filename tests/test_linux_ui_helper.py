@@ -337,9 +337,9 @@ class Editor:
             self.closed = not self.asking
 
     def save(self, text):
+        self.saved = text  # before the file: the helper closes as soon as the file matches
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(self.writes(text))
-        self.saved = text
 
     def type(self, text):
         self.view.text, self.view.selection = text, None
