@@ -501,16 +501,22 @@ class X11:
     def pointer(self, button, events):
         """events (vmlab.ui) with button's number, as one chain of xdotool commands."""
         argv = ["xdotool"]
+        at = self.root.query_pointer()
+        at = (at.root_x, at.root_y)
         for e in events:
             if e["do"] == "move":
-                argv += ["mousemove", "--sync", str(e["x"]), str(e["y"])]
+                # --sync waits for a motion, and a move to the pointer's own point makes none: it waits ~16 s.
+                if (e["x"], e["y"]) != at:
+                    argv += ["mousemove", "--sync", str(e["x"]), str(e["y"])]
+                    at = (e["x"], e["y"])
             elif e["do"] in ("down", "up"):
                 argv += ["mouse" + e["do"], str(button)]
             elif e["do"] == "wait":
                 argv += ["sleep", str(e["s"])]
             else:
                 argv += [e["do"], KEYSYMS[e["key"]]]
-        run(argv, "xdotool pointer", timeout=30 + sum(e.get("s", 0) for e in events))
+        if len(argv) > 1:
+            run(argv, "xdotool pointer", timeout=30 + sum(e.get("s", 0) for e in events))
 
     def press(self, key, modifiers):
         chord = "+".join([KEYSYMS[m] for m in modifiers] + [KEYSYMS.get(key, key)])

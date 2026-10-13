@@ -413,6 +413,15 @@ def scenario(g):
     g.check("each moved at least twice", seen.count("move left shift") >= 2 and seen.count("move middle -") >= 2, detail=seen)
     g.check("right, middle, back and forward clicks", runs[6:] == [
         "down right -", "up right -", "down middle -", "up middle -", "down back -", "up back -", "down forward -", "up forward -"], detail=seen)
+    # On X11 a move to where the pointer already is made xdotool --sync wait ~16 s.
+    import time
+    for what, call in (("a second click at a click's point", lambda: g.click(at=(x, y))),
+                       ("a pointer down at a click's point", lambda: g.pointer("down", x, y))):
+        started = time.monotonic()
+        call()
+        took = time.monotonic() - started
+        g.check(what + " takes a few seconds", took < 8, detail=round(took, 1))
+    g.pointer("up", x, y)
     fixture.stop()
 '''
 
