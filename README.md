@@ -143,6 +143,7 @@ channels = ["ssh", "exec"]   # Channel names, preferred first
 broken_channels = []         # fault injection: these Channels fail every call
 hung_channels = []           # fault injection: these Channels hang until the call times out
 boot_seconds = 0             # fault injection: a slow boot
+session = "x11"              # a linux Lab's desktop session, as Fusion's (default "wayland"); only g.session and SESSIONS see it
 ```
 
 Guests have no sound device on any Provider (Tart runs them with `--no-audio`, Fusion's have `sound.present = "FALSE"`):

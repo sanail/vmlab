@@ -7,12 +7,13 @@ A Scenario is a Python file in .vmlab/scenarios defining:
     TIMEOUT = 300       # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
     OS = ["macos"]      # optional: run only on Labs of these Guest OSes (g.os); left out on the others
     LANGUAGES = ["en-US"]  # optional: run only on Labs of these Lab languages (g.language)
+    SESSIONS = ["x11"]  # optional: on Linux, run only on Labs of these desktop sessions (g.session)
 
     def scenario(g):
         r = g.exec(["echo", "hello"])
         g.check("echo prints hello", r.stdout.strip() == "hello")
 
-OS and LANGUAGES are read without running the file (limits()), before any Lab
+OS, LANGUAGES and SESSIONS are read without running the file (limits()), before any Lab
 builds or boots, so they must be literal lists of strings.
 
 The timeout is enforced at g.* calls: Python code in a Scenario must not block
@@ -36,7 +37,7 @@ import time
 import traceback
 
 from vmlab import arch, hostpower, ui
-from vmlab.config import LANGUAGE, OSES, ConfigError, UsageError
+from vmlab.config import LANGUAGE, OSES, SESSIONS, ConfigError, UsageError
 from vmlab.providers import spawning
 from vmlab.providers.base import ChannelError, GuestError, GuestTimeout
 
@@ -82,6 +83,7 @@ class Guest:
         self.lab = lab.name
         self.os = lab.os
         self.language = lab.language  # the Lab language, e.g. "ru-RU": system element names come in it
+        self.session = lab.session  # the Linux desktop session, "wayland" or "x11"; None on macOS and Windows
         self.arch = lab.arch  # the Build artifact's
         self.guest_arch = arch.guest_arch()  # differs from arch when the Guest OS emulates it
         self._provider = provider
@@ -649,11 +651,12 @@ def _scenario_line(path, tb):
 LIMITS = {
     "OS": ("os", lambda v: v in OSES, "Guest OS names (%s)" % ", ".join(OSES), '["macos"]'),
     "LANGUAGES": ("language", lambda v: bool(LANGUAGE.match(v)), "Lab languages, ll-RR", '["en-US"]'),
+    "SESSIONS": ("session", lambda v: v in SESSIONS, "Linux desktop sessions (%s)" % ", ".join(SESSIONS), '["x11"]'),
 }
 
 
 def limits(path):
-    """The Scenario file's OS and LANGUAGES, {name: [values]}, read without executing it; ConfigError
+    """The Scenario file's OS, LANGUAGES and SESSIONS, {name: [values]}, read without executing it; ConfigError
     when one is not a non-empty literal list of valid values. A file that does not parse limits nothing:
     its Run errors."""
     try:
@@ -686,8 +689,8 @@ def _limit(path, name, node):
 
 def excluded_by(declared, lab):
     """Why a Scenario with these limits() is left out on lab: its declarations lab does not match,
-    'LANGUAGES = ["en-US"]'; None when it runs there."""
-    unmet = [name for name, values in declared.items() if getattr(lab, LIMITS[name][0]) not in values]
+    'LANGUAGES = ["en-US"]'; None when it runs there. A Lab where it is None (a macOS Lab's session) meets it."""
+    unmet = [name for name, values in declared.items() if getattr(lab, LIMITS[name][0]) not in values + [None]]
     return " and ".join("%s = %s" % (name, json.dumps(declared[name])) for name in unmet) or None
 
 

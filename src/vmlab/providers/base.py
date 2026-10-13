@@ -141,6 +141,11 @@ class Provider:
         return SCALES[os_name]
 
     @classmethod
+    def session_of(cls, options):
+        """The desktop session a Linux Lab with these (valid) options logs into."""
+        return options.get("session", "wayland")
+
+    @classmethod
     def base_of(cls, options, os_name):
         """The Base guest a Lab with these (valid) options clones, or None for Providers without them."""
         return None

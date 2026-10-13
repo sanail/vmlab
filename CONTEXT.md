@@ -160,5 +160,5 @@ _Avoid_: test suite, smoke tests
 - "Run" was used both for one **Scenario**'s execution and for the whole suite's on a **Lab** (its report folder) —
   resolved: the first is a **Run**, the second a **Suite run**.
 - "Skipped" names two things — resolved: a **Lab** whose architecture this **Host** does not cover,
-  or whose every chosen **Scenario** is left out by its OS or LANGUAGES, is a skipped **Lab**;
+  or whose every chosen **Scenario** is left out by its OS, LANGUAGES or SESSIONS, is a skipped **Lab**;
   a **Check** a **Run** could not measure is a **Skipped Check**.

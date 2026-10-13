@@ -38,7 +38,7 @@ import zlib
 from datetime import datetime, timezone
 
 from vmlab import hostproc
-from vmlab.config import ConfigError, language_forms
+from vmlab.config import SESSIONS, ConfigError, language_forms
 from vmlab.home import vmlab_home
 from vmlab.providers.base import Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 
@@ -48,7 +48,7 @@ DEFAULT_CHANNELS = ["ssh", "exec"]
 FAKE_TEMP = "/tmp"  # where the emulated editor's Staged documents are written (under fs, as every Guest path)
 OPTIONS = (
     "ui_tree", "notifications", "channels", "broken_channels", "hung_channels", "mute_channels", "latency", "boot_seconds",
-    "crashing_restores", "cpu",
+    "crashing_restores", "cpu", "session",
 )  # fmt: skip
 
 
@@ -202,6 +202,8 @@ class FakeProvider(Provider):
         cpu = options.get("cpu", 1)
         if isinstance(cpu, bool) or not isinstance(cpu, int) or cpu < 1:
             raise ConfigError(config_path, key + ".cpu", "must be a whole number of CPUs >= 1", "e.g. cpu = 4")
+        if options.get("session", "wayland") not in SESSIONS:
+            raise ConfigError(config_path, key + ".session", "must be one of: %s" % ", ".join(SESSIONS), 'e.g. session = "x11"')
         boot = options.get("boot_seconds", 0)
         if isinstance(boot, bool) or not isinstance(boot, (int, float)) or boot < 0:
             raise ConfigError(config_path, key + ".boot_seconds", "must be a number >= 0", "e.g. boot_seconds = 2")

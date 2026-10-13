@@ -14,6 +14,7 @@ LAUNCH = False   # optional: skip the launch; call g.launch(env={...}) yourself:
 TIMEOUT = 120    # optional: seconds for the whole Scenario (default: the Lab's scenario_timeout)
 OS = ["macos", "linux"]  # optional: run only on Labs of these Guest OSes; left out on the others
 LANGUAGES = ["en-US"]    # optional: run only on Labs of these Lab languages (ll-RR); both given: both must match
+SESSIONS = ["x11"]       # optional: on Linux, run only on Labs of these desktop sessions; macOS and Windows Labs still run it
 
 def scenario(g):
     r = g.exec(["cat", "/tmp/myapp.log"])      # r.code, r.stdout, r.stderr, r.ok, r.channel; timeout=, env=
@@ -24,6 +25,7 @@ def scenario(g):
     g.screenshot("after start")                 # evidence: screenshots/<scenario>/01-after-start.png in the Run folder
     g.check("the icon looks right", True, visual=True)  # a judgement from a screenshot: "visual, unverified"
     # g.lab, g.os ("macos" | "windows" | "linux"), g.language (the Lab language, e.g. "ru-RU"),
+    # g.session (a Linux Lab's desktop session, "wayland" | "x11"; None on macOS and Windows),
     # g.arch (the Build artifact's), g.guest_arch
 ```
 
@@ -39,11 +41,15 @@ Files stay after the Run, so "put a file, restart the app, it reads it" works; `
 The CLI has the same: `vmlab put GUEST_PATH [--from HOSTFILE]` (piped stdin when no `--from`, and an empty pipe makes an
 empty file; prints the Guest path) and `vmlab get GUEST_PATH` (to stdout).
 
-`OS` and `LANGUAGES` limit the Scenario to the Labs it means something on (a Check of every interface language only an
-en-US Lab can run, a behaviour of one OS). vmlab reads them without running the file, before any Lab builds or boots,
+`OS`, `LANGUAGES` and `SESSIONS` limit the Scenario to the Labs it means something on (a Check of every interface
+language only an en-US Lab can run, a behaviour of one OS, a Linux path that works on X11 only).
+vmlab reads them without running the file, before any Lab builds or boots,
 so each must be a literal non-empty list of strings: `OS` of `"macos"`, `"windows"`,
-`"linux"` (what `g.os` holds), `LANGUAGES` of `ll-RR` tags (what `g.language` holds);
-anything else is a config error naming the file.
+`"linux"` (what `g.os` holds), `LANGUAGES` of `ll-RR` tags (what `g.language` holds),
+`SESSIONS` of `"wayland"`, `"x11"` (what `g.session` holds, the Lab's `session`);
+anything else is a config error naming the file. Given together, all must match.
+`SESSIONS` limits Linux Labs only: macOS and Windows have one session, so a cross-OS Scenario whose Linux path needs X11
+declares `SESSIONS = ["x11"]` and still runs there; with `OS = ["linux"]` it runs on Linux X11 Labs only.
 On a Lab they do not match, the Scenario is left out: not a Run, no result, no Skipped Check;
 the console says so once per Lab (`ru: settings_languages left out (LANGUAGES = ["en-US"])`),
 and the Lab's `summary.md` and `report.json` (`"excluded"`: `[{"name", "reason"}]`) list it.
@@ -51,7 +57,7 @@ A Lab left with no Scenario is skipped, unbuilt and unbooted (status `"skipped"`
 as a Lab this Host does not cover is; no Scenario left on any Lab chosen,
 e.g. `vmlab run file.py --lab LAB` on a Lab the file leaves out, is a usage error (exit 2).
 Limit when the Scenario as a whole means nothing on a Lab; `g.skip` one Check this Run cannot measure.
-Never branch on `g.os` or `g.language` to measure something meaningless where the Scenario does not apply.
+Never branch on `g.os`, `g.language` or `g.session` to measure something meaningless where the Scenario does not apply.
 
 `g.check(name, passed, detail=None, visual=False)` records a Check; a failed Check does not stop the Scenario.
 `g.skip(name, reason)` records a Skipped Check, one this Run cannot measure:

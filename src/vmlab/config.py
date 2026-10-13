@@ -17,6 +17,7 @@ CONFIG_DIR = ".vmlab"
 CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
+SESSIONS = ("wayland", "x11")  # the Linux desktop sessions a Lab can log into
 ARCHES = ("arm64", "x86_64")
 LAB_KEYS = ("provider", "os", "arch", "language", "scale", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "grant", "app")
 # ...plus one options table named after each Provider
@@ -68,6 +69,7 @@ class Lab:
         self.os = os
         self.arch = arch
         self.language = settings.get("language", DEFAULT_LANGUAGE)  # the Lab language, e.g. ru-RU
+        self.session = settings.get("session")  # the Linux desktop session, "wayland" or "x11"; None on macOS and Windows
         self.scale = settings.get("scale")  # the Display scale vmlab gives the Guest; None: its Provider's
         self.options = options  # provider-specific table, e.g. [labs.<name>.fake]
         self.memory_gb = settings.get("memory_gb", DEFAULT_MEMORY_GB)  # Host RAM the Guest takes when running
@@ -235,6 +237,7 @@ def load(start):
             arch,
             options,
             language=language,
+            session=PROVIDERS[provider].session_of(options) if os_name == "linux" else None,
             scale=scale,
             memory_gb=_positive_number(path, table, key, "memory_gb", DEFAULT_MEMORY_GB, "GB"),
             boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),

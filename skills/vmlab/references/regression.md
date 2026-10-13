@@ -38,8 +38,8 @@ From the project root, with the pinned copy, as a terminal or CI job will:
 ```
 
 Repeat `--lab` per Lab the Scenario is meant for.
-A Scenario meant only for some Labs (one OS, one Lab language) declares `OS` or `LANGUAGES`
-([scenarios.md](scenarios.md)), so the whole suite leaves it out on the others and says so,
+A Scenario meant only for some Labs (one OS, one Lab language, one Linux desktop session) declares `OS`, `LANGUAGES`
+or `SESSIONS` ([scenarios.md](scenarios.md)), so the whole suite leaves it out on the others and says so,
 rather than you narrowing every run by hand.
 A saved Scenario's run restores Clean state first, so nothing you did in the Guest while exploring can make it pass.
 
@@ -131,7 +131,7 @@ folders), and the command that runs the suite without you: `.vmlab/run`.
   Scenario as it starts and ends (`LAB: scenario NAME`, `LAB: scenario NAME failed in 1m12s (2 of 8 Checks failed)`);
   `--quiet` leaves only the results.
 - Exit code: 0 all passed (or skipped: a Lab this Host does not cover or with every Scenario left out by its
-  `OS`/`LANGUAGES`, or Skipped Checks next to passed ones), 1 a Check failed or a Run errored,
+  `OS`/`LANGUAGES`/`SESSIONS`, or Skipped Checks next to passed ones), 1 a Check failed or a Run errored,
   2 a usage or config error.
   Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`,
   `summary.md` and `screenshots/<scenario>/NN-<name>.png`, one folder per Scenario (a second Scenario of the same name

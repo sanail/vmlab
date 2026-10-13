@@ -1,4 +1,4 @@
-"""A Scenario declaring OS and LANGUAGES is left out on the Labs that do not match them."""
+"""A Scenario declaring OS, LANGUAGES or SESSIONS is left out on the Labs that do not match them."""
 
 import json
 import xml.etree.ElementTree as ET
@@ -13,6 +13,8 @@ def lab(name, os, extra=""):
 EN = lab("en", "macos")
 RU = lab("ru", "macos", 'language = "ru-RU"\n[labs.ru.app]\nartifact = "app.bin"\nbuild = "touch built && touch app.bin"')
 WIN = lab("win", "windows")
+X11 = lab("x11", "linux", '[labs.x11.fake]\nsession = "x11"')
+WAYLAND = lab("wayland", "linux")
 PLAIN = 'def scenario(g):\n    g.check("ran on " + g.lab, True)\n'
 
 
@@ -54,6 +56,35 @@ class ScenarioLimitsTest(VmlabTestCase):
         self.assertIn('win: unix left out (OS = ["macos", "linux"])', r.out)
         self.assertIn('win: en_mac left out (OS = ["macos"])', r.out)
         self.assertIn('ru: en_mac left out (LANGUAGES = ["en-US"])', r.out)
+
+    def test_sessions_limits_linux_labs_only(self):
+        self.project.config(X11 + WAYLAND + EN + WIN)
+        self.project.scenario("xorg.py", limited('SESSIONS = ["x11"]'))
+        self.project.scenario("xorg_linux.py", limited('OS = ["linux"]\nSESSIONS = ["x11"]'))
+        self.project.scenario("session.py", 'def scenario(g):\n    g.check("session " + str(g.session), True)\n')
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 0)
+        reports = {self.project.report(d)["lab"]: self.project.report(d) for d in self.project.run_dirs()}
+        ran = {name: [s["name"] for s in report["scenarios"]] for name, report in reports.items()}
+        self.assertEqual(
+            ran, {"x11": ["session", "xorg", "xorg_linux"], "wayland": ["session"], "en": ["session", "xorg"], "win": ["session", "xorg"]}
+        )
+        self.assertIn('wayland: xorg left out (SESSIONS = ["x11"])', r.out)
+        self.assertIn('en: xorg_linux left out (OS = ["linux"])', r.out)
+        self.assertIn({"name": "xorg", "reason": 'SESSIONS = ["x11"]'}, reports["wayland"]["excluded"])
+        sessions = {name: [c["name"] for c in report["scenarios"][0]["checks"]] for name, report in reports.items()}
+        self.assertEqual(sessions, {"x11": ["session x11"], "wayland": ["session wayland"], "en": ["session None"], "win": ["session None"]})
+
+    def test_an_explicit_run_on_a_session_it_leaves_out_names_the_session(self):
+        self.project.config(WAYLAND)
+        self.project.scenario("xorg.py", limited('SESSIONS = ["x11"]'))
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 2)
+        self.assertIn('wayland (linux, wayland, en-US): xorg (SESSIONS = ["x11"])', r.err)
 
     def test_a_lab_with_every_scenario_left_out_is_skipped_unbuilt_and_unbooted(self):
         self.project.config(EN + RU)
@@ -119,6 +150,9 @@ class ScenarioLimitsTest(VmlabTestCase):
             ("OS = []", "OS"),
             ('LANGUAGES = ["ru"]', "ru"),
             ("OS = some_variable", "OS"),
+            ('SESSIONS = "x11"', "SESSIONS"),
+            ('SESSIONS = ["xorg"]', "xorg"),
+            ("SESSIONS = some_variable", "SESSIONS"),
         ]:
             with self.subTest(declaration=declaration):
                 self.project.scenario("bad.py", limited(declaration))

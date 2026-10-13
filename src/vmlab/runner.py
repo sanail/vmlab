@@ -17,7 +17,7 @@ Guest policy applies, and vmlab says what it stopped and left. Under --parallel
 the Labs get up to INTERRUPT_WAIT_S for that; a second Ctrl-C exits at once.
 
 A Lab this Host does not cover (vmlab.arch) is skipped: no build, no Guest, a
-warning, and reports with status "skipped". A Scenario declaring OS or LANGUAGES
+warning, and reports with status "skipped". A Scenario declaring OS, LANGUAGES or SESSIONS
 is left out on the Labs that do not match them, said once per Lab and in its
 reports; a Lab left with no Scenario is skipped the same way, and no Scenario
 left on any Lab is a UsageError, all before anything builds or boots.
@@ -132,7 +132,7 @@ def run(
 
 
 def _chosen(labs, scenarios):
-    """{Lab name: (the Scenarios it runs, those its OS and LANGUAGES leave out there: [{name, reason}])};
+    """{Lab name: (the Scenarios it runs, those its OS, LANGUAGES and SESSIONS leave out there: [{name, reason}])};
     ConfigError for a malformed declaration, UsageError when no Lab is left any Scenario."""
     declared = {path: limits(path) for path in scenarios}
     chosen = {}
@@ -142,9 +142,9 @@ def _chosen(labs, scenarios):
         chosen[lab.name] = ([p for p, why in reasons if not why], [{"name": p.stem, "reason": why} for p, why in left_out])
     if not any(runs for runs, _ in chosen.values()):
         raise UsageError(
-            "no Scenario is left to run: each one's OS or LANGUAGES leaves it out on every Lab chosen; %s; "
+            "no Scenario is left to run: each one's OS, LANGUAGES or SESSIONS leaves it out on every Lab chosen; %s; "
             "pick a Lab they match with --lab" % "; ".join(
-                "%s (%s, %s): %s" % (lab.name, lab.os, lab.language, ", ".join("%s (%s)" % (e["name"], e["reason"]) for e in chosen[lab.name][1]))
+                "%s (%s): %s" % (lab.name, ", ".join(filter(None, (lab.os, lab.session, lab.language))), ", ".join("%s (%s)" % (e["name"], e["reason"]) for e in chosen[lab.name][1]))
                 for lab in labs
             )
         )  # fmt: skip
@@ -327,7 +327,7 @@ class _LabRun:
         self.lab = lab
         self.progress = progress
         self.scenarios = scenarios  # the Scenario files it runs
-        self.excluded = excluded  # [{name, reason}] of those its OS or LANGUAGES leave out here
+        self.excluded = excluded  # [{name, reason}] of those its OS, LANGUAGES or SESSIONS leave out here
         self._new_repetition()
         self.built = None
         self.reports = []  # one per repetition that ended
