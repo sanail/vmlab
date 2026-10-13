@@ -208,6 +208,7 @@ class WindowsLanguageTest(WindowsTestCase):
         self.vmlab("up")
         self.vmlab("down")
         path, record = self.clone_record()
+        record.pop("prepared", None)
         path.write_text(json.dumps(dict(record, language=None)))
 
         self.assertRegex(self.vmlab("doctor").out, r"ok\s+win: Language: en-US")
@@ -281,6 +282,20 @@ class WindowsLanguageTest(WindowsTestCase):
         self.vmlab("down")
         self.project.config(WINDOWS_LAB + "scale = 2\n")
 
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+
+    def test_a_copy_prepared_by_an_earlier_vmlab_is_made_again(self):
+        self.project.config(WINDOWS_LAB + "scale = 1.5\n")
+        self.vmlab("up")  # no Guest answers here: the extra boot fails before Clean state
+        [(clone, vm)] = self.clones().items()
+        self.set_state(clone, snapshots=vm["snapshots"] + ["vmlab-clean"])
+        path, record = self.clone_record()
+        record.pop("prepared", None)
+        path.write_text(json.dumps(record))
+
+        self.assertRegex(self.vmlab("doctor").out, r"info\s+win: Clone: prepared by an earlier vmlab; `vmlab up win` makes it again")
         self.vmlab("up")
 
         self.assertEqual(len(self.calls("deleteVM")), 1)

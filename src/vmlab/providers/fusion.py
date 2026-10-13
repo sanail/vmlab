@@ -92,6 +92,7 @@ INSTALL_TIMEOUT = 2 * 3600  # s for the unattended install, which downloads upda
 BASE_BOOT_TIMEOUT = 600
 PROVISION_TIMEOUT = 1800
 PROVISION_VERSION = 9  # bump when provision.sh, the Shell extension or the recorder changes; `base create` then re-provisions
+PREPARE_VERSION = 1  # bump when a Linux clone's extra boot (_prepare_clone, set-scale.py) changes; clones it made are then made again
 BASE_CPU, BASE_MEMORY_MB, BASE_DISK = 4, 4096, "64GB"
 GUEST_USER = "vmlab"
 STOP_GRACE = 60  # s a Guest gets to shut down before it is powered off
@@ -1031,6 +1032,8 @@ class FusionProvider(Provider):
         for key, said in CLONE_SETTINGS.items():
             if not _same(key, made[key], wanted[key]):
                 return [("Clone", INFO, "made %s; %s %s" % (said(made[key]), up, said(wanted[key])), None)]
+        if not self._prepared_now(record):
+            return [("Clone", INFO, "prepared by an earlier vmlab; %s" % up, None)]
         try:
             clean = CLEAN_SNAPSHOT in self.vm.snapshots()
         except GuestError as exc:
@@ -1153,18 +1156,29 @@ class FusionProvider(Provider):
 
     def _clone_is_current(self, record):
         """Whether the existing clone is one start() keeps: made from the Base guest's current
-        provisioning, for the Lab's session, language and scale, with its Clean state taken."""
+        provisioning, for the Lab's session, language and scale, by this vmlab's extra boot, with its Clean state taken."""
         made, wanted = self._made_with(record), self._settings()
         return (
             _clone_record(self.guest_id).get("made_from") == bases.provisioning(record)  # else the Base guest was provisioned again: the clone lacks what changed
             and all(_same(key, made[key], wanted[key]) for key in wanted)
+            and self._prepared_now(record)
             and CLEAN_SNAPSHOT in self.vm.snapshots()  # else its prep boot did not finish
         )
+
+    def _prepared_now(self, record):
+        """Whether the clone's extra boot, if it had one, was this vmlab's: an earlier one's may have left it half set.
+        Records from before vmlab recorded it count as earlier."""
+        return not self._to_set(record) or _clone_record(self.guest_id).get("prepared") == self._prepare_version()
+
+    def _prepare_version(self):
+        from vmlab.providers import fusion_windows
+
+        return fusion_windows.PREPARE_VERSION if self.windows else PREPARE_VERSION
 
     def _write_clone_record(self, made_from):
         _write_clone_record(self.guest_id, {
             "project": str(self.project.root), "lab": self.lab.name, "base": self.base_name, "made_from": made_from,
-            **self._settings(),
+            "prepared": self._prepare_version(), **self._settings(),
         })  # fmt: skip
 
     def _settings(self):

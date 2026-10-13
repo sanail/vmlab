@@ -715,6 +715,37 @@ class FusionCloneTest(FusionTestCase):
         self.assertEqual(len(self.calls("deleteVM")), 1)
         self.assertEqual(len(self.calls("clone")), 2)
 
+    def without_preparation(self):
+        """Make the clone's record one from before vmlab recorded which preparation made it."""
+        [path] = (self.project.home / "fusion").glob("vmlab-*-linux.json")
+        record = json.loads(path.read_text())
+        record.pop("prepared", None)
+        path.write_text(json.dumps(record))
+
+    def test_a_clone_prepared_by_an_earlier_vmlab_is_made_again(self):
+        # Its Clean state holds what the extra boot's code did then, which a later vmlab may have fixed.
+        self.project.config(FUSION_LAB + "scale = 2\n")
+        self.vmlab("up")  # no Guest answers here: the extra boot fails before Clean state
+        [(clone, vm)] = self.clones().items()
+        self.set_state(clone, snapshots=vm["snapshots"] + ["vmlab-clean"])
+        self.without_preparation()
+
+        self.assertRegex(self.vmlab("doctor").out, r"info\s+linux: Clone: prepared by an earlier vmlab; `vmlab up linux` makes it again")
+        self.vmlab("up")
+
+        self.assertEqual(len(self.calls("deleteVM")), 1)
+        self.assertEqual(len(self.calls("clone")), 2)
+
+    def test_a_clone_made_without_an_extra_boot_is_kept_whatever_prepared_it(self):
+        self.vmlab("up")
+        self.vmlab("down")
+        self.without_preparation()
+
+        self.assertRegex(self.vmlab("doctor").out, r"ok\s+linux: Clone: ")
+        self.vmlab("up")
+
+        self.assertEqual(self.calls("deleteVM"), [])
+
     def test_xfce_takes_scale_1_or_2(self):
         self.project.config(FUSION_LAB + 'scale = 1.5\n[labs.linux.fusion]\nsession = "x11"\n')
 

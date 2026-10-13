@@ -78,6 +78,9 @@ These are built on the methods above; override them only when the Guest needs so
   `language_fix()` is the fix for a mismatch; the default makes the clone again (`vmlab down LAB && vmlab up LAB`).
   A Provider that sets the Lab language does it when it makes the clone, records it in the clone's record,
   and makes the clone again when the Lab's `language` changes.
+  It also makes it again when the code that sets it changes,
+  since the clone's Clean state keeps what the earlier code did
+  (Fusion records `PREPARE_VERSION`, which is bumped with any change to the clone's extra boot).
   The default returns `None`: no row.
   A mismatch is a `FAIL` row, but it is not one of `diagnose()`'s: the Guest can still start,
   and doctor goes on with its checks.
