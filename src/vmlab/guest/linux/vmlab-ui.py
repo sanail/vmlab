@@ -729,10 +729,11 @@ class UI:
             states = accessible.get_state_set()
         except Exception:
             return None
+        # GTK 4 sets SENSITIVE and never ENABLED.
         node = {
             "native_role": native, "name": name, "value": None, "description": description,
             "bounds": self.bounds(accessible, placement), "focused": states.contains(S.FOCUSED),
-            "enabled": states.contains(S.ENABLED), "checked": self.checked(native, states), "children": [],
+            "enabled": states.contains(S.ENABLED) or states.contains(S.SENSITIVE), "checked": self.checked(native, states), "children": [],
         }  # fmt: skip
         try:
             if "Text" in interfaces and native != "password text":

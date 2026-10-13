@@ -31,7 +31,7 @@ def load_helper():
 
 
 class State:
-    VISIBLE, SHOWING, FOCUSED, ENABLED, MULTI_LINE, SINGLE_LINE, CHECKED, CHECKABLE, PRESSED, INDETERMINATE = range(10)
+    VISIBLE, SHOWING, FOCUSED, ENABLED, MULTI_LINE, SINGLE_LINE, CHECKED, CHECKABLE, PRESSED, INDETERMINATE, SENSITIVE = range(11)
 
 
 class States:
@@ -255,8 +255,8 @@ class DisplaysTest(unittest.TestCase):
         self.assertEqual(self.displays(1.25), 1.25)
 
 
-class TickStateTest(unittest.TestCase):
-    """How AT-SPI states become a node's "checked"."""
+class StateTest(unittest.TestCase):
+    """How AT-SPI states become a node's "checked" and "enabled"."""
 
     def setUp(self):
         helper = load_helper()
@@ -264,8 +264,11 @@ class TickStateTest(unittest.TestCase):
         ui.Atspi, ui.S, ui.nodes, ui.ws = Atspi, State, 0, types.SimpleNamespace(toolkit_scale=1.0)
         self.ui = ui
 
+    def read(self, role, *states):
+        return self.ui.node(Node(role, states=(State.VISIBLE, State.SHOWING) + states), (Atspi.CoordType.SCREEN, (0, 0)), 1, 60)
+
     def checked(self, role, *states):
-        return self.ui.node(Node(role, states=(State.VISIBLE, State.SHOWING) + states), (Atspi.CoordType.SCREEN, (0, 0)), 1, 60)["checked"]
+        return self.read(role, *states)["checked"]
 
     def test_a_checkbox_reads_ticked_unticked_or_mixed(self):
         self.assertIs(self.checked("check box", State.CHECKED), True)
@@ -290,6 +293,12 @@ class TickStateTest(unittest.TestCase):
     def test_an_element_with_no_tick_state_reads_null(self):
         self.assertIsNone(self.checked("push button"))
         self.assertIsNone(self.checked("progress bar", State.INDETERMINATE))
+
+    def test_a_button_is_enabled_by_enabled_or_by_sensitive_alone(self):
+        # GTK 4 sets SENSITIVE and never ENABLED.
+        self.assertIs(self.read("button", State.ENABLED, State.SENSITIVE)["enabled"], True)
+        self.assertIs(self.read("button", State.SENSITIVE)["enabled"], True)
+        self.assertIs(self.read("button")["enabled"], False)
 
 
 class Editor:

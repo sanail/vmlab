@@ -450,6 +450,23 @@ def scenario(g):
 '''
 
 
+# A GTK 4 button that takes clicks reads enabled and an insensitive one does not: GTK 4 sets SENSITIVE,
+# never ENABLED. Started as the checks fixture is; Linux only.
+GTK4 = CHECKS_START + r'''
+def scenario(g):
+    fixture = start(g)
+    up = g.wait_for(text="Go", role="button", app=NAME, timeout=60)
+    g.check("the fixture's window is up", up["met"], detail=up)
+    for name, enabled in (("Go", True), ("Off", False)):
+        found = g.find(text=name, role="button", app=NAME)["matches"]
+        g.check("%s reads enabled %r" % (name, enabled), [m["enabled"] for m in found] == [enabled], detail=found)
+    g.click(text="Go", role="button", app=NAME, timeout=10)
+    done = g.wait_for(text="Done", role="button", app=NAME, timeout=10)
+    g.check("and Go takes the click", done["met"], detail=done)
+    fixture.stop()
+'''
+
+
 # Desktop pixels: the Display, the desktop node and a screenshot share one size, and a box clicked
 # at its bounds' centre (the checks fixture's Music) ticks and shows the change at those bounds in
 # the screenshots, which the test compares. The Fake draws nothing: FAKE stops after the size.
@@ -1373,6 +1390,13 @@ def scenario(g):
             self.skipTest("the Fake's tick states are scripted: tests/test_ui.py covers them")
         source = (Path(__file__).resolve().parent / CHECKS_FIXTURES[self.target.os]).read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_checks.py", UI + "SOURCE = %r\n" % source + CHECKS))
+
+    @ui
+    def test_09c2b_ui_a_gtk4_button_reads_enabled_unless_insensitive(self):
+        if self.target.os != "linux" or self.target.provider == "fake":
+            self.skipTest("GTK 4 is a Linux Guest's toolkit")
+        source = (Path(__file__).resolve().parent / "gtk4_fixture_linux.py").read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_gtk4.py", UI + "SOURCE = %r\n" % source + GTK4))
 
     @ui
     def test_09c3_ui_bounds_screenshots_and_clicks_are_in_desktop_pixels(self):
