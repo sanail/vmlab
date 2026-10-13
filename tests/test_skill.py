@@ -22,6 +22,10 @@ def skill_dir():
     return REPO / "skills" / "vmlab"
 
 
+def code_version():
+    return subprocess.run([sys.executable, str(zipapp_path()), "version"], capture_output=True, text=True).stdout.split()[1]
+
+
 def frontmatter(text):
     match = re.match(r"---\n(.*?)\n---\n", text, re.S)
     assert match, "SKILL.md must start with YAML frontmatter"
@@ -100,10 +104,14 @@ class SkillPackageTest(VmlabTestCase):
         self.assertExit(self.project.vmlab_vendored("version"), 0)
 
     def test_the_launcher_and_the_plugin_name_the_version_the_code_has(self):
-        version = subprocess.run([sys.executable, str(zipapp_path()), "version"], capture_output=True, text=True).stdout.split()[1]
+        version = code_version()
         launcher = re.search(r"^VERSION=(.*)$", (skill_dir() / "scripts" / "vmlab").read_text(), re.M).group(1)
         plugin = json.loads((REPO / ".claude-plugin" / "plugin.json").read_text())
         self.assertEqual((launcher, plugin["version"]), (version, version), "bump all three together")
+
+    def test_the_changelog_has_notes_for_the_version_the_code_has(self):
+        r = subprocess.run([sys.executable, str(REPO / "tools" / "changelog.py"), code_version()], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr + "rename `## Unreleased` to the version in the bump commit")
 
     def help(self, *command):
         out = subprocess.run(

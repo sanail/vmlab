@@ -1,7 +1,7 @@
 # Push a tag vX.Y.Z on the commit that bumps the version (src/vmlab/__init__.py, the skill's
 # scripts/vmlab, .claude-plugin/plugin.json): tests, a GitHub Release with vmlab-X.Y.Z.pyz whose notes
-# are that commit's body,
-# and the stable branch, which the plugin marketplace and `npx skills` install from, moved to it.
+# are CHANGELOG.md's `## X.Y.Z` section, and the stable branch, which the plugin marketplace and
+# `npx skills` install from, moved to it.
 # A tag vX.Y.Z-beta.N publishes a prerelease and moves only the beta branch; a release moves beta too.
 name: Release
 on:
@@ -26,14 +26,21 @@ jobs:
           v=${GITHUB_REF_NAME#v}
           python3 tools/build.py --out "dist/vmlab-$v.pyz"
           test "$(python3 "dist/vmlab-$v.pyz" version)" = "vmlab $v" || { echo "tag $GITHUB_REF_NAME, but the code is $(python3 "dist/vmlab-$v.pyz" version)"; exit 1; }
-      - name: Publish the release, its notes the tagged commit's body (the Full Changelog link appended)
+      - name: Publish the release, its notes CHANGELOG.md's section for the version (a prerelease's also say how to try it)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes=$(git log -1 --format=%b "$GITHUB_SHA")
-          test -n "$notes" || { echo "the commit $GITHUB_SHA has no body to make the release notes: commit one (--allow-empty) on it and move the tag"; exit 1; }
-          case "$GITHUB_REF_NAME" in *-*) pre=--prerelease ;; *) pre= ;; esac
-          gh release create "$GITHUB_REF_NAME" "dist/vmlab-${GITHUB_REF_NAME#v}.pyz" --title "vmlab ${GITHUB_REF_NAME#v}" --notes "$notes" --generate-notes $pre
+          v=${GITHUB_REF_NAME#v}
+          notes=$(python3 tools/changelog.py "$v")
+          case "$v" in
+            *-*)
+              pre=--prerelease
+              stable=$(gh release view --json tagName -q .tagName)
+              notes="$notes
+          - Beta: this is a prerelease; stable stays on ${stable#v}. To try it, install the skill from the beta branch (\`npx skills add https://github.com/sanail/vmlab/tree/beta/skills/vmlab\`) and run \`scripts/vmlab self-update\` in the project." ;;
+            *) pre= ;;
+          esac
+          gh release create "$GITHUB_REF_NAME" "dist/vmlab-$v.pyz" --title "vmlab $v" --notes "$notes" --generate-notes $pre
       - name: Move stable to a release (fast-forward only)
         if: ${{ !contains(github.ref_name, '-') }}
         run: git push origin "$GITHUB_SHA:refs/heads/stable"

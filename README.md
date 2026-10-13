@@ -61,22 +61,29 @@ In a test project, `SKILL_DIR/scripts/vmlab self-update` with `VMLAB_PYZ` set pi
 
 ## Release
 
+Each commit that changes something a user sees adds a `- ` bullet for it under `## Unreleased` in `CHANGELOG.md`:
+the change and what the user must do, such as re-provisioning, grouped by an OS prefix like `Linux:` where it helps.
+
 1. Bump the version in `src/vmlab/__init__.py`, `skills/vmlab/scripts/vmlab` (`VERSION=`) and
-   `.claude-plugin/plugin.json`; the tests fail until all three agree.
-2. Commit with the subject `vmlab X.Y.Z: <summary>` and a body of `- ` bullets,
-   one per change a user sees (and what they must do, such as re-provisioning): the body becomes the release notes.
-   Tag `vX.Y.Z`, push both.
+   `.claude-plugin/plugin.json`, and rename `## Unreleased` to `## X.Y.Z` above an empty new `## Unreleased`;
+   the tests fail until all three agree and the changelog has notes for that version.
+2. Commit with the subject `vmlab X.Y.Z: <summary>`, tag `vX.Y.Z`, push both.
 
 `.github/workflows/release.yml` then runs the tests, checks the tag against the code,
-publishes a GitHub Release with `vmlab-X.Y.Z.pyz` and the commit's body as its notes (it fails before publishing when
-the body is empty), and fast-forwards `stable` to the tag.
+publishes a GitHub Release with `vmlab-X.Y.Z.pyz` and the changelog's `## X.Y.Z` section as its notes (it fails before
+publishing when the section is missing or empty), and fast-forwards `stable` to the tag.
 Users get it from `stable`; projects stay on their pinned version.
 
-A tag `vX.Y.Z-beta.N` (the same version in all three files) publishes a prerelease and moves only the `beta` branch,
-which every release moves too.
-To try one, install the skill from `beta` instead of `stable`
+A tag `vX.Y.Z-beta.N` (the same version in all three files, its own `## X.Y.Z-beta.N` section) publishes a prerelease
+and moves only the `beta` branch, which every release moves too.
+The workflow appends to a prerelease's notes that stable stays on the latest release and how to try the beta:
+install the skill from `beta` instead of `stable`
 (`npx skills add https://github.com/sanail/vmlab/tree/beta/skills/vmlab`) and run `scripts/vmlab self-update` in the
 project; its release moves the project on from the beta.
+At the release, the betas' sections fold into one `## X.Y.Z` written for someone coming from the previous stable
+release:
+a regression that came and went within the betas is dropped, and the beta sections leave the file (their notes stay
+on the GitHub prereleases).
 
 ## The skill
 
