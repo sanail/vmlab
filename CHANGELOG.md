@@ -4,6 +4,8 @@ Release notes, cut from here by the release workflow; see the README's Release s
 
 ## Unreleased
 
+## 2.0.0-beta.6
+
 - Linux: a WebKitGTK page's elements (a Tauri app's) in a window with a header bar get their true bounds,
   on Wayland and X11, and `click` lands on them;
   until now they were shifted up and left by the shadow and header bar,
