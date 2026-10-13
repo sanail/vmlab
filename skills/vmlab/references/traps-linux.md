@@ -3,7 +3,9 @@
 Symptoms first, then the cause and what to do. vmlab already handles, so Scenarios need nothing for them: input,
 pointer and window focus on Wayland (vmlab's GNOME Shell extension; `xdotool` reaches only Xwayland apps there, and
 `ydotool` misplaces the pointer), typing any character on any layout, GTK's wrong element coordinates,
-hidden widgets left in the tree, a WebKitGTK page under containers that say they are not visible,
+a WebKitGTK page's coordinates (its web process reads WINDOW from the web view, not the window, so they lack the
+window's shadow and header bar), hidden widgets left in the tree, a WebKitGTK page under containers that say they are
+not visible,
 WebKitGTK frozen on its first frame, a busy editor that takes a select-all before its new document is loaded or a close
 before its save is done, an editor that says a document it just opened has "changed on disk",
 reboots blocked by an editor, GDM's login screen taking the screen from the session at the end

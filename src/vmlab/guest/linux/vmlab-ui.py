@@ -31,6 +31,11 @@ Traps (README: "Linux Guests with VMware Fusion"):
   to its window, and the window's position comes from the window manager:
   whichever of its rectangles, with or without the client-side shadow, has the
   size the toolkit reports for the window.
+- A WebKitGTK page's elements live in WebKit's web process, whose WINDOW
+  coordinates are relative to the web view, not the window, and whose SCREEN
+  ones share the window's toolkit's SCREEN frame (on Wayland the window, shadow
+  included; on X11 the screen). So an element of another process than its
+  window's is read in SCREEN coordinates, offset as the window's are.
 - Hidden widgets (a tab in the background, a hidden window) stay in the tree
   without the VISIBLE or SHOWING state; they are left out. But a WebKitGTK page
   (a Tauri app's) sits under containers without VISIBLE while it is on
@@ -680,8 +685,9 @@ class UI:
                 yield from self.showing_within(child)
 
     def placement(self, window, pid):
-        """(coordinate type, (dx, dy)) turning the window's elements' extents into screen points;
-        None when the window manager has several windows it could be."""
+        """(coordinate type, (dx, dy), (pid, (sx, sy))) turning the window's elements' extents into
+        screen points: those of another process than pid read SCREEN plus (sx, sy). None when the
+        window manager has several windows it could be."""
         return self.place(window, pid)[1]
 
     def place(self, window, pid):
@@ -689,10 +695,15 @@ class UI:
         Atspi = self.Atspi
         try:
             ext = window.get_extents(Atspi.CoordType.WINDOW)
+            screen = window.get_extents(Atspi.CoordType.SCREEN)
             title = window.get_name() or ""
         except Exception:
-            return None, (Atspi.CoordType.SCREEN, (0, 0))
+            return None, (Atspi.CoordType.SCREEN, (0, 0), (pid, (0, 0)))
         k = self.ws.toolkit_scale
+
+        def placed(dx, dy):
+            # A web process's SCREEN is in its window's toolkit's SCREEN frame: (0, 0) at the window's.
+            return Atspi.CoordType.WINDOW, (dx, dy), (pid, (dx + (ext.x - screen.x) * k, dy + (ext.y - screen.y) * k))
 
         def offset(w):
             for x, y, width, height in (w.frame, w.buffer):
@@ -708,9 +719,9 @@ class UI:
                 if len(fits) != 1:
                     return None, None  # another window's place would put clicks on that window
             if fits:
-                return fits[0][0], (Atspi.CoordType.WINDOW, fits[0][1])
+                return fits[0][0], placed(*fits[0][1])
         # A window the window manager does not know by this app and size: trust the toolkit.
-        return None, (Atspi.CoordType.SCREEN, (0, 0))
+        return None, (Atspi.CoordType.SCREEN, (0, 0), (pid, (0, 0)))
 
     def told_apart(self, window, ext, title, fits):
         """The fits (window manager's window, offset) that are window's among its app's lookalikes: the
@@ -741,10 +752,12 @@ class UI:
     def bounds(self, accessible, placement):
         if placement is None:
             return None
-        kind, (dx, dy) = placement
+        kind, (dx, dy), (pid, other) = placement
         try:
             if "Component" not in accessible.get_interfaces():
                 return None
+            if accessible.get_process_id() != pid:
+                kind, (dx, dy) = self.Atspi.CoordType.SCREEN, other
             e = accessible.get_extents(kind)
         except Exception:
             return None

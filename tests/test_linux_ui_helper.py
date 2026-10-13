@@ -48,10 +48,12 @@ class Extents:
 
 
 class Node:
-    """A fake Atspi.Accessible: role, name, states, extents in screen points and children."""
+    """A fake Atspi.Accessible: role, name, states, extents in screen points (SCREEN ones apart when
+    given), children and its process."""
 
-    def __init__(self, role, name="", states=(State.VISIBLE, State.SHOWING), extents=None, children=(), text=None):
+    def __init__(self, role, name="", states=(State.VISIBLE, State.SHOWING), extents=None, children=(), text=None, screen=None, pid=42):
         self.role, self.name, self.states, self.extents, self.children = role, name, states, extents, list(children)
+        self.screen, self.pid = screen, pid
         self.text, self.selection = text, None  # an editable text's content and selected (start, end)
 
     def get_role_name(self):
@@ -73,7 +75,10 @@ class Node:
         return States(self.states)
 
     def get_extents(self, kind):
-        return Extents(*self.extents)
+        return Extents(*(self.screen if kind == Atspi.CoordType.SCREEN and self.screen else self.extents))
+
+    def get_process_id(self):
+        return self.pid
 
     def get_child_count(self):
         return len(self.children)
@@ -155,11 +160,11 @@ class TreeWalkTest(unittest.TestCase):
         return [node["name"]] + [n for child in node["children"] for n in self.names(child)]
 
     def test_a_page_under_containers_without_visible_is_in_the_tree(self):
-        node = self.ui.node(self.window, (Atspi.CoordType.SCREEN, (0, 0)), 1, 60)
+        node = self.ui.node(self.window, (Atspi.CoordType.SCREEN, (0, 0), (42, (0, 0))), 1, 60)
         self.assertIn("Run", self.names(node))
 
     def test_what_is_not_showing_under_them_stays_out(self):
-        node = self.ui.node(self.window, (Atspi.CoordType.SCREEN, (0, 0)), 1, 60)
+        node = self.ui.node(self.window, (Atspi.CoordType.SCREEN, (0, 0), (42, (0, 0))), 1, 60)
         self.assertNotIn("Reset", self.names(node))
 
     def test_a_point_on_the_page_hits_its_element(self):
@@ -189,6 +194,53 @@ class TreeWalkTest(unittest.TestCase):
         self.assertEqual(self.ui.under(220, 190)[0][0], "Run")
 
 
+class WebProcessTest(unittest.TestCase):
+    """A WebKitGTK page in a window with a shadow and a header bar (GNOME 50, Xfce): its elements, in
+    the web process, read WINDOW from the web view and SCREEN in the window's toolkit's frame."""
+
+    def setUp(self):
+        helper = load_helper()
+        ui = helper.UI.__new__(helper.UI)
+        ui.Atspi, ui.S, ui.ws = Atspi, State, types.SimpleNamespace(toolkit_scale=1.0)
+        ui.screen, ui.nodes, ui.truncated = (1280, 800), 0, False
+        self.ui = ui
+
+    def window(self, frame_screen, page_screen, button_screen):
+        button = Node("push button", "Continue", extents=(424, 367, 73, 27), screen=button_screen, pid=43)
+        page = Node("document web", extents=(0, 0, 620, 600), screen=page_screen, children=[button], pid=43)
+        view = Node("filler", extents=(0, 0, 672, 699), screen=frame_screen, children=[page])
+        frame = Node("frame", "WK Probe", extents=(0, 0, 672, 699), screen=frame_screen, children=[view])
+        app = Node("application", "wk", children=[frame])
+        frame.parent = app
+        self.ui.apps = lambda: [(app, "wk", 42)]
+        return frame
+
+    def continue_bounds(self, frame):
+        node = self.ui.node(frame, self.ui.placement(frame, 42), 1, 60)
+        [found] = [n for n in walk(node) if n["name"] == "Continue"]
+        return found["bounds"]
+
+    def test_on_wayland_the_page_is_read_in_screen_coordinates_from_the_window(self):
+        # GTK 3 on Wayland: SCREEN is relative to the window, shadow included; the buffer at (337, 70).
+        self.ui.kind = "wayland"
+        frame = self.window((0, 0, 672, 699), (26, 70, 620, 600), (450, 437, 73, 27))
+        self.ui.windows = [Window(42, (337, 70, 672, 699), "WK Probe")]
+        self.assertEqual(self.continue_bounds(frame), {"x": 787, "y": 507, "w": 73, "h": 27})
+        self.assertEqual(self.ui.under(800, 515)[0][0], "Continue")
+
+    def test_on_x11_the_page_is_read_in_screen_coordinates(self):
+        self.ui.kind = "x11"
+        frame = self.window((-26, 4, 672, 699), (0, 74, 620, 600), (424, 441, 73, 27))
+        self.ui.windows = [Window(42, (-26, 4, 672, 699), "WK Probe")]
+        self.assertEqual(self.continue_bounds(frame), {"x": 424, "y": 441, "w": 73, "h": 27})
+
+    def test_at_scale_2_the_offset_from_the_window_is_scaled(self):
+        self.ui.kind, self.ui.ws.toolkit_scale = "wayland", 2.0
+        frame = self.window((0, 0, 672, 699), (26, 70, 620, 600), (450, 437, 73, 27))
+        self.ui.windows = [Window(42, (674, 140, 1344, 1398), "WK Probe")]
+        self.assertEqual(self.continue_bounds(frame), {"x": 1574, "y": 1014, "w": 146, "h": 54})
+
+
 class LookalikeWindowsTest(unittest.TestCase):
     """Wayland: one app's windows of one title and size (dialogs left open), told apart by the focused one."""
 
@@ -204,8 +256,8 @@ class LookalikeWindowsTest(unittest.TestCase):
         app = Node("application", "provider")
         for i, is_active in enumerate(active):
             states = (State.VISIBLE, State.SHOWING) + ((State.ACTIVE,) if is_active else ())
-            add = Node("push button", "Add %d" % i, extents=(400, 6, 60, 30))
-            dialog = Node("dialog", "Add Keyboard Shortcuts", states=states, extents=(0, 0, 480, 270), children=[add])
+            add = Node("push button", "Add %d" % i, extents=(400, 6, 60, 30), pid=7)
+            dialog = Node("dialog", "Add Keyboard Shortcuts", states=states, extents=(0, 0, 480, 270), children=[add], pid=7)
             dialog.parent = app
             app.children.append(dialog)
         self.ui.apps = lambda: [(app, "provider", 7)]
@@ -328,7 +380,7 @@ class StateTest(unittest.TestCase):
         self.ui = ui
 
     def read(self, role, *states):
-        return self.ui.node(Node(role, states=(State.VISIBLE, State.SHOWING) + states), (Atspi.CoordType.SCREEN, (0, 0)), 1, 60)
+        return self.ui.node(Node(role, states=(State.VISIBLE, State.SHOWING) + states), (Atspi.CoordType.SCREEN, (0, 0), (42, (0, 0))), 1, 60)
 
     def checked(self, role, *states):
         return self.read(role, *states)["checked"]

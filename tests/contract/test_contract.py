@@ -482,6 +482,19 @@ def scenario(g):
 '''
 
 
+# A WebKitGTK page in a window with a header bar: its button, in the web process, is clicked by its bounds.
+WEBKIT = CHECKS_START + r'''
+def scenario(g):
+    fixture = start(g)
+    up = g.wait_for(text="Continue", role="button", app=NAME, timeout=60)
+    g.check("the page is up", up["met"], detail=up)
+    g.click(text="Continue", role="button", app=NAME, timeout=10)
+    done = g.wait_for(text="Continued", role="button", app=NAME, timeout=10)
+    g.check("and the page sees the click on Continue", done["met"], detail=done)
+    fixture.stop()
+'''
+
+
 # Lookalike windows of one app: each button is clicked at its own window's place; where the
 # window manager puts the second over the first's button (Xfce: at one place), that one is refused.
 TWINS = CHECKS_START + r'''
@@ -1501,6 +1514,13 @@ def scenario(g):
             self.skipTest("lookalike windows are a fixture's on Linux and Windows Guests")
         source = (Path(__file__).resolve().parent / fixtures[self.target.os]).read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_lookalike.py", UI + "SOURCE = %r\n" % source + LOOKALIKE))
+
+    @ui
+    def test_09c2e_ui_a_webkitgtk_page_is_clicked_by_its_bounds(self):
+        if self.target.os != "linux" or self.target.provider == "fake":
+            self.skipTest("WebKitGTK is a Linux Guest's")
+        source = (Path(__file__).resolve().parent / "webkit_fixture_linux.py").read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_webkit.py", UI + "SOURCE = %r\n" % source + WEBKIT))
 
     @ui
     def test_09c3_ui_bounds_screenshots_and_clicks_are_in_desktop_pixels(self):
