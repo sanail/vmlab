@@ -71,6 +71,20 @@ class RunTest(VmlabTestCase):
         self.assertIn("FAILED", summary)
         self.assertIn("app window appears", summary)
 
+    def test_a_check_whose_detail_is_not_text_is_in_junit_as_json(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("details.py", """
+            def scenario(g):
+                g.check("count", False, detail=249)
+                g.check("result", False, detail={"met": False})
+        """)
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        suite = ET.parse(str(self.project.only_run_dir() / "junit.xml")).getroot()
+        self.assertEqual([f.get("message") for f in suite.iter("failure")], ["249", '{"met": false}'])
+
     def test_scenario_that_raises_is_an_error_not_a_pass(self):
         self.project.config(FAKE_LAB)
         self.project.scenario("broken.py", """

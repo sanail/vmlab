@@ -5,7 +5,8 @@ pointer and window focus on Wayland (vmlab's GNOME Shell extension; `xdotool` re
 `ydotool` misplaces the pointer), typing any character on any layout, GTK's wrong element coordinates,
 hidden widgets left in the tree, a WebKitGTK page under containers that say they are not visible,
 WebKitGTK frozen on its first frame, a busy editor that takes a select-all before its new document is loaded or a close
-before its save is done, reboots blocked by an editor, GDM's login screen taking the screen from the session at the end
+before its save is done, an editor that says a document it just opened has "changed on disk",
+reboots blocked by an editor, GDM's login screen taking the screen from the session at the end
 of the boot, and screen lock, blanking and suspend.
 
 Drive input only through `g.press`, `g.type`, `g.click` and `g.clipboard`:
@@ -29,6 +30,19 @@ and the desktop asks the user to approve it the first time.
 
 **Do**: the approval dialog is part of the app's first-run flow: `g.wait_for` it,
 click its button with `g.click`, `wait_for(..., gone=True)` until it has gone, then press the hotkey.
+
+## A drag after a drag of selected text selects nothing (Xfce, GTK 4)
+
+**Symptom**: on Xfce, in a GTK 4 app (gnome-text-editor, any GTK 4 text view), a press inside the selection that then
+moves drags the selected text; the next `g.drag` selects nothing (its press only places the caret), and the one after
+it works again.
+Waits and extra `pointer up`s do not help; GNOME, macOS, Windows and GTK 3 apps are not affected.
+
+**Cause**: GTK 4 on X11.
+The release that ends the text drag reaches the app, and the next drag's events reach it
+exactly as the drag after it does; GTK 4 spends that next press on the text drag it still thinks is going on.
+
+**Do**: `g.click` once in the app after a drag of text (where a click changes nothing you check), then drag.
 
 ## Web content missing from the tree
 

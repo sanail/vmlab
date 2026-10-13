@@ -74,6 +74,9 @@ STAGED = re.compile(STAGE + "[0-9a-fA-F]{8}\\.txt")
 STAGING = "/tmp"  # where stage-text writes them
 CLOSE_WAIT = 5  # s for one staged document to close
 SAVE_WAIT = 10  # s for its save to reach the file before it is closed
+# s between writing a staged file and opening it: GLib holds inotify events back up to 100 ms, and an
+# editor that gets the writing's events after its load shows "File Has Changed on Disk"
+SETTLE = 0.5
 NOTIFICATIONS = "~/.cache/vmlab/notifications.jsonl"  # what the recorder writes, a JSON line per Notification
 
 # linux/input-event-codes.h, for the Wayland session
@@ -1102,6 +1105,7 @@ class UI:
         path = os.path.join(STAGING, doc + ".txt")
         with open(path, "w", encoding="utf-8") as f:
             f.write(text)
+        time.sleep(SETTLE)
         try:
             # Its own session and no pipes: the editor outlives this call.
             subprocess.Popen([app, path], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)

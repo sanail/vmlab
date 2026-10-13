@@ -303,6 +303,7 @@ class Editor:
         self.app = Node("application", "gnome-text-editor", children=[self.frame])
 
     def popen(self, argv, **kwargs):
+        self.file_age = time.time() - os.stat(argv[1]).st_mtime  # how long the file was there when it was opened
         with open(argv[1], encoding="utf-8") as f:
             self.content = f.read()
         self.doc, self.path = os.path.basename(argv[1]), argv[1]
@@ -380,6 +381,12 @@ class StageTextTest(unittest.TestCase):
         result, editor = self.stage(loads=5)
         self.assertEqual(result["selected"], "second tag", result)
         self.assertGreater(editor.keys.count(("a", ["ctrl"])), 1, editor.keys)
+
+    def test_the_editor_opens_the_file_only_once_its_writing_is_old_news(self):
+        # Opened at once, gnome-text-editor's monitor takes the inotify events of that writing for a
+        # change made after its load and shows "File Has Changed on Disk".
+        result, editor = self.stage(loads=0)
+        self.assertGreaterEqual(editor.file_age, editor.helper.SETTLE)
 
     def test_an_empty_document_has_nothing_to_select_and_says_so_at_once(self):
         started = time.time()

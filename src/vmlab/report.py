@@ -126,15 +126,20 @@ def _write_junit(path, report):
             if c["kind"] == VISUAL:
                 ET.SubElement(ET.SubElement(case, "properties"), "property", name="kind", value=VISUAL)
             if outcome(c) == SKIP:
-                ET.SubElement(case, "skipped", message=c["detail"])
+                ET.SubElement(case, "skipped", message=_text(c["detail"]))
             elif outcome(c) == FAIL:
-                failure = ET.SubElement(case, "failure", message=c["detail"] or "Check failed")
+                failure = ET.SubElement(case, "failure", message=_text(c["detail"]) or "Check failed")
                 failure.text = _evidence(s)
         if s["status"] == "error":
             case = ET.SubElement(suite, "testcase", classname=classname, name=s["name"])
             error = ET.SubElement(case, "error", message=s["error"].splitlines()[-1])
             error.text = s["error"]
     ET.ElementTree(suite).write(str(path), encoding="utf-8", xml_declaration=True)
+
+
+def _text(detail):
+    """A Check's detail as an XML attribute: a Scenario may pass any JSON value."""
+    return detail if isinstance(detail, str) or detail is None else json.dumps(detail, ensure_ascii=False)
 
 
 def command_line(argv):
