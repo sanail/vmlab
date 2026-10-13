@@ -1,4 +1,5 @@
-"""The Tart Provider's Host-side behaviour, against a scripted stand-in for the tart CLI.
+"""The Tart Provider's Host-side behaviour, against a scripted stand-in for the tart CLI,
+or loaded directly with `tart` stubbed (TartWarmExecTest).
 
 What needs a real macOS Guest (SSH, provisioning, restore by re-cloning) is
 covered by Seam 2: tests/contract/test_contract.py with a Tart Lab.
@@ -8,9 +9,18 @@ import json
 import os
 import shutil
 import stat
+import sys
 import textwrap
+from pathlib import Path
+from unittest import mock
 
 from harness import VmlabTestCase
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+from vmlab import config  # noqa: E402
+from vmlab.providers import tart as tart_provider  # noqa: E402
+from vmlab.providers.base import BootTimeout, GuestTimeout  # noqa: E402
 
 # A stand-in for `tart`: VMs live in a JSON file, every call is logged.
 FAKE_TART = textwrap.dedent(
@@ -564,3 +574,39 @@ class TartScaleTest(TartTestCase):
                 self.project.config(TART_LAB + scale)
                 self.vmlab("up")  # the fake tart never boots a VM
                 self.assertEqual(self.displays()[-1], display)
+
+
+class TartWarmExecTest(VmlabTestCase):
+    """`up` makes the first `tart exec` after a boot, which may wait for the guest agent, itself."""
+
+    def up(self, lab_toml, exec_fails=False):
+        self.project.config(TART_LAB + lab_toml)
+        project = config.load(self.project.dir)
+        provider = tart_provider.TartProvider(project, project.lab("mac"))
+        calls = []
+
+        def tart(args, timeout, stdin=None):
+            calls.append((args[0], timeout))
+            if exec_fails:
+                raise GuestTimeout("`tart exec` did not finish within %ss and was killed" % timeout)
+            return 0, "", ""
+
+        with mock.patch.dict(os.environ, {"VMLAB_HOME": str(self.project.home)}), \
+                mock.patch.object(tart_provider, "tart", tart), \
+                mock.patch.object(tart_provider.TartProvider, "is_running", return_value=False), \
+                mock.patch.object(tart_provider.TartProvider, "start"), \
+                mock.patch.object(tart_provider.TartProvider, "is_reachable", return_value=True):
+            provider.up()
+        return calls
+
+    def test_up_warms_channel_exec_with_its_own_timeout_before_it_returns(self):
+        self.assertEqual(self.up(""), [("exec", tart_provider.EXEC_WARM_TIMEOUT)])
+
+    def test_a_lab_without_channel_exec_is_not_warmed(self):
+        self.assertEqual(self.up('[labs.mac.tart]\nchannels = ["ssh"]\n'), [])
+
+    def test_a_warm_up_that_fails_fails_up(self):
+        with self.assertRaises(BootTimeout) as raised:
+            self.up("", exec_fails=True)
+        self.assertIn("booted, but its first call failed", raised.exception.message)
+        self.assertIn("on Channel exec", raised.exception.message)

@@ -27,6 +27,9 @@ Release notes, cut from here by the release workflow; see the README's Release s
   find gave a covered one the bounds of the one on top, or the other way round.
 - Linux: on X11 a click into a GTK 4 window opened under the resting pointer is no longer dropped.
 - Runs: a Check whose detail is a tuple no longer crashes the end of the Run.
+- macOS: `vmlab doctor` right after `up` no longer warns now and then that Channel exec "hangs":
+  the first `tart exec` after a boot, which may wait 10-20 s for the guest agent, is now made by `up`,
+  also when a Scenario restores the Guest.
 - `vmlab clean` removes the clones of a project whose vmlab.toml has no Lab left,
   and names a project whose config does not load (its clones are kept) and says to fix it and run clean again.
 - Docs: references/app-recipes.md says how a Wayland app's ScreenCast can be allowed ahead,

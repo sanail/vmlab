@@ -41,7 +41,7 @@ import uuid
 from vmlab import bases, hostpower, hostproc, uihelpers
 from vmlab.config import DEFAULT_LANGUAGE, ConfigError, language_forms
 from vmlab.home import vmlab_home
-from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
+from vmlab.providers.base import BOOT_POLL_SECONDS, FAIL, INFO, OK, WARN, BootTimeout, Channel, ChannelError, ExecResult, GuestError, GuestTimeout, LanguageShown, Provider
 from vmlab.providers.ssh import SshChannel, is_pinned, pin_host_key, public_key
 
 DEFAULTS = {"base": "macos-tahoe", "cpu": 4, "display": "1920x1080", "channels": ["ssh", "exec"]}
@@ -50,6 +50,9 @@ INSTALL_FIX = "install Tart (ask before installing anything on the Host): brew i
 RUN_FLAGS = ["--no-graphics", "--no-clipboard", "--no-audio"]
 PATH_APPEND = ("/usr/local/bin", "/opt/homebrew/bin")  # what `tart exec` has on PATH, so both Channels agree
 CALL_TIMEOUT = 60  # s for quick tart subcommands
+# The first `tart exec` after a boot now and then waits 10-20 s for the guest agent: `up`
+# makes it, so the wait is not spent in doctor's 10 s probe or a Scenario's first call.
+EXEC_WARM_TIMEOUT = 30  # s
 STOP_GRACE = 30  # s a Guest gets to shut down before tart forces it off
 CLONE_TIMEOUT = 4 * 3600  # s for a first clone, which downloads the image
 BASE_BOOT_TIMEOUT = 600
@@ -439,6 +442,16 @@ class TartProvider(Provider):
         finally:
             if self.is_running():
                 self.stop()
+
+    def _boot(self):
+        booted = super()._boot()
+        for channel in self.channels():
+            if booted and channel.name == "exec":
+                try:
+                    channel.exec(self.probe_argv(), EXEC_WARM_TIMEOUT, {})  # its exit code is not the point
+                except GuestError as exc:
+                    raise BootTimeout("Guest %s booted, but its first call failed: %s" % (self.lab.name, exc.message), "check `vmlab doctor %s`" % self.lab.name)
+        return booted
 
     def stop(self):
         self._close_channels()
