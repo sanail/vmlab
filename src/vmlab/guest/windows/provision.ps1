@@ -200,6 +200,12 @@ Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' 
 Get-ScheduledTask -TaskName 'OneDrive *' -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
 Get-Process -Name OneDrive, OneDrive.Sync.Service -ErrorAction SilentlyContinue | Stop-Process -Force
 
+Say 'no Spotlight desktop item or Edge first-run page'
+# Spotlight's "Learn about this picture" item covers the top right corner; a click on it opens Edge.
+Set-Value 'HKCU:\Software\Policies\Microsoft\Windows\CloudContent' DisableSpotlightCollectionOnDesktop 1
+# Edge's first start shows a full-screen welcome page, which takes the foreground from the app that opened it.
+Set-Value 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' HideFirstRunExperience 1
+
 Say 'UTF-8 as the code page of every program (after the reboot)'
 $codepages = 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'
 foreach ($name in 'ACP', 'OEMCP', 'MACCP') { Set-Value $codepages $name '65001' String }

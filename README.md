@@ -494,7 +494,9 @@ turns on autologin (the password as an LSA secret, not the registry value every 
 turns off account lockout (WebView2 apps try a blank password at every start, and after 10 failed sign-ins Windows'
 default policy locks the user out of new ssh connections), turns off Windows Update,
 Store app updates and Edge's own updater (whose tasks otherwise replace Edge's version minutes into a Run), sleep,
-the screen saver, the lock screen, the "finish setting up your device" pages and OneDrive (by policy: it starts at logon
+the screen saver, the lock screen, the "finish setting up your device" pages, the Spotlight desktop item (a click on it
+in the top right corner opens Edge), Edge's first-run page (it takes the foreground from an app that opens the
+browser) and OneDrive (by policy: it starts at logon
 and a few minutes later shows "Turn On Windows Backup" over the app under test; Scenarios cannot use OneDrive),
 leaves the user one keyboard, the display language's own (as on Linux and macOS: Windows Setup adds the keyboard of the
 region it was given), makes UTF-8 the code page of every program, so output arrives as text on the Host,
