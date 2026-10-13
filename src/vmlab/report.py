@@ -218,7 +218,7 @@ def _markdown(report):
             lines += ["Channels: %s" % ", ".join("%s (%d calls)" % kv for kv in sorted(s["channels"].items())), ""]
         for c in s["checks"]:
             visual = " (%s)" % VISUAL if c["kind"] == VISUAL else ""
-            lines.append("- %s %s%s%s" % (outcome(c), c["name"], visual, ": %s" % c["detail"] if c["detail"] else ""))
+            lines.append("- %s %s%s%s" % (outcome(c), c["name"], visual, ": %s" % (c["detail"],) if c["detail"] else ""))
         for f in s["fallbacks"]:
             lines.append("- Channel %s failed (%s); %s served %s" % (f["from"], f["reason"], f["to"], f["argv"]))
         if s["error"]:

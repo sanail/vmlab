@@ -275,9 +275,9 @@ class Guest:
         """{"displays": [{"bounds", "scale", "primary"}]}: the Guest's Display, its bounds in Desktop pixels."""
         return self._ui_call(lambda contract: contract.displays())
 
-    def click(self, text=None, role=None, app=None, index=0, at=None, timeout=None, checked=None, button="left", hold=None):
-        """Click the index-th matching element's middle, or the point at=(x, y). Raises if nothing
-        matches or something covers it; with timeout (seconds), first waits for it to be there and
+    def click(self, text=None, role=None, app=None, index=None, at=None, timeout=None, checked=None, button="left", hold=None):
+        """Click a matching element's middle (the first one in view, or the index-th), or the point at=(x, y).
+        Raises if nothing matches or something covers it; with timeout (seconds), first waits for it to be there and
         uncovered (on the Scenario's clock), then raises with the last reason. button: left, right,
         middle, back or forward; hold: modifiers held around the click, e.g. "cmd+alt"."""
         query = ui.Query(text, role, app, checked)
@@ -468,6 +468,9 @@ def _traced(method):
             raise
         else:
             entry["error"] = None
+            pressed = result.get("from", result) if isinstance(result, dict) else {}
+            if isinstance(pressed, dict) and pressed.get("index") is not None:  # which match a click or a drag's source took
+                entry["index"] = pressed["index"]
             return result
         finally:
             entry["duration_s"] = round(time.monotonic() - began, 3)

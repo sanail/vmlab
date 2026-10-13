@@ -867,7 +867,7 @@ class PointerTest(UiTestCase):
 
     def test_drag_between_points_with_a_button_and_hold(self):
         dragged = self.ui("drag", "--from-at", "0", "0", "--to-at", "10", "-10", "--steps", "2", "--button", "middle", "--hold", "alt")
-        self.assertEqual((dragged["from"], dragged["to"]), ({"x": 0, "y": 0, "element": None}, {"x": 10, "y": -10, "element": None}))
+        self.assertEqual((dragged["from"], dragged["to"]), ({"x": 0, "y": 0, "element": None, "index": None}, {"x": 10, "y": -10, "element": None, "index": None}))
         events = self.calls("pointer")[0]["events"]
         self.assertEqual((events[0], events[-1]), ({"do": "keydown", "key": "alt"}, {"do": "keyup", "key": "alt"}))
         self.assertEqual([e for e in events if e["do"] == "move"], [move(0, 0), move(5, -5), move(10, -10)])
@@ -946,7 +946,7 @@ class PointerTest(UiTestCase):
         self.project.scenario("scaled.py", """
             def scenario(g):
                 dragged = g.drag((280.0, 382.5), [281, 383.4], steps=1, duration=0)
-                g.check("ends rounded", (dragged["from"], dragged["to"]) == ({"x": 280, "y": 382, "element": None}, {"x": 281, "y": 383, "element": None}))
+                g.check("ends rounded", (dragged["from"], dragged["to"]) == ({"x": 280, "y": 382, "element": None, "index": None}, {"x": 281, "y": 383, "element": None, "index": None}))
                 g.click(at=(280.6, 383.0))
                 g.pointer("move", 1.5, 2.5)
                 for end in ((True, 1), (1, 2, 3), (1, "2")):
@@ -984,6 +984,59 @@ class PointerTest(UiTestCase):
         self.assertExit(self.project.vmlab("run"), 0)
         down, up = self.calls("pointer")
         self.assertEqual(up["events"][-1], {"do": "keyup", "key": "ctrl"})
+
+
+class LookalikeTest(UiTestCase):
+    """Two Add buttons, one in each of two dialogs of MyApp: without an index, the first in view is pressed."""
+
+    calls = PointerTest.calls
+
+    def write_dialogs(self, *covered):
+        dialogs = [
+            {"role": "window", "name": "Add Shortcut", "bounds": {"x": 100 * i, "y": 100, "w": 300, "h": 200},
+             "children": [dict({"role": "button", "name": "Add", "bounds": {"x": 100 * i + 10, "y": 250, "w": 60, "h": 20}},
+                               **({"covered_by": covered[i - 1]} if covered[i - 1] else {}))]}
+            for i in (1, 2)
+        ]  # fmt: skip
+        tree = {"role": "desktop", "children": [{"role": "application", "name": "MyApp", "children": dialogs}]}
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
+
+    def test_a_click_passes_over_a_covered_match_and_clicks_the_next(self):
+        self.write_dialogs("Add Shortcut", None)
+        clicked = self.ui("click", "--text", "Add")
+        self.assertEqual((clicked["x"], clicked["index"]), (240, 1))
+        self.assertEqual([c["expect"]["bounds"]["x"] for c in self.calls("pointer")], [110, 210])
+
+    def test_a_click_with_every_match_passed_over_names_each_reason(self):
+        self.write_dialogs("Add Shortcut", "Text Editor")
+        r = self.ui("click", "--text", "Add", code=1)
+        self.assertIn("none of the 2 elements matching text='Add' could be pressed", r.err)
+        self.assertIn('[0] something else is at (140, 260): Add Shortcut; [1]', r.err)
+        self.assertIn('[1] something else is at (240, 260): Text Editor\n', r.err)
+
+    def test_a_click_with_an_index_takes_that_match_even_covered(self):
+        self.write_dialogs("Add Shortcut", None)
+        self.assertIn("Add Shortcut", self.ui("click", "--text", "Add", "--index", "0", code=1).err)
+        self.assertEqual(len(self.calls("pointer")), 1)
+        self.assertEqual(self.ui("click", "--text", "Add", "--index", "1")["index"], 1)
+
+    def test_a_drag_passes_over_a_covered_source_but_its_target_is_the_first_match(self):
+        self.write_dialogs("Add Shortcut", None)
+        dragged = self.ui("drag", "--from-text", "Add", "--to-text", "Add")
+        self.assertEqual((dragged["from"]["index"], dragged["to"]["index"], dragged["to"]["x"]), (1, 0, 140))
+
+    def test_a_scenarios_trace_names_the_match_it_clicked(self):
+        self.write_dialogs("Add Shortcut", None)
+        self.project.scenario("lookalike.py", """
+            def scenario(g):
+                g.click(text="Add")
+                g.drag({"text": "Add"}, (1, 1))
+                g.click(at=(5, 5))
+                g.check("fails", False)
+        """)
+        self.assertExit(self.project.vmlab("run"), 1)
+        calls = self.project.report()["scenarios"][0]["calls"]
+        self.assertEqual([c.get("index") for c in calls], [1, 1, None, None])
 
 
 class StagedCleanupTest(UiTestCase):

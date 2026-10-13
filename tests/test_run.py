@@ -77,13 +77,16 @@ class RunTest(VmlabTestCase):
             def scenario(g):
                 g.check("count", False, detail=249)
                 g.check("result", False, detail={"met": False})
+                g.check("pair", False, detail=(1, "a"))
         """)
 
         r = self.project.vmlab("run")
 
         self.assertExit(r, 1)
+        self.assertIn("FAIL mac/details: pair: (1, 'a')", r.out)
+        self.assertIn("- FAIL pair: (1, 'a')", (self.project.only_run_dir() / "summary.md").read_text())
         suite = ET.parse(str(self.project.only_run_dir() / "junit.xml")).getroot()
-        self.assertEqual([f.get("message") for f in suite.iter("failure")], ["249", '{"met": false}'])
+        self.assertEqual([f.get("message") for f in suite.iter("failure")], ["249", '{"met": false}', '[1, "a"]'])
 
     def test_scenario_that_raises_is_an_error_not_a_pass(self):
         self.project.config(FAKE_LAB)

@@ -776,24 +776,24 @@ class UI:
         found = self._call("displays", {})["displays"]
         return {"displays": [{k: d[k] for k in ("bounds", "scale", "primary")} for d in found]}
 
-    def click(self, query=None, index=0, at=None, timeout=None, button="left", hold=None):
-        """Click the index-th match's middle, refusing if something else is on top of it; or click at (x, y).
-        button is one of BUTTONS; hold, a modifier chord held around the click.
+    def click(self, query=None, index=None, at=None, timeout=None, button="left", hold=None):
+        """Click a match's middle, refusing if something else is on top of it; or click at (x, y).
+        Without index, the first match in view (with bounds, not covered) is clicked; with it, the
+        index-th or none. button is one of BUTTONS; hold, a modifier chord held around the click.
 
-        With timeout (seconds), retry until the element is there and uncovered; when time runs
+        With timeout (seconds), retry until a match is there and uncovered; when time runs
         out, raise with the last reason. at=(x, y) clicks ignore timeout.
         """
         button, modifiers = check_button(button), parse_hold(hold)
         if at is not None:
             x, y = desktop_point(*at)
             result = self._pointer(button, click_events(x, y, modifiers))
-            return {"x": x, "y": y, "element": None, "under": result.get("under")}
+            return {"x": x, "y": y, "element": None, "index": None, "under": result.get("under")}
         query.require("click")
 
         def attempt():
-            element, x, y = self._target(query, index, "click")
-            result = self._pointer(button, click_events(x, y, modifiers), element)
-            return {"x": x, "y": y, "element": element, "under": result.get("under")}
+            pressed = self._press(query, index, "click", lambda element, x, y: self._pointer(button, click_events(x, y, modifiers), element))
+            return {"x": pressed["x"], "y": pressed["y"], "element": pressed["element"], "index": pressed["index"], "under": pressed["result"].get("under")}
 
         return self._retrying("click %s" % query, timeout, attempt)
 
@@ -811,12 +811,28 @@ class UI:
                     raise GuestError("could not %s within %gs: %s" % (doing, timeout, exc.message), exc.fix)
                 time.sleep(min(POLL_SECONDS, deadline - now))
 
-    def _target(self, query, index, doing):
-        """(element, x, y): the middle of the index-th match; NotClickable when it is not there or has no bounds."""
+    def _press(self, query, index, doing, press):
+        """{"x", "y", "element", "index", "result"}: press(element, x, y) at the middle of the index-th
+        match, or without index of the first match that has bounds and that press does not refuse as
+        covered. NotClickable when there is none, naming why each match was passed over."""
         matches = self.find(query)["matches"]
-        if len(matches) <= index:
+        if not matches or (index is not None and len(matches) <= index):
             raise NotClickable("no element to %s matches %s (%d found)" % (doing, query, len(matches)), "look at `vmlab ui tree` for what is on screen")
-        return (matches[index],) + middle(matches[index], "the element matching %s" % query)
+        tried = [index] if index is not None else range(len(matches))
+        reasons = []
+        for i in tried:
+            try:
+                x, y = middle(matches[i], "the element matching %s" % query)
+                return {"x": x, "y": y, "element": matches[i], "index": i, "result": press(matches[i], x, y)}
+            except NotClickable as exc:
+                if len(tried) == 1:
+                    raise
+                at = exc.message.find(COVERED)  # the helper's own words, without the Channel's preamble
+                reasons.append("[%d] %s" % (i, exc.message[at:].split("; the element may")[0] if at >= 0 else exc.message))
+        raise NotClickable(
+            "none of the %d elements matching %s could be pressed: %s" % (len(matches), query, "; ".join(reasons)),
+            "wait for one to be uncovered with a timeout, or pass index to choose one; `vmlab ui find` lists the matches",
+        )
 
     def _pointer(self, button, events, element=None):
         """Send events with button. With element, the helper first checks that it is what lies under
@@ -863,34 +879,41 @@ class UI:
         button, modifiers = check_button(button), parse_hold(hold)
 
         def attempt():
-            ends = [self._drag_end(end) for end in (source, target)]
-            (x0, y0), (x1, y1) = [(e["x"], e["y"]) for e in ends]
-            wait, pause = {"do": "wait", "s": round(duration / steps, 3)}, {"do": "wait", "s": DRAG_PAUSE}
-            events = key_events("keydown", modifiers) + [{"do": "move", "x": x0, "y": y0}, {"do": "down", "x": x0, "y": y0}, pause]
-            for i in range(1, steps + 1):
-                events += [{"do": "move", "x": round(x0 + (x1 - x0) * i / steps), "y": round(y0 + (y1 - y0) * i / steps)}, wait]
-            events += [pause, {"do": "up", "x": x1, "y": y1}] + key_events("keyup", modifiers[::-1])
-            self._pointer(button, events, ends[0]["element"])
-            return {"from": ends[0], "to": ends[1], "button": button, "hold": "+".join(modifiers) or None}
+            to = self._drag_end(target, 0)
+            x1, y1 = to["x"], to["y"]
+
+            def press(element, x0, y0):
+                wait, pause = {"do": "wait", "s": round(duration / steps, 3)}, {"do": "wait", "s": DRAG_PAUSE}
+                events = key_events("keydown", modifiers) + [{"do": "move", "x": x0, "y": y0}, {"do": "down", "x": x0, "y": y0}, pause]
+                for i in range(1, steps + 1):
+                    events += [{"do": "move", "x": round(x0 + (x1 - x0) * i / steps), "y": round(y0 + (y1 - y0) * i / steps)}, wait]
+                events += [pause, {"do": "up", "x": x1, "y": y1}] + key_events("keyup", modifiers[::-1])
+                self._pointer(button, events, element)
+
+            return {"from": self._drag_end(source, None, press), "to": to, "button": button, "hold": "+".join(modifiers) or None}
 
         return self._retrying("drag from %r" % (source,), timeout, attempt)
 
-    def _drag_end(self, end):
-        """A drag's end as {"x", "y", "element"}: a point, or the middle of an element (one find found,
-        or its text or find's fields plus "index", found now)."""
+    def _drag_end(self, end, index, press=None):
+        """A drag's end as {"x", "y", "element", "index"}, pressed by press(element, x, y) when given:
+        a point, or the middle of an element (one find found, or its text or find's fields plus
+        "index", found now; index when they have none, None for the first one in view)."""
+        press = press or (lambda element, x, y: None)
         if isinstance(end, (tuple, list)) and len(end) == 2 and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in end):
             x, y = desktop_point(*end)
-            return {"x": x, "y": y, "element": None}
+            press(None, x, y)
+            return {"x": x, "y": y, "element": None, "index": None}
         if isinstance(end, dict) and "bounds" in end:  # a node: where it was when found; the press checks it is still there
             node = dict(NODE_DEFAULTS, **end)
             x, y = middle(node, "the %s %r" % (node.get("role", "element"), label(node)))
-            return {"x": x, "y": y, "element": node}
+            press(node, x, y)
+            return {"x": x, "y": y, "element": node, "index": None}
         fields = {"text": end} if isinstance(end, str) else dict(end) if isinstance(end, dict) else None
-        index = fields.pop("index", 0) if fields is not None else 0
+        index = fields.pop("index", index) if fields is not None else index
         if fields is None or not set(fields) <= {"text", "role", "app", "checked"}:
             raise UsageError("a drag's ends are each (x, y), an element find found, its text, or a dict of text, role, app, checked and index; not %r" % (end,))
-        element, x, y = self._target(Query(**fields).require("drag"), index, "drag")
-        return {"x": x, "y": y, "element": element}
+        pressed = self._press(Query(**fields).require("drag"), index, "drag", press)
+        return {k: pressed[k] for k in ("x", "y", "element", "index")}
 
     def tray(self, app, choose=None, timeout=None):
         """Read app's Tray menu and, with choose (a label per menu level), choose that item.

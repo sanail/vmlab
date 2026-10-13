@@ -663,9 +663,9 @@ Windows).
 | `ui tree [--app APP]` | `g.tree(app=None)` | the node tree below |
 | `ui find [--text T] [--role R] [--app APP] [--checked/--unchecked/--mixed]` | `g.find(text=, role=, app=, checked=)` | `{"matches": [node without children, plus "app"]}` |
 | `ui displays` | `g.displays()` | `{"displays": [{"bounds", "scale", "primary"}]}` |
-| `ui click [--text/--role/--app/--checked...] [--index N] [--timeout S] [--button B] [--hold MODS]`, `ui click --at X Y` | `g.click(..., index=0, timeout=None, button="left", hold=None)`, `g.click(at=(x, y))` | `{"x", "y", "element", "under"}` |
+| `ui click [--text/--role/--app/--checked...] [--index N] [--timeout S] [--button B] [--hold MODS]`, `ui click --at X Y` | `g.click(..., index=None, timeout=None, button="left", hold=None)`, `g.click(at=(x, y))` | `{"x", "y", "element", "index", "under"}` |
 | `ui pointer move\|down\|up X Y [--button B] [--hold MODS]` | `g.pointer(action, x, y, button="left", hold=None)` | `{"action", "x", "y", "button", "hold"}` |
-| `ui drag --from-text/--from-role/--from-at X Y ... --to-text/--to-role/--to-at X Y ... [--app APP] [--steps N] [--duration S] [--timeout S] [--button B] [--hold MODS]` | `g.drag(source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None)` | `{"from": {"x", "y", "element"}, "to": {...}, "button", "hold"}` |
+| `ui drag --from-text/--from-role/--from-at X Y ... --to-text/--to-role/--to-at X Y ... [--app APP] [--steps N] [--duration S] [--timeout S] [--button B] [--hold MODS]` | `g.drag(source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None)` | `{"from": {"x", "y", "element", "index"}, "to": {...}, "button", "hold"}` |
 | `ui press CHORD` | `g.press("cmd+shift+space")` | `{"chord": "shift+cmd+space"}` |
 | `ui type TEXT` | `g.type(text)` | `{"typed": n}` |
 | `ui focus --app APP [--window TITLE]` | `g.focus(app, window=None)` | `{"app", "window", "frontmost"}` |
@@ -707,10 +707,13 @@ its children are applications (with `pid`), holding their windows and, on macOS,
   `--checked`, `--unchecked` and `--mixed` (one of them; `checked=True`, `False` or `"mixed"` in a Scenario) keep only
   elements in that tick state, for `find`, `click` and an element `wait-for`; they go with `--text` or `--role`,
   never alone.
-- `click` clicks the middle of the first match (or the `--index`th) with a real mouse event,
-  after checking the element is what lies under that point.
-  Without `--timeout` it fails at once when nothing matches or something covers the element; with it,
-  it tries again until the element is there and uncovered, then fails with the last reason.
+- `click` clicks the middle of a match with a real mouse event, after checking the element is what lies under that
+  point.
+  Without `--index` it tries the matches in `find`'s order and clicks the first one in view, passing over one without
+  bounds or covered by something else; with it, it clicks that match (counting from 0) or none.
+  Its result's `index` is the match it clicked.
+  Without `--timeout` it fails at once when nothing matches or something covers every match, naming why each was
+  passed over; with it, it tries again until one is there and uncovered, then fails with the last reason.
   `--at` ignores `--timeout`.
 - Buttons are named the same on every OS: `left` (the default), `right`, `middle`,
   `back` and `forward` (X11's buttons 8 and 9, Windows' XBUTTON1 and XBUTTON2, macOS's other buttons 3 and 4);
@@ -729,8 +732,9 @@ its children are applications (with `pid`), holding their windows and, on macOS,
   and macOS dragging sessions and Windows' OLE drag-and-drop need the pauses.
   Each end is an element (its middle; in a Scenario one `find` found, or its text or a dict of `find`'s fields plus
   `index`) or a point (`(x, y)`).
-  An element it presses on must be what lies under the press, as for `click`,
-  and `--timeout` waits for both elements to be there and that one uncovered.
+  An element it presses on must be what lies under the press, and it takes the first match in view, as `click` does,
+  unless given an index; the other end takes the first match unless given one.
+  `--timeout` waits for both elements to be there and that one uncovered.
 - Chords are `+`-joined modifiers (`ctrl`, `alt`/`option`, `shift`, `cmd`/`command`/`win`/`super`) and one key:
   `a`-`z`, `0`-`9`, `f1`-`f12`, `space`, `enter`, `tab`, `escape`, `backspace`, `delete`, arrows, `home`,
   `end`, `pageup`, `pagedown` and punctuation names (`minus`, `comma`, `slash`, ...).

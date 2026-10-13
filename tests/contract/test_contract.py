@@ -512,6 +512,50 @@ def scenario(g):
     fixture.stop()
 '''
 
+# Lookalike windows of one app, the second over the first's Add (which find lists first on Linux):
+# a click by text passes over the covered Add and clicks the one on top. Where both open at one
+# place (Xfce), the second opens under the resting pointer, which must still press it.
+LOOKALIKE = CHECKS_START + r'''
+import time
+
+def scenario(g):
+    if g.os == "windows":
+        fixture = start(g)
+    else:
+        exe = "/tmp/" + NAME
+        g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
+        fixture = g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), NAME, "adds"])
+    up = g.wait_for(text="Add", role="button", app=NAME, timeout=60)
+    b = up["matches"][0]["bounds"] if up["met"] else None
+    if b:
+        g.pointer("move", b["x"] + b["w"] // 2, b["y"] + b["h"] // 2)
+    deadline = time.time() + 60
+    while True:
+        adds = g.find(text="Add", role="button", app=NAME)["matches"]
+        if len(adds) == 2 or time.time() > deadline:
+            break
+        time.sleep(0.5)
+    g.check("both windows are up", len(adds) == 2, detail=adds)
+    windows = [w["bounds"] for w in g.find(role="window", app=NAME)["matches"]]
+
+    def covered(add, other):  # by the other window, not by its Add
+        b = add["bounds"]
+        x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
+        inside = lambda r: r["x"] <= x < r["x"] + r["w"] and r["y"] <= y < r["y"] + r["h"]
+        return sum(map(inside, windows)) == 2 and not inside(other["bounds"])
+
+    if len(windows) == 2 and windows[0] == windows[1]:
+        g.skip("one window lies over the other's Add", "the window manager puts both at one place (Xfce): one Add lies on the other")
+    else:
+        g.check("one window lies over the other's Add", len(adds) == 2 and covered(*adds) != covered(*adds[::-1]), detail=(adds, windows))
+    clicked = g.click(text="Add", role="button", app=NAME, timeout=10)
+    done = g.wait_for(text="Added 2", role="button", app=NAME, timeout=10)
+    g.check("the Add on top takes the click", done["met"], detail=(clicked["index"], done))
+    left = g.find(text="Add", role="button", app=NAME)["matches"]
+    g.check("the covered Add is left as it was", len(left) == 1, detail=left)
+    fixture.stop()
+'''
+
 # Desktop pixels: the Display, the desktop node and a screenshot share one size, and a box clicked
 # at its bounds' centre (the checks fixture's Music) ticks and shows the change at those bounds in
 # the screenshots, which the test compares. The Fake draws nothing: FAKE stops after the size.
@@ -1449,6 +1493,14 @@ def scenario(g):
             self.skipTest("GTK 4 is a Linux Guest's toolkit")
         source = (Path(__file__).resolve().parent / "gtk4_fixture_linux.py").read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_twins.py", UI + "SOURCE = %r\n" % source + TWINS))
+
+    @ui
+    def test_09c2d_ui_a_click_by_text_takes_the_lookalike_on_top(self):
+        fixtures = {"linux": "gtk4_fixture_linux.py", "windows": "lookalike_fixture_windows.ps1"}
+        if self.target.os not in fixtures or self.target.provider == "fake":
+            self.skipTest("lookalike windows are a fixture's on Linux and Windows Guests")
+        source = (Path(__file__).resolve().parent / fixtures[self.target.os]).read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_lookalike.py", UI + "SOURCE = %r\n" % source + LOOKALIKE))
 
     @ui
     def test_09c3_ui_bounds_screenshots_and_clicks_are_in_desktop_pixels(self):

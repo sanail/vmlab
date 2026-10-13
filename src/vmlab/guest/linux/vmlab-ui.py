@@ -92,6 +92,7 @@ EVDEV = dict(
     ctrl=29, alt=56, shift=42, cmd=125,
 )  # fmt: skip
 BUTTONS = {"left": 1, "middle": 2, "right": 3, "back": 8, "forward": 9}  # X11's numbers, which Clutter's share
+HELD_BUTTONS = 0x1F00  # X's Button1Mask to Button5Mask in a pointer query's mask
 MODIFIERS = ("ctrl", "alt", "shift", "cmd")
 # X keysym names, for xdotool; letters and digits are their own names
 KEYSYMS = dict(
@@ -501,11 +502,16 @@ class X11:
     def pointer(self, button, events):
         """events (vmlab.ui) with button's number, as one chain of xdotool commands."""
         argv = ["xdotool"]
-        at = self.root.query_pointer()
-        at = (at.root_x, at.root_y)
+        pointer = self.root.query_pointer()
+        at, still = (pointer.root_x, pointer.root_y), not pointer.mask & HELD_BUTTONS
         for e in events:
             if e["do"] == "move":
-                # --sync waits for a motion, and a move to the pointer's own point makes none: it waits ~16 s.
+                # A move to the pointer's own point makes no motion (--sync waits ~16 s, a window opened
+                # under the pointer drops the press): come from a neighbouring pixel unless that would drag.
+                if (e["x"], e["y"]) == at and still:
+                    argv += ["mousemove", "--sync", str(e["x"] - 1 if e["x"] else 1), str(e["y"])]
+                    at = None
+                still = False
                 if (e["x"], e["y"]) != at:
                     argv += ["mousemove", "--sync", str(e["x"]), str(e["y"])]
                     at = (e["x"], e["y"])

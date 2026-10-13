@@ -253,9 +253,9 @@ class PointerTest(unittest.TestCase):
     def setUp(self):
         self.helper = load_helper()
 
-    def x11_chain(self, events, at=(0, 0)):
+    def x11_chain(self, events, at=(0, 0), mask=0):
         x11 = self.helper.X11.__new__(self.helper.X11)
-        x11.root = mock.Mock(**{"query_pointer.return_value": types.SimpleNamespace(root_x=at[0], root_y=at[1])})
+        x11.root = mock.Mock(**{"query_pointer.return_value": types.SimpleNamespace(root_x=at[0], root_y=at[1], mask=mask)})
         with mock.patch.object(self.helper, "run") as run:
             x11.pointer(self.helper.BUTTONS["back"], events)
         return run.call_args[0][0] if run.called else None
@@ -266,16 +266,21 @@ class PointerTest(unittest.TestCase):
             "mousemove", "--sync", "30", "40", "mouseup", "8", "keyup", "shift",
         ])  # fmt: skip
 
-    def test_x11_sends_no_move_to_where_the_pointer_already_is(self):
-        # xdotool's --sync waits for a motion that never comes: ~16 s per such move.
+    def test_x11_comes_to_where_the_pointer_already_is_from_a_neighbouring_pixel(self):
+        # A move repeating the one before it is still left out.
         events = self.EVENTS[:4] + [{"do": "move", "x": 10, "y": 20}] + self.EVENTS[4:]
         self.assertEqual(self.x11_chain(events, at=(10, 20)), [
-            "xdotool", "keydown", "shift", "mousedown", "8", "sleep", "0.1",
-            "mousemove", "--sync", "30", "40", "mouseup", "8", "keyup", "shift",
+            "xdotool", "keydown", "shift", "mousemove", "--sync", "9", "20", "mousemove", "--sync", "10", "20",
+            "mousedown", "8", "sleep", "0.1", "mousemove", "--sync", "30", "40", "mouseup", "8", "keyup", "shift",
         ])  # fmt: skip
+        self.assertEqual(self.x11_chain([{"do": "move", "x": 0, "y": 20}], at=(0, 20)),
+                         ["xdotool", "mousemove", "--sync", "1", "20", "mousemove", "--sync", "0", "20"])
 
-    def test_x11_runs_nothing_for_a_lone_move_to_where_the_pointer_is(self):
-        self.assertIsNone(self.x11_chain([{"do": "move", "x": 10, "y": 20}], at=(10, 20)))
+    def test_x11_sends_no_move_to_where_the_pointer_is_while_a_button_is_held(self):
+        held = 1 << 8  # X's Button1Mask
+        self.assertIsNone(self.x11_chain([{"do": "move", "x": 10, "y": 20}], at=(10, 20), mask=held))
+        self.assertEqual(self.x11_chain([{"do": "move", "x": 10, "y": 20}, {"do": "up", "x": 10, "y": 20}], at=(10, 20), mask=held),
+                         ["xdotool", "mouseup", "8"])
 
     def test_wayland_sends_stage_points_and_evdev_keys(self):
         shell = self.helper.WaylandShell.__new__(self.helper.WaylandShell)

@@ -611,7 +611,7 @@ def _print_summary(data, out, repetition=""):
                 evidence = ", ".join(s["screenshots"]) or "none"
                 out(
                     "FAIL %s/%s: %s%s (screenshots: %s)"
-                    % (data["lab"], s["name"], c["name"], ": %s" % c["detail"] if c["detail"] else "", evidence)
+                    % (data["lab"], s["name"], c["name"], ": %s" % (c["detail"],) if c["detail"] else "", evidence)
                 )
     t = data["totals"]
     out(

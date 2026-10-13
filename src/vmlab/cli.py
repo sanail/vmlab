@@ -294,7 +294,7 @@ def _ui_parser(sub):
     ui_sub.add_parser("find", parents=[common, element], help="elements by text and/or role")
     ui_sub.add_parser("displays", parents=[common], help="the Guest's Display: its bounds in Desktop pixels and its scale")
     p = ui_sub.add_parser("click", parents=[common, element], help="click an element's middle (or --at X Y)")
-    p.add_argument("--index", type=int, default=0, help="which match to click (default: the first)")
+    p.add_argument("--index", type=int, help="which match to click, counting from 0 (default: the first one in view)")
     p.add_argument("--at", nargs=2, type=int, metavar=("X", "Y"), help="click this screen point instead")
     p.add_argument("--timeout", type=float, help="seconds to wait for the element to be there and uncovered (default: fail at once; --at ignores it)")
     _pressing_arguments(p, "around the click")
@@ -308,7 +308,7 @@ def _ui_parser(sub):
     for end in ("from", "to"):
         p.add_argument("--%s-text" % end, help="the element's name, value or description")
         p.add_argument("--%s-role" % end, help="the element's role")
-        p.add_argument("--%s-index" % end, type=int, default=0, help="which match (default: the first)")
+        p.add_argument("--%s-index" % end, type=int, default=0 if end == "to" else None, help="which match, counting from 0 (default: the first%s)" % ("" if end == "to" else " one in view"))
         p.add_argument("--%s-at" % end, nargs=2, type=int, metavar=("X", "Y"), help="this screen point instead of an element")
     p.add_argument("--steps", type=int, default=20, help="moves from one end to the other (default: 20)")
     p.add_argument("--duration", type=float, default=0.5, help="seconds the moves take (default: 0.5)")

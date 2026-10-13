@@ -157,9 +157,9 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.tree(app=None)` | `ui tree [--app APP]` | node tree |
 | `g.find(text=, role=, app=, checked=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
 | `g.displays()` | `ui displays` | `{"displays": [{"bounds", "scale", "primary"}]}` |
-| `g.click(text=, role=, app=, checked=, index=0, timeout=None, button="left", hold=None)`, `g.click(at=(x, y))` | `ui click [--timeout S] [--button B] [--hold MODS]` | `{"x", "y", "element", "under"}` |
+| `g.click(text=, role=, app=, checked=, index=None, timeout=None, button="left", hold=None)`, `g.click(at=(x, y))` | `ui click [--index N] [--timeout S] [--button B] [--hold MODS]` | `{"x", "y", "element", "index", "under"}` |
 | `g.pointer("move"\|"down"\|"up", x, y, button="left", hold=None)` | `ui pointer ACTION X Y` | `{"action", "x", "y", "button", "hold"}` |
-| `g.drag(source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None)` | `ui drag --from-... --to-... [--timeout S]` | `{"from": {"x", "y", "element"}, "to": {...}, "button", "hold"}` |
+| `g.drag(source, target, button="left", hold=None, steps=20, duration=0.5, timeout=None)` | `ui drag --from-... --to-... [--timeout S]` | `{"from": {"x", "y", "element", "index"}, "to": {...}, "button", "hold"}` |
 | `g.press("cmd+shift+space")` | `ui press CHORD` | `{"chord"}` |
 | `g.type(text)` | `ui type TEXT` | `{"typed": n}` |
 | `g.focus(app, window=None)` | `ui focus --app APP [--window T]` | `{"app", "window", "frontmost"}` |
@@ -177,6 +177,10 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
   `scale`, else 2 on macOS and Windows on a Retina Mac, 1 on Linux) and `primary`.
   Sizes drawn by the app grow with the scale: a Scenario that offsets from bounds by numbers of its own multiplies them
   by it.
+- `g.click(text=...)` without `index` clicks the first match in view, in `find`'s order: a match without bounds or
+  covered by another window (a dialog left open under a newer one) is passed over, and the error, when every match is,
+  names why each was.
+  `index=n` clicks the n-th match (counting from 0) or fails; the result's `index` is the match clicked.
 - Buttons: `left`, `right`, `middle`, `back`, `forward`.
   `hold` is modifiers in `press`'s grammar (`"shift"`, `"cmd+alt"`), held around a click, for a whole drag,
   or from a `pointer("down")` to its `pointer("up")`; what a Scenario leaves held is released at the end of its Run.
@@ -185,7 +189,8 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
   Each end is `(x, y)`, an element `find` found, or an element's text or a dict of `find`'s fields plus `index`:
   `g.drag({"text": "Photo", "app": "MyApp"}, {"text": "Trash", "role": "button"})`,
   or `g.drag(g.find(text="Photo")["matches"][2], (400, 200))`.
-  Like `click`, it refuses to press on an element something else covers, and `timeout` waits until it can.
+  Like `click`, it refuses to press on an element something else covers, takes the source's first match in view unless
+  given `index` (the target's first match), and `timeout` waits until it can.
   For a hover or a long press, use `g.pointer`: `g.pointer("down", x, y)`, `g.wait_for(...)`, `g.pointer("up", x, y)`.
 - A node has `role` (cross-OS: `application`, `window`, `button`, `textfield`, `textarea`, `text`, `checkbox`,
   `menuitem`, ...), `name`, `value`, `description`, `bounds` (`{"x", "y", "w", "h"}` or null), `focused`,
