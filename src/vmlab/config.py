@@ -47,6 +47,9 @@ def is_argv(value):
     return isinstance(value, (list, tuple)) and bool(value) and all(isinstance(a, str) for a in value) and bool(value[0])
 
 
+NO_LABS = "no Labs declared"
+
+
 class ConfigError(Exception):
     def __init__(self, path, key, problem, fix):
         self.path, self.key, self.problem, self.fix = path, key, problem, fix
@@ -183,7 +186,7 @@ def load(start):
         raise ConfigError(
             path,
             "labs",
-            "no Labs declared",
+            NO_LABS,
             'add a Lab, e.g.\n    [labs.mac]\n    provider = "fake"\n    os = "macos"',
         )
 

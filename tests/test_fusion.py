@@ -820,6 +820,31 @@ class FusionCleanTest(FusionTestCase):
         self.assertFalse(clone.parent.exists())
         self.assertEqual([f.name for f in (self.project.home / "fusion").iterdir() if f.name.startswith(clone.stem)], [])
 
+    def test_the_clone_of_a_project_with_no_labs_left_is_deleted(self):
+        other = self.other_project()
+        clone = self.clone_for(cwd=other)
+        (other / ".vmlab" / "vmlab.toml").write_text("")
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertIn("project %s has no Lab linux on Fusion any more" % other.resolve(), r.out)
+        self.assertFalse(clone.parent.exists())
+
+    def test_the_clone_of_a_project_whose_config_does_not_load_is_listed_as_kept(self):
+        other = self.other_project()
+        clone = self.clone_for(cwd=other)
+        (other / ".vmlab" / "vmlab.toml").write_text(FUSION_LAB + "typo = 1\n")
+
+        r = self.vmlab("clean", "--yes")
+
+        self.assertExit(r, 0)
+        self.assertIn(clone.stem, r.out)
+        self.assertIn("kept: project %s's config does not load (labs.linux.typo: unknown key)" % other.resolve(), r.out)
+        self.assertIn("run `vmlab clean` again", r.out)
+        self.assertEqual(self.calls("deleteVM"), [])
+        self.assertTrue(clone.exists())
+
     def test_a_running_leftover_clone_is_stopped_and_deleted_when_confirmed(self):
         # No Lab needs it: no `vmlab down` can stop it, and clean needs no hint to do it itself.
         other = self.other_project()

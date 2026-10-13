@@ -148,6 +148,8 @@ keeping every comment the user has written:
   and like any config error it stops every command that reads the project's config (`status`, `up`, `run` and the rest)
   for every Lab.
 - `arch` is the Build artifact's; leave it out for the Host's own.
+- A Lab's clone stays on the Host after its Lab is removed from `vmlab.toml` or the project folder is deleted:
+  `vmlab clean` deletes it then.
 
 Then write each Lab's `[labs.NAME.app]`: how the Build artifact is built on the Host, installed,
 quit and launched in the Guest, what says the launched app is ready (if anything does),

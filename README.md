@@ -236,6 +236,7 @@ channels = ["ssh", "exec"]   # SSH (multiplexed), then `tart exec` (the Tart gue
   using the record each clone keeps in `$VMLAB_HOME/tart/<clone>.json` (project, Lab, Base guest):
   clones whose project or Lab is gone (moved, renamed or deleted), clones of unknown origin,
   service files whose VM is gone, and Base guests no known Lab uses.
+  A clone whose project's config does not load is kept and listed with the config error: fix it and run `clean` again.
   It lists them and deletes after you confirm (`--yes` to skip asking).
   A running orphaned clone is stopped before it is deleted (no Lab's `vmlab down` can reach it, and a Windows Lab's copy
   stops only with the password vmlab keeps); a running Base guest is left alone, with how to stop it.

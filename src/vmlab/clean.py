@@ -67,8 +67,11 @@ def _leftovers(inventory, vms, records, used):
     for vm, running in sorted(vms.items()):
         if not vm.startswith("vmlab-") or vm.startswith("vmlab-base-"):
             continue  # not vmlab's, or a Base guest
-        reason, base = _clone_orphan_reason(inventory, vm)
-        if reason is None:
+        reason, base, kept = _clone_orphan_reason(inventory, vm)
+        if kept:
+            used.add(base)
+            found.append(Leftover("clone", vm, reason, None, kept=kept))
+        elif reason is None:
             used.add(base)
         else:
             # No Lab needs it, so no `vmlab down` can stop it: deleting it stops it first.
@@ -91,26 +94,30 @@ def _leftovers(inventory, vms, records, used):
 
 
 def _clone_orphan_reason(inventory, vm):
-    """(why the clone vm is not needed, or None; the Base guest it serves)."""
+    """(why the clone vm is not needed, or None; the Base guest it serves; why it is kept
+    although that cannot be told, or None)."""
     from vmlab.providers import provider_for
 
     try:
         record = json.loads((inventory.service_dir / (vm + RECORD)).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return "made by an older vmlab or elsewhere: its project is unknown", None
+        return "made by an older vmlab or elsewhere: its project is unknown", None, None
     root = Path(record["project"])
     if not (root / config.CONFIG_DIR / config.CONFIG_NAME).is_file():
-        return "its project %s no longer exists" % root, record["base"]
+        return "its project %s no longer exists" % root, record["base"], None
     try:
         project = config.load(str(root))
-    except config.ConfigError:
-        return None, record["base"]  # cannot tell: keep it
-    lab = project.labs.get(record["lab"])
+    except config.ConfigError as exc:
+        if exc.problem != config.NO_LABS:  # a typo must not cost a clone
+            return "Lab %s of project %s" % (record["lab"], root), record["base"], (
+                "project %s's config does not load (%s%s); fix it and run `vmlab clean` again" % (root, exc.key + ": " if exc.key else "", exc.problem))
+        project = None
+    lab = project and project.labs.get(record["lab"])
     if lab is None or lab.provider != inventory.provider:
-        return "project %s has no Lab %s on %s any more" % (root, record["lab"], inventory.provider.capitalize()), record["base"]
+        return "project %s has no Lab %s on %s any more" % (root, record["lab"], inventory.provider.capitalize()), record["base"], None
     if provider_for(project, lab).guest_id != vm:
-        return "project %s's Lab %s uses another clone now" % (root, record["lab"]), record["base"]
-    return None, record["base"]
+        return "project %s's Lab %s uses another clone now" % (root, record["lab"]), record["base"], None
+    return None, record["base"], None
 
 
 def _service_names(inventory):
