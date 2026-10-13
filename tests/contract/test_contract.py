@@ -21,6 +21,7 @@ with a Lab that sets session = "x11".
 
 import json
 import os
+import shlex
 import shutil
 import struct
 import subprocess
@@ -76,6 +77,8 @@ class Target:
             if self.os == "windows"
             else 'cp "$VMLAB_ARTIFACT" ~/contract-installed.txt'
         )
+        if self.os == "macos":
+            install += " && " + GRANT_MACOS_INSTALL
         config.write_text(
             lab_toml + "\n[labs.%s.grant]\n%s\n" % (self.lab, GRANTS[self.os])
             + '\n[labs.%s.app]\nartifact = "contract-artifact.txt"\ninstall = %s\n' % (self.lab, json.dumps(install)),
@@ -118,20 +121,20 @@ class Target:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-# The Lab's grant (test_10c): macOS by a bundle id, whose app the Scenario builds, and by an .app's
-# path, which doctor's check reads from its Info.plist; Linux by a path,
-# so to apps with no app id, as a command the Scenario runs over a Channel is; Windows by an exe path.
+# The Lab's grant (test_10c): macOS by an .app's path, whose bundle id and file URL grant.sh reads,
+# and by a bundle id; Linux by a path, so to apps with no app id, as a command the Scenario runs
+# over a Channel is; Windows by an exe path.
 GRANT_APP_WINDOWS = "C:\\vmlab-contract\\grant-fixture.exe"
 GRANTS = {
-    "macos": 'screen_capture = ["com.vmlab.contract-granted", "/System/Applications/TextEdit.app"]',
+    "macos": 'screen_capture = ["/Users/Shared/vmlab-grant/granted.app", "com.apple.TextEdit"]',
     "linux": 'screen_capture = ["/usr/bin/python3"]',
     "windows": "camera = [%s]" % json.dumps(GRANT_APP_WINDOWS),
 }
 
 # An .app that captures the screen with screencapture, as the reported app did, and writes its exit
-# status: built by the Guest's cc, ad-hoc signed. The Scenario builds one the Lab grants and one it does not.
-GRANT_MACOS = r'''
-SOURCE = """
+# status: built by the Guest's cc, ad-hoc signed, one the Lab grants and one it does not. They are
+# built at install, before the grant reads them.
+GRANT_MACOS_SOURCE = r"""
 #include <spawn.h>
 #include <stdio.h>
 #include <sys/wait.h>
@@ -140,41 +143,53 @@ int main(int argc, char **argv) {
     char *shot[] = {"/usr/sbin/screencapture", "-x", OUT ".png", 0};
     pid_t pid; int status = -1;
     if (posix_spawn(&pid, shot[0], 0, 0, shot, environ) == 0) waitpid(pid, &status, 0);
-    FILE *f = fopen(OUT ".done", "w"); fprintf(f, "%d\\n", status); fclose(f);
+    FILE *f = fopen(OUT ".done", "w"); fprintf(f, "%d\n", status); fclose(f);
     return 0;
 }
 """
-PLIST = """<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>%s</string><key>CFBundleExecutable</key><string>fixture</string>
+GRANT_MACOS_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.vmlab.contract-%s</string><key>CFBundleExecutable</key><string>fixture</string>
 <key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>"""
-BUILD = """set -e
-app="$HOME/vmlab-grant/$1.app"; rm -rf "$app"; mkdir -p "$app/Contents/MacOS"
-cc -DOUT="\\"/tmp/vmlab-grant-$1\\"" -o "$app/Contents/MacOS/fixture" "$HOME/vmlab-grant/fixture.c"
-cp "$HOME/vmlab-grant/$1.plist" "$app/Contents/Info.plist"
-codesign -s - --force "$app"
-rm -f /tmp/vmlab-grant-$1.*
-"""
+# The names replayd files the grant's approvals under, as grant.sh writes them.
+GRANT_MACOS_KEYS = (
+    "com.vmlab.contract-granted",
+    "/Users/Shared/vmlab-grant/granted.app/Contents/MacOS/fixture",
+    "file:///Users/Shared/vmlab-grant/granted.app/",
+    "com.apple.TextEdit",
+)
+# Builds them, then makes replayd load its approvals without the grant's keys, before the grant writes them.
+GRANT_MACOS_INSTALL = """{ d=/Users/Shared/vmlab-grant; mkdir -p "$d" && printf %%s %s > "$d/fixture.c" || exit 1
+for n in granted ungranted; do
+  app="$d/$n.app"; rm -rf "$app" /tmp/vmlab-grant-$n.png /tmp/vmlab-grant-$n.done; mkdir -p "$app/Contents/MacOS" &&
+  cc -DOUT="\\"/tmp/vmlab-grant-$n\\"" -o "$app/Contents/MacOS/fixture" "$d/fixture.c" &&
+  printf %s "$n" > "$app/Contents/Info.plist" && codesign -s - --force "$app" || exit 1
+done
+a="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals"
+for k in %s; do defaults delete "$a" "$k" 2>/dev/null; done
+launchctl kickstart -k "gui/$(id -u)/com.apple.replayd" && screencapture -x /tmp/vmlab-contract-install.png; }""" % (
+    shlex.quote(GRANT_MACOS_SOURCE), shlex.quote(GRANT_MACOS_PLIST), " ".join(shlex.quote(k) for k in GRANT_MACOS_KEYS))
 
-def capture(g, name, bundle_id):
-    # (did the app write its screenshot, did replayd raise an alert meanwhile)
-    g.put("~/vmlab-grant/%s.plist" % name, PLIST % bundle_id)
-    built = g.exec(["sh", "-c", BUILD, "sh", name], timeout=300)
-    g.check("the %s fixture builds with the Guest's cc" % name, built.ok, detail=built.stderr[-2000:])
+GRANT_MACOS = r"""
+def capture(g, name):
+    # (did the app write its screenshot, did replayd decide to alert meanwhile)
     start = g.exec(["date", "+%Y-%m-%d %H:%M:%S"]).stdout.strip()
-    g.exec(["sh", "-c", 'open -n "$HOME/vmlab-grant/$1.app"', "sh", name])
+    g.exec(["open", "-n", "/Users/Shared/vmlab-grant/%s.app" % name])
     done = g.wait_for(file="/tmp/vmlab-grant-%s.done" % name, timeout=30)["met"]
     wrote = done and g.exec(["test", "-s", "/tmp/vmlab-grant-%s.png" % name]).ok
-    log = g.exec(["log", "show", "--start", start, "--style", "compact", "--predicate", 'process == "replayd" AND eventMessage CONTAINS "+[SCAlert show"'])
-    return wrote, bool(log.stdout.count("SCAlert"))
+    # The full path: over SSH a bare `log` is zsh's builtin.
+    log = g.exec(["/usr/bin/log", "show", "--start", start, "--style", "compact", "--predicate", 'process == "replayd" AND eventMessage CONTAINS "+[SCAlert "'])
+    g.check("replayd's log is read", log.ok, detail=log.stderr[-2000:])
+    return wrote, "+[SCAlert " in log.stdout
 
 def scenario(g):
-    g.put("~/vmlab-grant/fixture.c", SOURCE)
-    wrote, alerted = capture(g, "granted", "com.vmlab.contract-granted")
+    # A capture by another client makes a replayd that kept stale approvals in memory write them back.
+    g.exec(["screencapture", "-x", "/tmp/vmlab-grant-other.png"])
+    wrote, alerted = capture(g, "granted")
     g.check("an app the Lab grants screen_capture writes its screenshot", wrote)
     g.check("and replayd raises no alert", not alerted)
-    wrote, _ = capture(g, "ungranted", "com.vmlab.contract-ungranted")
+    wrote, _ = capture(g, "ungranted")
     g.check("an app it does not grant is refused (TCC writes no file)", not wrote)
-'''
+"""
 
 # A non-interactive portal Screenshot from a command run over a Channel: an app with no app id.
 GRANT_LINUX = r'''

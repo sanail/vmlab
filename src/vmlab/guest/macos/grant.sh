@@ -5,8 +5,9 @@
 # bundle or a bare executable) or a bundle id. Runs as the Guest user, with passwordless sudo.
 # check prints one line per grant that does not hold and exits 1 if any.
 #
-# tccd reads new TCC.db rows at once and replayd its approvals at each capture, so no reboot is
-# needed. A grant is given to the responsible process, the app, also for a screencapture it starts.
+# tccd reads new TCC.db rows at once, so no reboot is needed. A running replayd keeps its approvals
+# in memory and writes them back at its next capture, so it is restarted after the write.
+# A grant is given to the responsible process, the app, also for a screencapture it starts.
 set -uo pipefail
 
 MODE="$1"; shift
@@ -14,20 +15,23 @@ SYS_DB="/Library/Application Support/com.apple.TCC/TCC.db"
 USER_DB="$HOME/Library/Application Support/com.apple.TCC/TCC.db"
 APPROVALS="$HOME/Library/Group Containers/group.com.apple.replayd/ScreenCaptureApprovals"
 missing=0
+restart_replayd=0
 miss() { printf '%s\n' "$*"; missing=1; }
 
 # Sets client, client_type (0 a bundle id, 1 a path) and keys, the names replayd may file the app's
-# approval under: an .app's bundle id and its executable's path (replayd files some clients by
-# path, SSH's sshd-keygen-wrapper), a bare executable's path.
+# approval under: an .app's bundle id, its executable's path and its file URL (an ad-hoc signed
+# app's), a bare executable's path (SSH's sshd-keygen-wrapper).
 resolve() {
-  local app="$1" plist="$1/Contents/Info.plist" exe
+  local app="$1" plist="$1/Contents/Info.plist" exe url
   if [ "${app#/}" = "$app" ]; then
     client="$app" client_type=0 keys=("$app")
   elif [ -f "$plist" ]; then
     client=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null) ||
       { problem="$plist has no CFBundleIdentifier"; return 1; }
     exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$plist" 2>/dev/null)
-    client_type=0 keys=("$client" "$app/Contents/MacOS/$exe")
+    url=$(/usr/bin/osascript -l JavaScript -e 'function run(a) { return $.NSURL.fileURLWithPathIsDirectory(a[0], true).absoluteString.js }' "$app") ||
+      { problem="no file URL for $app"; return 1; }
+    client_type=0 keys=("$client" "$app/Contents/MacOS/$exe" "$url")
   elif [ -f "$app" ]; then
     client="$app" client_type=1 keys=("$app")
   else
@@ -60,6 +64,7 @@ replayd() {  # without an approval, a capture with no picker raises "... is requ
         <key>kScreenCaptureApprovalLastUsed</key><date>$now</date>
         <key>kScreenCapturePrivacyHintDate</key><date>2100-01-01T00:00:00Z</date>
         <key>kScreenCapturePrivacyHintPolicy</key><integer>2592000</integer></dict>" || exit 1
+      restart_replayd=1
     elif ! defaults read "$APPROVALS" "$key" >/dev/null 2>&1; then
       miss "replayd has no Screen Recording approval for $key, so a capture raises its alert"
     fi
@@ -80,4 +85,7 @@ while [ $# -ge 2 ]; do
     microphone) tcc "$USER_DB" kTCCServiceMicrophone ;;
   esac
 done
+if [ $restart_replayd = 1 ]; then
+  launchctl kickstart -k "gui/$(id -u)/com.apple.replayd" || exit 1
+fi
 exit $missing

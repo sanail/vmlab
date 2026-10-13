@@ -86,6 +86,8 @@ A permission the Lab's OS has no dialog for is accepted and does nothing, so eve
 
 On macOS an `.app` is granted by the bundle id in its `Info.plist`, which holds for an ad-hoc signed build too,
 also when the app starts a tool (`screencapture`) that captures for it.
+replayd, though, files an ad-hoc signed app's approval under the app's location: give such an app by its path for
+`screen_capture`, or replayd still raises its alert.
 On Wayland an app started from a shell, as the `launch` recipe starts it, has no app id: a path grants every such app;
 an app id grants an app the portal knows by it (a `.desktop` launch).
 The portal's ScreenCast (screen sharing) still asks in its own picker, every session: `grant` does not cover it.
