@@ -136,4 +136,10 @@ folders), and the command that runs the suite without you: `.vmlab/run`.
   Each Lab's Run folder `.vmlab/runs/<timestamp>-<lab>/` holds `report.json`, `junit.xml`,
   `summary.md` and `screenshots/<scenario>/NN-<name>.png`, one folder per Scenario (a second Scenario of the same name
   in one Suite run gets `<scenario>-2`).
+  A failed or errored Scenario's entry in `report.json` also holds `calls`: its last 200 `g.*` calls, each with
+  `call` (the method's name), `args` (long values cut), `error` (null when it returned), `start_s` (seconds from the
+  Scenario's start) and `duration_s`; a `wait_for` is one call however often it polled.
+  `summary.md` lists the last 20 under its result: read them for the sequence that led to the failure before
+  bisecting the Scenario.
+  A passed Scenario has no `calls`.
 - Every `vmlab run` installs the Build artifact afresh, rebuilding it first when anything in its `inputs` is newer.

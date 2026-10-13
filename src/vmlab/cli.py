@@ -20,7 +20,7 @@ from vmlab.providers import provider_for
 from vmlab.providers.base import GuestError
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE = 0, 1, 2
-QUIET_HELP = "print no step lines (each step as it starts, and its time), only the results"
+QUIET_HELP = ("print no step lines (each Lab step, such as restoring Clean state, and each Scenario as it starts and ends, with its time), only the results")
 
 
 def main(argv=None):

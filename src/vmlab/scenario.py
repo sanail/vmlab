@@ -25,6 +25,7 @@ helpers from _name.py files next to it; they are re-imported for every Scenario.
 import ast
 import collections
 import contextlib
+import functools
 import importlib.util
 import json
 import os
@@ -45,6 +46,8 @@ OUTPUT_TAIL = 2000  # characters of a spawned process's output in the report of 
 BY_SCENARIO, WITH_RUN, BY_ITSELF, STILL_RUNNING = "scenario", "run", "exited", "failed"
 # How a Staged document ended: its report entry's "ended" (BY_SCENARIO and WITH_RUN too).
 ALREADY_GONE, STILL_OPEN = "gone", "failed"
+CALLS_KEPT = 200  # the last g.* calls a failed or errored Scenario's report lists
+ARG_CHARS = 300  # of one argument's repr in that list
 
 
 class ScenarioError(Exception):
@@ -100,9 +103,12 @@ class Guest:
         self._pointer_at = None
         self._spawner = provider.spawner()
         self.channel_use = ChannelUse()  # this Run's calls, including its app reset and launch
+        self.calls = collections.deque(maxlen=CALLS_KEPT)  # its g.* calls, written only when it does not pass
+        self._clock_started = time.monotonic()
 
     def _start_clock(self, limit):
         self._limit = limit
+        self._clock_started = time.monotonic()
         self._deadline = hostpower.awake_time() + limit
 
     def _remaining(self, doing):
@@ -445,6 +451,45 @@ class Guest:
         self.checks.append({"name": name, "passed": None, "skipped": True, "detail": reason, "kind": DETERMINISTIC})
 
 
+def _traced(method):
+    """method, recording each call in its Guest's calls."""
+
+    @functools.wraps(method)
+    def traced(self, *args, **kwargs):
+        began = time.monotonic()
+        entry = {"call": method.__name__, "args": call_args(args, kwargs), "start_s": round(began - self._clock_started, 3)}
+        self.calls.append(entry)
+        try:
+            result = method(self, *args, **kwargs)
+        except BaseException as exc:
+            entry["error"] = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+            raise
+        else:
+            entry["error"] = None
+            return result
+        finally:
+            entry["duration_s"] = round(time.monotonic() - began, 3)
+
+    return traced
+
+
+for _name, _method in list(vars(Guest).items()):
+    if not _name.startswith("_") and callable(_method):
+        setattr(Guest, _name, _traced(_method))
+
+
+def call_args(args, kwargs):
+    """A call's arguments as Python writes them, each cut to ARG_CHARS; a long str or bytes is cut before repr."""
+
+    def short(value):
+        if isinstance(value, (str, bytes)) and len(value) > ARG_CHARS:
+            return "%r...(%d long)" % (value[:ARG_CHARS], len(value))
+        text = repr(value)
+        return text if len(text) <= ARG_CHARS else text[:ARG_CHARS] + "..."
+
+    return ", ".join([short(a) for a in args] + ["%s=%s" % (k, short(v)) for k, v in kwargs.items()])
+
+
 PASS, FAIL, SKIP = "PASS", "FAIL", "SKIP"  # a Check's outcome, as the console and summary.md mark it
 
 
@@ -547,7 +592,7 @@ def run_scenario(path, guest, prepare, unreported):
     else:
         status = "passed"
     staged, spawned = guest._end_run(with_output=status != "passed")
-    return {
+    result = {
         "name": path.stem,
         "file": str(path),
         "status": status,
@@ -560,6 +605,9 @@ def run_scenario(path, guest, prepare, unreported):
         "channels": guest.channel_use.channels,
         "fallbacks": guest.channel_use.fallbacks,
     }
+    if status != "passed":
+        result["calls"] = list(guest.calls)
+    return result
 
 
 def _execute(path, guest, prepare):

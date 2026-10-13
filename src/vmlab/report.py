@@ -9,6 +9,7 @@ from collections import Counter
 from vmlab.arch import UNCOVERED
 from vmlab.scenario import ALREADY_GONE, BY_ITSELF, BY_SCENARIO, FAIL, OUTPUT_TAIL, PASS, SKIP, STILL_OPEN, STILL_RUNNING, VISUAL, WITH_RUN, failed, outcome
 
+CALLS_SHOWN = 20  # of a failed or errored Scenario's last calls, in summary.md
 STATUS_ORDER = ("passed", "failed", "error")  # of Scenarios; a Lab's Run may also be "skipped"
 # How a spawned process ended: its report entry's "ended".
 ENDED = {
@@ -222,6 +223,12 @@ def _markdown(report):
             lines.append("- Channel %s failed (%s); %s served %s" % (f["from"], f["reason"], f["to"], f["argv"]))
         if s["error"]:
             lines += ["", "```", s["error"], "```"]
+        if s.get("calls"):
+            shown = s["calls"][-CALLS_SHOWN:]
+            lines += ["", "Its last %d call(s)%s, seconds from its start and how long each took:" % (
+                len(shown), " (all %d in report.json)" % len(s["calls"]) if len(shown) < len(s["calls"]) else ""), ""]
+            lines += ["- %.2fs +%.2fs `%s(%s)`%s" % (c["start_s"], c["duration_s"], c["call"], c["args"], ": %s" % c["error"] if c["error"] else "")
+                      for c in shown]
         for d in s["staged"]:
             lines += ["", "- Staged document %s: %s" % (d["file"], CLOSED[d["ended"]])]
             if d.get("close_error"):

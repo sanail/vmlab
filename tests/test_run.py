@@ -399,3 +399,69 @@ class RunTest(VmlabTestCase):
         r = self.project.vmlab("run", "saved", str(ad_hoc / "try.py"), "saved")
 
         self.assertExit(r, 0)
+
+
+class CallTraceTest(VmlabTestCase):
+    """A failed or errored Scenario's report lists the g.* calls it made; a passed one's does not."""
+
+    def test_errored_scenario_lists_its_calls_one_per_wait_for(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("broken.py", """
+def scenario(g):
+    g.check("echo", g.exec(["echo", "x" * 5000]).ok)
+    g.wait_for(file="~/never-there", timeout=1)
+    g.get("~/missing.txt")
+""")
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        run_dir = self.project.only_run_dir()
+        [scenario] = self.project.report(run_dir)["scenarios"]
+        self.assertEqual(scenario["status"], "error")
+        calls = scenario["calls"]
+        self.assertEqual([c["call"] for c in calls], ["exec", "check", "wait_for", "get"])
+        exec_call, _, wait, get = calls
+        self.assertIsNone(exec_call["error"])
+        self.assertLess(len(exec_call["args"]), 500)
+        self.assertIn("'echo'", exec_call["args"])
+        self.assertIn("timeout=1", wait["args"])
+        self.assertGreaterEqual(wait["duration_s"], 0.9)
+        self.assertGreaterEqual(get["start_s"], wait["start_s"] + wait["duration_s"] - 0.01)
+        self.assertIn("missing.txt", get["error"])
+        summary = (run_dir / "summary.md").read_text()
+        self.assertIn("wait_for(file='~/never-there', timeout=1)", summary)
+        self.assertIn("missing.txt", summary.split("## broken")[1])
+
+    def test_only_the_last_calls_are_kept(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("long.py", """
+def scenario(g):
+    for i in range(250):
+        g.exec(["echo", str(i)])
+    g.check("fails", False)
+""")
+
+        r = self.project.vmlab("run")
+
+        self.assertExit(r, 1)
+        [scenario] = self.project.report(self.project.only_run_dir())["scenarios"]
+        calls = scenario["calls"]
+        self.assertEqual(len(calls), 200)
+        self.assertEqual(calls[0]["args"], "['echo', '51']")
+        self.assertEqual(calls[-1]["call"], "check")
+        summary = (self.project.only_run_dir() / "summary.md").read_text()
+        self.assertIn("last 20 call(s) (all 200 in report.json)", summary)
+        self.assertNotIn("'230'", summary)
+        self.assertIn("'231'", summary)
+
+    def test_passed_scenario_has_no_calls(self):
+        self.project.config(FAKE_LAB)
+        self.project.scenario("smoke.py", PASSING)
+
+        self.assertExit(self.project.vmlab("run"), 0)
+
+        run_dir = self.project.only_run_dir()
+        [scenario] = self.project.report(run_dir)["scenarios"]
+        self.assertNotIn("calls", scenario)
+        self.assertNotIn("call(s)", (run_dir / "summary.md").read_text())
