@@ -18,18 +18,37 @@ missing=0
 restart_replayd=0
 miss() { printf '%s\n' "$*"; missing=1; }
 
+# The .app with bundle id $1: LaunchServices knows an app once it has run, and one copied in a moment
+# ago (no Spotlight in a Guest) is found on disk, outside the folders TCC guards.
+app_path() {
+  local p
+  p=$(osascript -l JavaScript -e 'function run(a) { ObjC.import("AppKit"); var u = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier(a[0]); return u.isNil() ? "" : u.path.js }' "$1" 2>/dev/null)
+  if [ -d "$p" ]; then printf '%s\n' "$p"; return; fi
+  while IFS= read -r p; do
+    [ "$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$p/Contents/Info.plist" 2>/dev/null)" = "$1" ] &&
+      { printf '%s\n' "$p"; return; }
+  done < <(find /Applications /Users /opt /usr/local \( -name Library -o -name '.*' -o -name Desktop -o -name Documents -o -name Downloads \) -prune -o -name '*.app' -type d -print -prune 2>/dev/null)
+}
+
 # Sets client, client_type (0 a bundle id, 1 a path) and keys, the names replayd may file the app's
 # approval under: an .app's bundle id, its executable's path and its file URL (an ad-hoc signed
-# app's), a bare executable's path (SSH's sshd-keygen-wrapper).
+# app's), a bare executable's path (SSH's sshd-keygen-wrapper). Only screen_capture looks an id's app
+# up, for replayd; unkeyed: an id whose app is not found.
 resolve() {
-  local app="$1" plist="$1/Contents/Info.plist" exe url
+  local app="$1" plist exe url found
+  unkeyed=0
   if [ "${app#/}" = "$app" ]; then
-    client="$app" client_type=0 keys=("$app")
-  elif [ -f "$plist" ]; then
+    [ "$2" = screen_capture ] || { client="$app" client_type=0 keys=("$app"); return; }
+    found=$(app_path "$app")
+    [ -n "$found" ] || { client="$app" client_type=0 keys=("$app") unkeyed=1; return; }
+    app="$found"
+  fi
+  plist="$app/Contents/Info.plist"
+  if [ -f "$plist" ]; then
     client=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null) ||
       { problem="$plist has no CFBundleIdentifier"; return 1; }
     exe=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$plist" 2>/dev/null)
-    url=$(/usr/bin/osascript -l JavaScript -e 'function run(a) { return $.NSURL.fileURLWithPathIsDirectory(a[0], true).absoluteString.js }' "$app") ||
+    url=$(osascript -l JavaScript -e 'function run(a) { return $.NSURL.fileURLWithPathIsDirectory(a[0], true).absoluteString.js }' "$app") ||
       { problem="no file URL for $app"; return 1; }
     client_type=0 keys=("$client" "$app/Contents/MacOS/$exe" "$url")
   elif [ -f "$app" ]; then
@@ -55,6 +74,9 @@ tcc() {  # tcc DB SERVICE
 
 replayd() {  # without an approval, a capture with no picker raises "... is requesting to bypass the system private window picker"
   local key now
+  if [ "$MODE" = check ] && [ $unkeyed = 1 ]; then
+    miss "no app with bundle id $client is installed, so replayd's approval is filed under the id alone, which an ad-hoc signed app's capture does not read: give the app by its path"
+  fi
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   for key in "${keys[@]}"; do
     if [ "$MODE" = apply ]; then
@@ -73,7 +95,7 @@ replayd() {  # without an approval, a capture with no picker raises "... is requ
 
 while [ $# -ge 2 ]; do
   name="$1" app="$2"; shift 2
-  if ! resolve "$app"; then
+  if ! resolve "$app" "$name"; then
     [ "$MODE" = check ] || { echo "$problem" >&2; exit 1; }
     miss "$name cannot be granted: $problem"; continue
   fi

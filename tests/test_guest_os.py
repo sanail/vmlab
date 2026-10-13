@@ -255,3 +255,23 @@ class GrantCallTest(unittest.TestCase):
                     self.assertEqual(json.loads(body.split(b"\n", 1)[0]), {"grants": pairs})
                 else:
                     self.assertEqual(argv[-5:], ["apply"] + pairs[0] + pairs[1])
+
+
+@unittest.skipUnless(sys.platform == "darwin", "PlistBuddy and defaults are macOS's")
+class MacosGrantCheckTest(unittest.TestCase):
+    """macOS grant.sh in check mode, run on the Host with the Guest's tools stubbed: nothing outside the test's folder."""
+
+    def test_a_bundle_id_no_installed_app_has_is_named_with_its_fix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stubs = Path(tmp) / "bin"
+            stubs.mkdir()
+            for tool, body in (("sudo", "exit 1"), ("osascript", "exit 0"), ("find", "exit 0")):
+                (stubs / tool).write_text("#!/bin/sh\n%s\n" % body)
+                (stubs / tool).chmod(0o755)
+            script = Path(__file__).resolve().parent.parent / "src" / "vmlab" / "guest" / "macos" / "grant.sh"
+            env = dict(os.environ, HOME=tmp, PATH="%s:/usr/bin:/bin" % stubs)
+            proc = subprocess.run(["bash", str(script), "check", "screen_capture", "com.example.adhoc"],
+                                  env=env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("no app with bundle id com.example.adhoc is installed", proc.stdout)
+        self.assertIn("give the app by its path", proc.stdout)

@@ -121,19 +121,19 @@ class Target:
             shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-# The Lab's grant (test_10c): macOS by an .app's path, whose bundle id and file URL grant.sh reads,
-# and by a bundle id; Linux by a path, so to apps with no app id, as a command the Scenario runs
-# over a Channel is; Windows by an exe path.
+# The Lab's grant (test_10c): macOS by bundle ids, an ad-hoc signed .app's among them, which grant.sh
+# finds on disk to key replayd's approval by its file URL; Linux by a path, so to apps with no app id,
+# as a command the Scenario runs over a Channel is; Windows by an exe path.
 GRANT_APP_WINDOWS = "C:\\vmlab-contract\\grant-fixture.exe"
 GRANTS = {
-    "macos": 'screen_capture = ["/Users/Shared/vmlab-grant/granted.app", "com.apple.TextEdit"]',
+    "macos": 'screen_capture = ["com.vmlab.contract-granted", "com.apple.TextEdit"]',
     "linux": 'screen_capture = ["/usr/bin/python3"]',
     "windows": "camera = [%s]" % json.dumps(GRANT_APP_WINDOWS),
 }
 
 # An .app that captures the screen with screencapture, as the reported app did, and writes its exit
 # status: built by the Guest's cc, ad-hoc signed, one the Lab grants and one it does not. They are
-# built at install, before the grant reads them.
+# built at install, before the grant looks for them; LaunchServices does not know them yet.
 GRANT_MACOS_SOURCE = r"""
 #include <spawn.h>
 #include <stdio.h>
