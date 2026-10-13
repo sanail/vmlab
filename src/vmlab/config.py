@@ -18,12 +18,16 @@ CONFIG_NAME = "vmlab.toml"
 
 OSES = ("macos", "windows", "linux")
 ARCHES = ("arm64", "x86_64")
-LAB_KEYS = ("provider", "os", "arch", "language", "scale", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "app")
+LAB_KEYS = ("provider", "os", "arch", "language", "scale", "memory_gb", "boot_timeout", "step_timeout", "scenario_timeout", "grant", "app")
 # ...plus one options table named after each Provider
 APP_KEYS = ("artifact", "build", "inputs", "build_timeout", "install", "install_timeout", "quit", "process", "quit_timeout", "launch", "ready", "ready_timeout", "env", "state", "notification_id")
 # [labs.<name>.app] ready: one wait_for condition, in wait_for's keywords
 READY_CONDITIONS = ("text", "role", "process", "file", "log", "exec", "tray")  # text and role make one: an element
 READY_KEYS = READY_CONDITIONS + ("app", "pattern", "gone")
+# Permissions an OS asks the user for by a dialog, granted to apps before each Run (vmlab.deploy.grant);
+# a Guest OS that has no dialog for one does nothing for it.
+GRANTS = ("screen_capture", "accessibility", "input_monitoring", "camera", "microphone")
+GRANT_EXAMPLE = 'e.g. grant = { screen_capture = ["/Applications/MyApp.app"] }'
 DEFAULT_BUILD_TIMEOUT = 1800
 DEFAULT_INSTALL_TIMEOUT = 600
 DEFAULT_MEMORY_GB = 4
@@ -70,6 +74,7 @@ class Lab:
         self.boot_timeout = settings.get("boot_timeout", DEFAULT_BOOT_TIMEOUT)  # s from power-on until reachable
         self.step_timeout = settings.get("step_timeout", DEFAULT_STEP_TIMEOUT)  # s per Guest call
         self.scenario_timeout = settings.get("scenario_timeout", DEFAULT_SCENARIO_TIMEOUT)  # s per Scenario
+        self.grant = settings.get("grant", {})  # permission name -> apps (Guest paths or ids)
         self.app = settings.get("app") or App({})
 
 
@@ -235,6 +240,7 @@ def load(start):
             boot_timeout=_positive_number(path, table, key, "boot_timeout", DEFAULT_BOOT_TIMEOUT),
             step_timeout=_positive_number(path, table, key, "step_timeout", DEFAULT_STEP_TIMEOUT),
             scenario_timeout=_positive_number(path, table, key, "scenario_timeout", DEFAULT_SCENARIO_TIMEOUT),
+            grant=_grant(path, table, key),
             app=app,
         )
 
@@ -271,6 +277,18 @@ def _scale(path, table, key, allowed, os_name):
     if value not in allowed:
         raise ConfigError(path, key + ".scale", "this Lab's %s shows %s, not %g" % (os_name, listed, value),
                           "e.g. scale = %g, or leave scale out to keep the scale the Guest has" % allowed[-1])  # fmt: skip
+    return value
+
+
+def _grant(path, table, key):
+    value = table.get("grant", {})
+    if not isinstance(value, dict):
+        raise ConfigError(path, key + ".grant", "must be a table of permission names", GRANT_EXAMPLE)
+    for name, apps in value.items():
+        if name not in GRANTS:
+            raise ConfigError(path, "%s.grant.%s" % (key, name), "unknown permission", "use one of: %s" % ", ".join(GRANTS))
+        if not (isinstance(apps, list) and apps and all(isinstance(a, str) and a.strip() for a in apps)):
+            raise ConfigError(path, "%s.grant.%s" % (key, name), "must be a non-empty list of apps: their Guest paths or ids", GRANT_EXAMPLE)
     return value
 
 

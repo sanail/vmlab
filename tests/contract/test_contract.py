@@ -77,7 +77,8 @@ class Target:
             else 'cp "$VMLAB_ARTIFACT" ~/contract-installed.txt'
         )
         config.write_text(
-            lab_toml + '\n[labs.%s.app]\nartifact = "contract-artifact.txt"\ninstall = %s\n' % (self.lab, json.dumps(install)),
+            lab_toml + "\n[labs.%s.grant]\n%s\n" % (self.lab, GRANTS[self.os])
+            + '\n[labs.%s.app]\nartifact = "contract-artifact.txt"\ninstall = %s\n' % (self.lab, json.dumps(install)),
             encoding="utf-8",
         )
 
@@ -116,6 +117,105 @@ class Target:
             self.vmlab("down")
             shutil.rmtree(self.tmp, ignore_errors=True)
 
+
+# The Lab's grant (test_10c): macOS by a bundle id, whose app the Scenario builds, and by an .app's
+# path, which doctor's check reads from its Info.plist; Linux by a path,
+# so to apps with no app id, as a command the Scenario runs over a Channel is; Windows by an exe path.
+GRANT_APP_WINDOWS = "C:\\vmlab-contract\\grant-fixture.exe"
+GRANTS = {
+    "macos": 'screen_capture = ["com.vmlab.contract-granted", "/System/Applications/TextEdit.app"]',
+    "linux": 'screen_capture = ["/usr/bin/python3"]',
+    "windows": "camera = [%s]" % json.dumps(GRANT_APP_WINDOWS),
+}
+
+# An .app that captures the screen with screencapture, as the reported app did, and writes its exit
+# status: built by the Guest's cc, ad-hoc signed. The Scenario builds one the Lab grants and one it does not.
+GRANT_MACOS = r'''
+SOURCE = """
+#include <spawn.h>
+#include <stdio.h>
+#include <sys/wait.h>
+extern char **environ;
+int main(int argc, char **argv) {
+    char *shot[] = {"/usr/sbin/screencapture", "-x", OUT ".png", 0};
+    pid_t pid; int status = -1;
+    if (posix_spawn(&pid, shot[0], 0, 0, shot, environ) == 0) waitpid(pid, &status, 0);
+    FILE *f = fopen(OUT ".done", "w"); fprintf(f, "%d\\n", status); fclose(f);
+    return 0;
+}
+"""
+PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>%s</string><key>CFBundleExecutable</key><string>fixture</string>
+<key>CFBundlePackageType</key><string>APPL</string><key>LSUIElement</key><true/></dict></plist>"""
+BUILD = """set -e
+app="$HOME/vmlab-grant/$1.app"; rm -rf "$app"; mkdir -p "$app/Contents/MacOS"
+cc -DOUT="\\"/tmp/vmlab-grant-$1\\"" -o "$app/Contents/MacOS/fixture" "$HOME/vmlab-grant/fixture.c"
+cp "$HOME/vmlab-grant/$1.plist" "$app/Contents/Info.plist"
+codesign -s - --force "$app"
+rm -f /tmp/vmlab-grant-$1.*
+"""
+
+def capture(g, name, bundle_id):
+    # (did the app write its screenshot, did replayd raise an alert meanwhile)
+    g.put("~/vmlab-grant/%s.plist" % name, PLIST % bundle_id)
+    built = g.exec(["sh", "-c", BUILD, "sh", name], timeout=300)
+    g.check("the %s fixture builds with the Guest's cc" % name, built.ok, detail=built.stderr[-2000:])
+    start = g.exec(["date", "+%Y-%m-%d %H:%M:%S"]).stdout.strip()
+    g.exec(["sh", "-c", 'open -n "$HOME/vmlab-grant/$1.app"', "sh", name])
+    done = g.wait_for(file="/tmp/vmlab-grant-%s.done" % name, timeout=30)["met"]
+    wrote = done and g.exec(["test", "-s", "/tmp/vmlab-grant-%s.png" % name]).ok
+    log = g.exec(["log", "show", "--start", start, "--style", "compact", "--predicate", 'process == "replayd" AND eventMessage CONTAINS "+[SCAlert show"'])
+    return wrote, bool(log.stdout.count("SCAlert"))
+
+def scenario(g):
+    g.put("~/vmlab-grant/fixture.c", SOURCE)
+    wrote, alerted = capture(g, "granted", "com.vmlab.contract-granted")
+    g.check("an app the Lab grants screen_capture writes its screenshot", wrote)
+    g.check("and replayd raises no alert", not alerted)
+    wrote, _ = capture(g, "ungranted", "com.vmlab.contract-ungranted")
+    g.check("an app it does not grant is refused (TCC writes no file)", not wrote)
+'''
+
+# A non-interactive portal Screenshot from a command run over a Channel: an app with no app id.
+GRANT_LINUX = r'''
+SHOT = """
+import os, gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+bus = Gio.bus_get_sync(Gio.BusType.SESSION)
+loop, token, answer = GLib.MainLoop(), "vmlab%d" % os.getpid(), []
+path = "/org/freedesktop/portal/desktop/request/%s/%s" % (bus.get_unique_name()[1:].replace(".", "_"), token)
+bus.signal_subscribe(None, "org.freedesktop.portal.Request", "Response", path, None, 0, lambda *a: (answer.append(a[5].unpack()), loop.quit()))
+bus.call_sync("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Screenshot", "Screenshot",
+              GLib.Variant("(sa{sv})", ("", {"handle_token": GLib.Variant("s", token), "interactive": GLib.Variant("b", False)})), None, 0, -1, None)
+GLib.timeout_add_seconds(10, loop.quit)
+loop.run()
+print(answer[0][0] if answer else "no answer")
+"""
+SESSION = 'loginctl show-session "$(loginctl show-user "$(id -u)" -p Display --value)" -p Type --value'
+BUS = 'export XDG_RUNTIME_DIR=/run/user/$(id -u) DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus; exec python3 -c "$1"'
+
+def scenario(g):
+    if g.exec(["sh", "-c", SESSION]).stdout.strip() != "wayland":
+        g.skip("a portal Screenshot with no dialog", "X11 asks for no screenshot permission")
+        g.check("the Lab's grant is accepted on X11 (the Run got past installing)", True)
+        return
+    r = g.exec(["sh", "-c", BUS, "sh", SHOT], timeout=30)
+    g.check("a non-interactive portal Screenshot is answered at once, with no dialog", r.stdout.strip() == "0", detail=r.stdout + r.stderr)
+'''
+
+GRANT_WINDOWS = r'''
+READ = """
+$store = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam'
+foreach ($key in $store, "$store\\NonPackaged", ("$store\\NonPackaged\\" + ($env:APP -replace '\\\\', '#'))) {
+    (Get-ItemProperty -LiteralPath $key -Name Value -ErrorAction SilentlyContinue).Value
+}
+"""
+
+def scenario(g):
+    r = g.exec(["powershell", "-NoProfile", "-Command", READ], env={"APP": APP})
+    g.check("the ConsentStore allows the camera to the exe path", r.stdout.split() == ["Allow"] * 3, detail=r.stdout + r.stderr)
+'''
 
 # Per-OS commands, so one Scenario covers every Guest.
 COMMANDS = """
@@ -1341,6 +1441,15 @@ def scenario(g):
         )  # fmt: skip
         self.assertEqual(put.returncode, 0, put.stderr)
         self.target.vmlab("exec", "--lab", self.target.lab, "--", *self.remove_argv(put.stdout.decode().strip()))
+
+    def test_10c_grant_gives_the_app_its_permissions_with_no_dialog(self):
+        if self.target.provider == "fake":
+            self.skipTest("the Fake grants nothing: tests/test_deploy.py covers when grants are given")
+        body = {"macos": GRANT_MACOS, "linux": GRANT_LINUX, "windows": "APP = %r\n" % GRANT_APP_WINDOWS + GRANT_WINDOWS}[self.target.os]
+        self.assertPassed(*self.target.scenario("grant.py", body))
+        proc = self.target.vmlab("doctor", self.target.lab, "--json")
+        [grant] = [f for f in json.loads(proc.stdout) if f["check"] == "Grant"]
+        self.assertEqual(grant["status"], "ok", grant)
 
     def test_11_restore_returns_to_clean_state(self):
         self.assertPassed(*self.target.scenario("dirty.py", COMMANDS + """

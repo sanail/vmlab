@@ -4,6 +4,8 @@ A Scenario is a Python file defining `scenario(g)`.
 Before it runs, vmlab quits the app (waiting for its process to go, if the Lab names one),
 removes the Lab's `app.state` paths and launches the app (the Lab's `[labs.LAB.app]` recipes),
 waiting for its `ready` condition if the Lab has one; that wait is not on the Scenario's clock.
+The permissions in the Lab's `grant` (Screen Recording, Accessibility, camera...) are given before that, after the
+app's install ([app-recipes.md](app-recipes.md)), so no OS dialog asks for them during a Scenario.
 
 ```python
 FRESH = True     # optional: restore Clean state before this Scenario

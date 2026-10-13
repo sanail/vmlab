@@ -192,3 +192,21 @@ class LabScaleTest(VmlabTestCase):
         r = self.project.vmlab("up")
         self.assertExit(r, 1)
         self.assertIn("Lab mac asks for scale 1, but its Guest shows 2", r.err)
+
+
+class GrantConfigTest(VmlabTestCase):
+    assertConfigError = ConfigErrorTest.assertConfigError
+
+    def test_grant_must_be_a_table(self):
+        self.project.config(FAKE_LAB + 'grant = ["screen_capture"]\n')
+        self.assertConfigError("labs.mac.grant", "must be a table", "screen_capture = [")
+
+    def test_an_unknown_permission_lists_the_known_ones(self):
+        self.project.config(FAKE_LAB + 'grant = { screen_recording = ["/Applications/MyApp.app"] }\n')
+        self.assertConfigError("labs.mac.grant.screen_recording", "unknown permission", "screen_capture, accessibility, input_monitoring, camera, microphone")
+
+    def test_apps_must_be_a_non_empty_list_of_strings(self):
+        for apps in ("[]", '"/Applications/MyApp.app"', "[1]", '[""]'):
+            with self.subTest(apps=apps):
+                self.project.config(FAKE_LAB + "grant = { camera = %s }\n" % apps)
+                self.assertConfigError("labs.mac.grant.camera", "non-empty list of apps")

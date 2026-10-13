@@ -562,3 +562,79 @@ class QuitConfigTest(VmlabTestCase):
         self.project.config(FAKE_LAB + '[labs.mac.app]\nquit = "true"\nprocess = "no-such-process-vmlab"\nquit_timeout = 5\n')
         self.project.scenario("a.py", PASS)
         self.assertExit(self.project.vmlab("run"), 0)
+
+
+GRANT = 'grant = { screen_capture = ["/Applications/MyApp.app"], camera = ["com.example.myapp", "/usr/local/bin/helper"] }\n'
+GRANT_LOG = """
+def scenario(g):
+    log = g.exec(["sh", "-c", "cat ~/deploy.log"]).stdout.split()
+    g.check("recipe order", log == %r, detail=" ".join(log))
+"""
+
+
+class GrantTest(VmlabTestCase):
+    """[labs.LAB] grant: given after install and before launch, at every restore."""
+
+    def setUp(self):
+        super().setUp()
+        (self.project.root / "app" / "MyApp.zip").write_text("app-bytes")
+
+    def calls(self):
+        """The Fake's log: restores and Guest commands, each as "restore", "grant", or the recipe's word."""
+        log = next(self.project.home.glob("fake/*/commands.jsonl")).read_text().splitlines()
+        calls = []
+        for event in map(json.loads, log):
+            argv = event.get("argv") or []
+            if event["event"] == "restore":
+                calls.append("restore")
+            elif "vmlab-grant" in argv:
+                calls.append("grant " + " ".join(argv[argv.index("vmlab-grant") + 1 :]))
+            elif len(argv) == 3 and argv[:2] == ["sh", "-c"] and ">> ~/deploy.log" in argv[2]:
+                calls.append(argv[2].split()[1].split("-")[0])
+        return calls
+
+    def test_grants_follow_install_and_precede_launch_at_every_restore(self):
+        self.project.config(FAKE_LAB + GRANT + RECIPE)
+        self.project.scenario("a.py", PASS)
+        self.project.scenario("b_fresh.py", "FRESH = True\n" + PASS)
+        self.assertExit(self.project.vmlab("run"), 0)
+        granted = "grant screen_capture /Applications/MyApp.app camera com.example.myapp camera /usr/local/bin/helper"
+        self.assertEqual(self.calls(), ["restore", "install", granted, "quit", "launch", "restore", "install", granted, "quit", "launch"])
+
+    def test_deploy_and_an_ad_hoc_run_grant_too(self):
+        self.project.config(FAKE_LAB + 'grant = { accessibility = ["/Applications/MyApp.app"] }\n' + RECIPE)
+        self.assertExit(self.project.vmlab("deploy", "mac"), 0)
+        check = self.project.root / "check.py"
+        check.write_text(PASS)
+        self.assertExit(self.project.vmlab("run", check), 0)
+        grants = [c for c in self.calls() if c.startswith("install") or c.startswith("grant")]
+        self.assertEqual(grants, ["install", "grant accessibility /Applications/MyApp.app"] * 2)
+        self.assertExit(self.project.vmlab("down", "mac"), 0)
+
+    def test_a_lab_without_an_artifact_still_grants(self):
+        self.project.config(FAKE_LAB + 'grant = { input_monitoring = ["/System/Applications/Utilities/Terminal.app"] }\n')
+        self.project.scenario("a.py", PASS)
+        self.assertExit(self.project.vmlab("run"), 0)
+        self.assertEqual(self.calls(), ["restore", "grant input_monitoring /System/Applications/Utilities/Terminal.app"])
+
+    def test_every_name_is_accepted_on_every_os(self):
+        names = ("screen_capture", "accessibility", "input_monitoring", "camera", "microphone")
+        for os_name in ("macos", "linux", "windows"):
+            with self.subTest(os=os_name):
+                self.project.config('[labs.mac]\nprovider = "fake"\nos = "%s"\ngrant = { %s }\n'
+                                    % (os_name, ", ".join('%s = ["app"]' % n for n in names)))  # fmt: skip
+                self.assertExit(self.project.vmlab("status"), 0)
+
+    def test_doctor_says_a_grant_does_not_hold_until_deploy_gives_it(self):
+        self.project.config(FAKE_LAB + GRANT + RECIPE)
+        self.assertExit(self.project.vmlab("up", "mac"), 0)
+        r = self.project.vmlab("doctor", "mac")
+        self.assertIn("Grant", r.out)
+        self.assertIn("screen_capture is not granted to /Applications/MyApp.app", r.out)
+        self.assertIn("vmlab deploy mac", r.out)
+        self.assertExit(self.project.vmlab("deploy", "mac"), 0)
+        r = self.project.vmlab("doctor", "mac")
+        self.assertIn("camera, screen_capture granted", r.out)
+        self.assertNotIn("is not granted", r.out)
+        self.assertExit(self.project.vmlab("down", "mac"), 0)
+

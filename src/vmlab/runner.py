@@ -272,7 +272,7 @@ def deploy(project, lab_names, out, stop_command="vmlab down", steps_out=None):
                 if guest_key(provider) in started_guests:
                     kept.append((lab.name, provider))
                 provider.up()
-                guest_artifact = install(provider, lab, built["artifact"], progress=steps) if built else None
+                guest_artifact = install(provider, lab, built and built["artifact"], progress=steps)
                 prepare_run(provider, lab, guest_artifact, launch_app=bool(lab.app.launch), progress=steps)
             finally:
                 lock.release()
@@ -507,11 +507,11 @@ class _LabRun:
             with self.progress.step("restoring Clean state"):
                 provider.restore()
             state["clean"] = True
-            state["guest_artifact"] = install(provider, lab, artifact, progress=self.progress) if artifact else None
+            state["guest_artifact"] = install(provider, lab, artifact, progress=self.progress)
 
         if not ad_hoc or fresh:
             restore()
-        elif artifact:
+        else:
             state["guest_artifact"] = install(provider, lab, artifact, progress=self.progress)
 
         def prepare(scenario_fresh, launch_app):

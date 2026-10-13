@@ -77,6 +77,11 @@ guest**, checking that the **Guest** shows it.
 English (en-US) unless the **Lab** says otherwise.
 _Avoid_: locale, display language (both name one OS's part of it)
 
+**Grant**:
+A permission the **Guest OS** would ask the user for in a dialog (screen capture, accessibility, camera...),
+which a **Lab** gives to apps before each **Run**, named the same on every **Guest OS**.
+_Avoid_: TCC grant (one OS's form of it), consent
+
 **Scenario**:
 An ordered sequence of steps performed against the application in a **Guest**, containing **Checks**.
 _Avoid_: test case, script, flow

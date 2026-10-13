@@ -5,7 +5,8 @@
   VMLAB_LANGUAGE (the Lab language, e.g. ru-RU).
 - deliver + install: once per suite, and again after any restore. The artifact
   is copied to a uniquely named Guest folder (shared-folder caches never serve
-  a stale copy), then the install recipe runs.
+  a stale copy), then the install recipe runs. Then the Lab's grant is given,
+  so an app it names by path is installed by then.
 - before every Run: quit (exit code ignored) and wait for the app's process to go, if the Lab
   names one, remove the app state paths, launch, then wait for the app's ready condition, if
   it has one.
@@ -19,6 +20,7 @@ import glob
 import json
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
@@ -81,7 +83,11 @@ def _build(project, lab, log_path):
 
 
 def install(provider, lab, host_artifact, progress=QUIET):
-    """Deliver the artifact into the Guest and run the install recipe. Returns its Guest path."""
+    """Deliver the artifact into the Guest, run the install recipe and give the Lab's grant.
+    Returns the artifact's Guest path; None, with only the grant given, when there is no artifact."""
+    if not host_artifact:
+        grant(provider, lab, progress)
+        return None
     with progress.step("delivering"):
         provider.remove_paths([GUEST_ARTIFACTS], timeout=lab.step_timeout)
         unique = "%s-%d" % (time.strftime("%Y%m%dT%H%M%S"), os.getpid())
@@ -89,7 +95,39 @@ def install(provider, lab, host_artifact, progress=QUIET):
     if lab.app.install:
         with progress.step("installing"):
             _recipe(provider, lab, "install", guest_artifact, lab.app.install_timeout)
+    grant(provider, lab, progress)
     return guest_artifact
+
+
+def grant(provider, lab, progress=QUIET):
+    """Give the Lab's permissions to its apps, as a user would answer the OS's dialogs."""
+    if not lab.grant:
+        return
+    with progress.step("granting"):
+        result = _grant_call(provider, lab, "apply", lab.step_timeout)
+    if not result.ok:
+        raise DeployError(
+            "granting labs.%s.grant failed:\n%s" % (lab.name, _tail(result.stdout + result.stderr)),
+            "give each app as the Guest knows it: its installed path (installed by the install recipe) or its id",
+        )
+
+
+def missing_grants(provider, lab, timeout):
+    """The lines saying which of the Lab's grants do not hold in the Guest; [] when all do."""
+    result = _grant_call(provider, lab, "check", timeout)
+    if result.ok:
+        return []
+    return result.stdout.strip().splitlines() or [_tail(result.stderr)]
+
+
+def _grant_call(provider, lab, mode, timeout):
+    argv, script = provider.guest_os.grant_call(mode, [[name, app] for name, apps in lab.grant.items() for app in apps])
+    if script is None:
+        return provider.exec(argv, timeout)
+    with tempfile.TemporaryFile() as stdin:  # a Channel hands the Guest a real file
+        stdin.write(script.read())
+        stdin.seek(0)
+        return provider.exec(argv, timeout, stdin=stdin)
 
 
 def prepare_run(provider, lab, guest_artifact, launch_app=True, progress=QUIET):

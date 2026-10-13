@@ -9,10 +9,14 @@ POSIX but keeps its Lab's Guest OS for the UI contract.
 The error handling around these commands (exit codes, messages) stays on the Provider.
 """
 
+import io
+import pkgutil
+
 from vmlab import ui, uihelpers
 from vmlab.config import UsageError
 from vmlab.providers import spawning
 from vmlab.providers.base import NO_FILE, ps_path, sh_expand_tilde
+from vmlab.providers.windows import helper_call
 
 
 class GuestOS:
@@ -46,6 +50,11 @@ class GuestOS:
 
     def ui_helper(self, provider):
         """The Guest-side helper behind the UI contract (vmlab.uihelpers)."""
+        raise NotImplementedError
+
+    def grant_call(self, mode, grants):
+        """(argv, stdin) that apply ("apply") or check ("check") grants, (permission name, app) pairs:
+        exit 0 when done or holding; a check prints a line per grant that does not hold and exits 1."""
         raise NotImplementedError
 
     def split_path(self, guest_path):
@@ -90,6 +99,9 @@ class MacOS(Posix):
     def ui_helper(self, provider):
         return uihelpers.MacHelper(provider)
 
+    def grant_call(self, mode, grants):
+        return _script_call("/bin/bash", "macos", mode, grants)
+
     def probes(self):
         return ui.MacProbes()  # LaunchServices lets go of a quit app after its process has gone
 
@@ -103,6 +115,9 @@ class Linux(Posix):
 
     def ui_helper(self, provider):
         return uihelpers.LinuxHelper(provider)
+
+    def grant_call(self, mode, grants):
+        return _script_call("/bin/sh", "linux", mode, grants)
 
 
 class Windows(GuestOS):
@@ -142,6 +157,9 @@ class Windows(GuestOS):
     def ui_helper(self, provider):
         return uihelpers.WindowsHelper(provider)
 
+    def grant_call(self, mode, grants):
+        return helper_call("grant.ps1", mode, {"grants": grants})
+
 
 class FakeGuestOS(Posix):
     """A Fake Lab's Guest OS: commands run in the Host's POSIX shell; the UI contract is that of
@@ -168,6 +186,19 @@ class FakeGuestOS(Posix):
 
     def ui_helper(self, provider):
         return self.guest_os.ui_helper(provider)
+
+    def grant_call(self, mode, grants):
+        # The Host's own permissions are never touched: grants are lines of a file in the Guest's home.
+        script = {
+            "apply": 'while [ $# -ge 2 ]; do echo "$1 $2" >> ~/.vmlab-grants; shift 2; done',
+            "check": 'm=0; while [ $# -ge 2 ]; do grep -qxF "$1 $2" ~/.vmlab-grants 2>/dev/null || { echo "$1 is not granted to $2"; m=1; }; shift 2; done; exit $m',
+        }[mode]
+        return ["sh", "-c", script, "vmlab-grant"] + [part for pair in grants for part in pair], None
+
+
+def _script_call(shell, os_dir, mode, grants):
+    script = io.BytesIO(pkgutil.get_data("vmlab", "guest/%s/grant.sh" % os_dir))
+    return [shell, "-s", "--", mode] + [part for pair in grants for part in pair], script
 
 
 GUEST_OSES = {"macos": MacOS(), "linux": Linux(), "windows": Windows()}

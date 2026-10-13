@@ -147,6 +147,9 @@ keeping every comment the user has written:
   A scale the Lab's Guest OS cannot show (`scale = 1.5` on Xfce) is a config error,
   and like any config error it stops every command that reads the project's config (`status`, `up`, `run` and the rest)
   for every Lab.
+- `grant` under `[labs.NAME]` gives apps the permissions the OS would otherwise ask the user for in a dialog,
+  e.g. `grant = { screen_capture = ["/Applications/MyApp.app"] }`;
+  see "Permissions" in [app-recipes.md](app-recipes.md).
 - `arch` is the Build artifact's; leave it out for the Host's own.
 - A Lab's clone stays on the Host after its Lab is removed from `vmlab.toml` or the project folder is deleted:
   `vmlab clean` deletes it then.

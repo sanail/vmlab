@@ -6,6 +6,7 @@ check what each Guest OS object builds, running its POSIX commands in the Host's
 (tests/contract/test_contract.py) runs those commands in real Guests.
 """
 
+import json
 import os
 import shutil
 import signal
@@ -238,3 +239,19 @@ class MacHelperTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GrantCallTest(unittest.TestCase):
+    """Each Guest OS's grant call carries every (name, app) pair to its own script."""
+
+    def test_each_guest_os_sends_its_script_with_the_pairs(self):
+        pairs = [["camera", "C:\\Program Files\\MyApp\\myapp.exe"], ["screen_capture", "/Applications/MyApp.app"]]
+        for os_name, script in (("macos", b"tccd"), ("linux", b"PermissionStore"), ("windows", b"ConsentStore")):
+            with self.subTest(os=os_name):
+                argv, stdin = guestos.for_os(os_name).grant_call("apply", pairs)
+                body = stdin.read()
+                self.assertIn(script, body)
+                if os_name == "windows":
+                    self.assertEqual(json.loads(body.split(b"\n", 1)[0]), {"grants": pairs})
+                else:
+                    self.assertEqual(argv[-5:], ["apply"] + pairs[0] + pairs[1])

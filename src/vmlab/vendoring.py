@@ -47,6 +47,8 @@ TEMPLATE = """\
 # boot_timeout = 300       # seconds from power-on until the Guest must be reachable (the Host's sleep does not count)
 # step_timeout = 60        # default seconds per Guest call
 # scenario_timeout = 600   # default seconds per Scenario
+# grant = { screen_capture = ["/Applications/MyApp.app"] }  # permissions the OS asks for by dialog, given after install:
+#                          # screen_capture, accessibility, input_monitoring, camera, microphone; apps by Guest path or id
 #
 # [labs.mac.app]           # the application under test; every key is optional
 # artifact = "dist/MyApp.app"          # Build artifact on the Host (glob: newest match), relative to the project root

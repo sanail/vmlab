@@ -3,7 +3,7 @@
 Host first (hypervisors, vmlab's home, key and credentials, Fusion VMs with a
 sound device or snapshots no Lab needs, the Base guest registry), then per Lab: its arch, its Provider, what its Guest is made from
 (Base guest, clone), and for a running Guest its Channels, the Provider's own
-checks, screenshots and the UI helper. With bench, each Channel of a running
+checks, screenshots, the UI helper and the Lab's grant. With bench, each Channel of a running
 Guest is timed over several no-op calls.
 
 Each finding is ok, info, warn or FAIL, with a fix for anything not ok. Only
@@ -21,7 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from vmlab import arch, bases, runner
+from vmlab import arch, bases, deploy, runner
 from vmlab.config import PROCESS_EXAMPLE, host_arch, shows_language
 from vmlab.home import GuestLock, vmlab_home
 from vmlab.memory import free_memory_gb
@@ -184,9 +184,23 @@ def _diagnose_lab(provider, lab, bench_calls):
             "if it still fails, re-provision the Lab's Base guest: vmlab base create NAME --reprovision (NAME from vmlab base list)" % (lab.name, lab.name)
         )
         add("UI helper", OK if ok else WARN, detail, fix)
+    if lab.grant:
+        _check_grant(provider, lab, add)
     if bench_calls:
         _bench(provider, lab, bench_calls, add)
     return findings
+
+
+def _check_grant(provider, lab, add):
+    try:
+        missing = deploy.missing_grants(provider, lab, PROBE_TIMEOUT)
+    except GuestError as exc:
+        missing = [exc.message]
+    if missing:
+        add("Grant", WARN, "; ".join(missing), "vmlab deploy %s gives the grant again (a Run gives it after each install); "
+            "if it still does not hold, check that each app in labs.%s.grant is installed at that path or has that id" % (lab.name, lab.name))
+    else:
+        add("Grant", OK, "%s granted" % ", ".join(sorted(lab.grant)))
 
 
 def _check_language(provider, lab, running, add):

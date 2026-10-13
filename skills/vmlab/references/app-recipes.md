@@ -63,8 +63,33 @@ No such signal: leave `ready` out rather than invent one.
 
 Windows installers per user put the app under `%LOCALAPPDATA%\Programs\X` rather than `Program Files`:
 read the installer config.
-An app that needs a permission grant to work (macOS Accessibility, for one) gets it in `install`:
-see [traps-macos.md](traps-macos.md).
+An app that needs a permission to work (macOS Screen Recording or Accessibility, for one) gets it from the Lab's
+`grant`, below, not from `install`.
+
+## Permissions
+
+`grant` under `[labs.NAME]` (not under `.app`) gives apps the permissions the OS would ask the user for in a dialog,
+as if the user had allowed them: `grant = { screen_capture = ["/Applications/MyApp.app"], accessibility = [...] }`.
+vmlab gives them after `install`, at every restore, and again on `vmlab deploy`, so an app named by path is installed
+by then.
+Name each app the way the Lab's OS knows it: its installed path in the Guest (`/Applications/MyApp.app`, a bare
+executable, `C:\Program Files\MyApp\myapp.exe`) or its id (macOS bundle id, Linux app id).
+Any app may be listed, a helper or a second app too.
+A permission the Lab's OS has no dialog for is accepted and does nothing, so every Lab can carry the same `grant`.
+
+| Name | macOS | Linux Wayland | Linux X11 | Windows |
+| --- | --- | --- | --- | --- |
+| `screen_capture` | Screen Recording, without replayd's "bypass the system private window picker" alert | the portal's non-interactive Screenshot | nothing | nothing |
+| `accessibility` | Accessibility (and posting events) | nothing | nothing | nothing |
+| `input_monitoring` | Input Monitoring | nothing | nothing | nothing |
+| `camera`, `microphone` | Camera, Microphone | nothing (the portal asks sandboxed apps only) | nothing | the app's "Allow" in the privacy settings, by exe path |
+
+On macOS an `.app` is granted by the bundle id in its `Info.plist`, which holds for an ad-hoc signed build too,
+also when the app starts a tool (`screencapture`) that captures for it.
+On Wayland an app started from a shell, as the `launch` recipe starts it, has no app id: a path grants every such app;
+an app id grants an app the portal knows by it (a `.desktop` launch).
+The portal's ScreenCast (screen sharing) still asks in its own picker, every session: `grant` does not cover it.
+`vmlab doctor` checks a running Guest's grants and names any that does not hold.
 
 ## Building for another OS on a Mac
 

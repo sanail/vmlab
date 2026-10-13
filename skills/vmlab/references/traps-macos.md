@@ -13,28 +13,14 @@ and the Guest's clipboard and audio staying away from the Host's.
 or a system consent alert nobody answers covers the screen and `osascript` or the app hangs.
 
 **Cause**: TCC grants belong to the app, and a fresh clone has none for the app under test.
-Base guests have SIP off, so grants can be written into TCC.db directly: a Guest-only trade-off,
-since the Guest is thrown away.
 
-**Do**: grant in the Lab's `install` recipe, which runs again after every restore.
-Grant by **bundle id** (`client_type` 0): for an `.app`, a row keyed by the executable's path is stored and then
-ignored.
-Delete the app's rows first: a denial (`auth_value` 0) that macOS wrote when the app asked earlier wins over a grant.
-
-```sh
-id=com.example.myapp
-db="/Library/Application Support/com.apple.TCC/TCC.db"
-sudo sqlite3 "$db" "DELETE FROM access WHERE client='$id';"
-for s in kTCCServiceAccessibility kTCCServiceScreenCapture; do
-  sudo sqlite3 "$db" "INSERT INTO access (service, client, client_type, auth_value, auth_reason, auth_version, flags, last_modified)
-    VALUES ('$s', '$id', 0, 2, 4, 1, 0, CAST(strftime('%s','now') AS INTEGER));"
-done
-```
-
-Apple Events grants go in the user's TCC.db (`~/Library/Application Support/com.apple.TCC/TCC.db`),
-one row per target app.
-The app still sees no grant: stop and start the Guest (`vmlab down LAB && vmlab up LAB`),
-so tccd reads the database afresh.
+**Do**: name the permission in the Lab's `grant` (`grant = { screen_capture = ["/Applications/MyApp.app"] }`, see
+"Permissions" in [app-recipes.md](app-recipes.md)): vmlab writes the grant after every install, by the app's bundle id,
+and for Screen Recording also silences replayd's alert.
+`vmlab doctor` names a grant that does not hold.
+Apple Events (the app automating another app) is not among `grant`'s names: the `install` recipe writes that row into
+the user's TCC.db (`~/Library/Application Support/com.apple.TCC/TCC.db`, with `sudo sqlite3`), one per target app,
+by bundle id (`client_type` 0), after deleting the app's earlier row (a denial wins over a grant).
 
 Tell the user what this means for real users: an ad-hoc signed app's grant is tied to that exact build,
 so without a Developer ID signature every update revokes it.
