@@ -674,24 +674,67 @@ class UI:
                 yield from self.showing_within(child)
 
     def placement(self, window, pid):
-        """(coordinate type, (dx, dy)) turning the window's elements' extents into screen points."""
+        """(coordinate type, (dx, dy)) turning the window's elements' extents into screen points;
+        None when the window manager has several windows it could be."""
+        return self.place(window, pid)[1]
+
+    def place(self, window, pid):
+        """(the window manager's window it is, or None, its placement)."""
         Atspi = self.Atspi
         try:
             ext = window.get_extents(Atspi.CoordType.WINDOW)
             title = window.get_name() or ""
         except Exception:
-            return Atspi.CoordType.SCREEN, (0, 0)
+            return None, (Atspi.CoordType.SCREEN, (0, 0))
         k = self.ws.toolkit_scale
+
+        def offset(w):
+            for x, y, width, height in (w.frame, w.buffer):
+                if abs(width - ext.width * k) <= 2 * k and abs(height - ext.height * k) <= 2 * k:
+                    return x - ext.x * k, y - ext.y * k
+            return None
+
         mine = [w for w in reversed(self.windows) if w.pid == pid and not w.hidden]
-        for pool in ([w for w in mine if w.title == title], mine):
-            for w in pool:
-                for x, y, width, height in (w.frame, w.buffer):
-                    if abs(width - ext.width * k) <= 2 * k and abs(height - ext.height * k) <= 2 * k:
-                        return Atspi.CoordType.WINDOW, (x - ext.x * k, y - ext.y * k)
+        for lookalikes, pool in ((True, [w for w in mine if w.title == title]), (False, mine)):
+            fits = [(w, o) for w, o in ((w, offset(w)) for w in pool) if o is not None]
+            if lookalikes and len(fits) > 1:
+                fits = self.told_apart(window, ext, title, fits)
+                if len(fits) != 1:
+                    return None, None  # another window's place would put clicks on that window
+            if fits:
+                return fits[0][0], (Atspi.CoordType.WINDOW, fits[0][1])
         # A window the window manager does not know by this app and size: trust the toolkit.
-        return Atspi.CoordType.SCREEN, (0, 0)
+        return None, (Atspi.CoordType.SCREEN, (0, 0))
+
+    def told_apart(self, window, ext, title, fits):
+        """The fits (window manager's window, offset) that are window's among its app's lookalikes: the
+        ACTIVE one is the focused one; with that pair set aside, one lookalike left takes one fit left."""
+        ACTIVE = self.S.ACTIVE
+
+        def lookalike(top):
+            try:
+                e = top.get_extents(self.Atspi.CoordType.WINDOW)
+                return (top.get_name() or "") == title and abs(e.width - ext.width) <= 2 and abs(e.height - ext.height) <= 2
+            except Exception:
+                return False
+
+        try:
+            twins = [t for t in self.toplevels(window.get_parent()) if lookalike(t)]
+        except Exception:
+            return []
+        active = [t for t in twins if self.has(t, ACTIVE)]
+        if len(active) > 1:
+            return []
+        if self.has(window, ACTIVE):
+            return [f for f in fits if f[0].focused]
+        if active:
+            fits = [f for f in fits if not f[0].focused]
+            twins = [t for t in twins if t not in active]
+        return fits if len(twins) == 1 else []
 
     def bounds(self, accessible, placement):
+        if placement is None:
+            return None
         kind, (dx, dy) = placement
         try:
             if "Component" not in accessible.get_interfaces():
@@ -798,7 +841,9 @@ class UI:
             if pid != window.pid:
                 continue
             for top in self.toplevels(app):
-                placement = self.placement(top, pid)
+                owner, placement = self.place(top, pid)
+                if owner is not None and owner is not window:
+                    continue  # another of the app's windows, maybe at the same place
                 b = self.bounds(top, placement)
                 if not b or not (b["x"] <= x < b["x"] + b["w"] and b["y"] <= y < b["y"] + b["h"]):
                     continue

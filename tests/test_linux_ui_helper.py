@@ -31,7 +31,7 @@ def load_helper():
 
 
 class State:
-    VISIBLE, SHOWING, FOCUSED, ENABLED, MULTI_LINE, SINGLE_LINE, CHECKED, CHECKABLE, PRESSED, INDETERMINATE, SENSITIVE = range(11)
+    VISIBLE, SHOWING, FOCUSED, ENABLED, MULTI_LINE, SINGLE_LINE, CHECKED, CHECKABLE, PRESSED, INDETERMINATE, SENSITIVE, ACTIVE = range(12)
 
 
 class States:
@@ -81,11 +81,14 @@ class Node:
     def get_child_at_index(self, i):
         return self.children[i]
 
+    def get_parent(self):
+        return self.parent
+
 
 class Window:
-    def __init__(self, pid, frame):
+    def __init__(self, pid, frame, title="App", focused=True):
         self.pid, self.frame, self.buffer = pid, frame, frame
-        self.title, self.hidden, self.focused, self.background = "App", False, True, False
+        self.title, self.hidden, self.focused, self.background = title, False, focused, False
 
     def contains(self, x, y):
         fx, fy, fw, fh = self.frame
@@ -184,6 +187,61 @@ class TreeWalkTest(unittest.TestCase):
         [run] = [n for n in walk(node) if n["name"] == "Run"]
         self.assertEqual(run["bounds"], {"x": 140, "y": 170, "w": 160, "h": 40})
         self.assertEqual(self.ui.under(220, 190)[0][0], "Run")
+
+
+class LookalikeWindowsTest(unittest.TestCase):
+    """Wayland: one app's windows of one title and size (dialogs left open), told apart by the focused one."""
+
+    def setUp(self):
+        helper = load_helper()
+        ui = helper.UI.__new__(helper.UI)
+        ui.Atspi, ui.S, ui.kind, ui.ws = Atspi, State, "wayland", types.SimpleNamespace(toolkit_scale=1.0)
+        ui.screen, ui.nodes, ui.truncated = (1280, 800), 0, False
+        self.ui = ui
+
+    def dialogs(self, *active):
+        """The app's dialogs in the toolkit's order, each with an Add button 400 to the right."""
+        app = Node("application", "provider")
+        for i, is_active in enumerate(active):
+            states = (State.VISIBLE, State.SHOWING) + ((State.ACTIVE,) if is_active else ())
+            add = Node("push button", "Add %d" % i, extents=(400, 6, 60, 30))
+            dialog = Node("dialog", "Add Keyboard Shortcuts", states=states, extents=(0, 0, 480, 270), children=[add])
+            dialog.parent = app
+            app.children.append(dialog)
+        self.ui.apps = lambda: [(app, "provider", 7)]
+        return app.children
+
+    def add_bounds(self, dialog):
+        node = self.ui.node(dialog, self.ui.placement(dialog, 7), 1, 60)
+        return node["children"][0]["bounds"]
+
+    def test_the_focused_one_and_the_last_one_left_get_their_own_places(self):
+        # The older dialog lies under the newer, focused one: each Add is where its own dialog is.
+        old, new = self.dialogs(False, True)
+        self.ui.windows = [Window(7, (476, 353, 480, 270), "Add Keyboard Shortcuts", focused=False),
+                           Window(9, (323, 156, 700, 520), "Text Editor", focused=False),
+                           Window(7, (433, 282, 480, 270), "Add Keyboard Shortcuts")]  # fmt: skip
+        self.assertEqual(self.add_bounds(new), {"x": 833, "y": 288, "w": 60, "h": 30})
+        self.assertEqual(self.add_bounds(old), {"x": 876, "y": 359, "w": 60, "h": 30})
+
+    def test_lookalikes_it_cannot_tell_apart_have_no_bounds(self):
+        first, second, third = self.dialogs(False, False, True)
+        self.ui.windows = [Window(7, (433 + 50 * i, 282 + 50 * i, 480, 270), "Add Keyboard Shortcuts", focused=i == 2) for i in range(3)]
+        self.assertIsNone(self.add_bounds(first))
+        self.assertIsNone(self.add_bounds(second))
+        self.assertEqual(self.add_bounds(third), {"x": 933, "y": 388, "w": 60, "h": 30})
+        # A point on the second: its window manager's window, not an element of a guessed place.
+        self.assertEqual(self.ui.under(500, 350), [("Add Keyboard Shortcuts", {"x": 483, "y": 332, "w": 480, "h": 270})])
+
+    def test_a_point_hits_the_window_on_top_where_lookalikes_lie_at_one_place(self):
+        self.dialogs(False, True)
+        self.ui.windows = [Window(7, (433, 282, 480, 270), "Add Keyboard Shortcuts", focused=i == 1) for i in range(2)]
+        self.assertEqual(self.ui.under(860, 300)[0][0], "Add 1")
+
+    def test_two_lookalikes_reading_active_are_not_told_apart(self):
+        first, second = self.dialogs(True, True)
+        self.ui.windows = [Window(7, (433 + 50 * i, 282 + 50 * i, 480, 270), "Add Keyboard Shortcuts", focused=i == 1) for i in range(2)]
+        self.assertIsNone(self.add_bounds(first))
 
 
 class PointerTest(unittest.TestCase):

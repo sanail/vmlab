@@ -467,6 +467,36 @@ def scenario(g):
 '''
 
 
+# Lookalike windows of one app: each button is clicked at its own window's place; where the
+# window manager puts the second over the first's button (Xfce: at one place), that one is refused.
+TWINS = CHECKS_START + r'''
+def scenario(g):
+    exe = "/tmp/" + NAME
+    g.exec(["sh", "-c", 'ln -sf "$(command -v python3)" "$1"', "sh", exe])
+    fixture = g.spawn([exe, g.put("~/%s.py" % NAME, SOURCE), NAME, "twins"])
+    up = g.wait_for(text="2", role="button", app=NAME, timeout=60)
+    g.check("both windows are up", up["met"], detail=up)
+    g.click(text="2", role="button", app=NAME, timeout=10)
+    done = g.wait_for(text="Done 2", role="button", app=NAME, timeout=10)
+    g.check("2 takes the click in its own window", done["met"], detail=done)
+    windows = [w["bounds"] for w in g.find(role="window", app=NAME)["matches"]]
+    g.check("both windows have bounds", len(windows) == 2 and None not in windows, detail=windows)
+    b = g.find(text="1", role="button", app=NAME)["matches"][0]["bounds"]
+    x, y = b["x"] + b["w"] // 2, b["y"] + b["h"] // 2
+    if sum(w["x"] <= x < w["x"] + w["w"] and w["y"] <= y < w["y"] + w["h"] for w in windows) == 1:
+        g.click(text="1", role="button", app=NAME, timeout=10)
+        done = g.wait_for(text="Done 1", role="button", app=NAME, timeout=10)
+        g.check("1 takes the click in its own window", done["met"], detail=done)
+    else:
+        try:
+            g.click(text="1", role="button", app=NAME)
+            refused = None
+        except Exception as exc:
+            refused = str(exc)
+        g.check("1, under the other window, is refused as covered", refused is not None and "something else is at" in refused, detail=refused)
+    fixture.stop()
+'''
+
 # Desktop pixels: the Display, the desktop node and a screenshot share one size, and a box clicked
 # at its bounds' centre (the checks fixture's Music) ticks and shows the change at those bounds in
 # the screenshots, which the test compares. The Fake draws nothing: FAKE stops after the size.
@@ -1397,6 +1427,13 @@ def scenario(g):
             self.skipTest("GTK 4 is a Linux Guest's toolkit")
         source = (Path(__file__).resolve().parent / "gtk4_fixture_linux.py").read_text(encoding="utf-8")
         self.assertPassed(*self.target.scenario("ui_gtk4.py", UI + "SOURCE = %r\n" % source + GTK4))
+
+    @ui
+    def test_09c2c_ui_lookalike_windows_of_one_app_are_clicked_each_at_its_place(self):
+        if self.target.os != "linux" or self.target.provider == "fake":
+            self.skipTest("GTK 4 is a Linux Guest's toolkit")
+        source = (Path(__file__).resolve().parent / "gtk4_fixture_linux.py").read_text(encoding="utf-8")
+        self.assertPassed(*self.target.scenario("ui_twins.py", UI + "SOURCE = %r\n" % source + TWINS))
 
     @ui
     def test_09c3_ui_bounds_screenshots_and_clicks_are_in_desktop_pixels(self):

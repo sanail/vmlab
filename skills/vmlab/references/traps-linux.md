@@ -30,6 +30,19 @@ and the desktop asks the user to approve it the first time.
 
 **Do**: the approval dialog is part of the app's first-run flow: `g.wait_for` it,
 click its button with `g.click`, `wait_for(..., gone=True)` until it has gone, then press the hotkey.
+Until approved, it comes up at each launch: answer it in every Scenario that launches the app, or the dialogs left
+open pile up under later windows, and `g.click` on the first match finds it covered.
+
+## Elements with no bounds in one of an app's lookalike windows
+
+**Symptom**: an app has two or more windows of one title and size (dialogs left open);
+`find` gives elements of some of them `bounds: null`, and `click` cannot click them.
+
+**Cause**: Linux toolkits tell no window positions, so vmlab matches each window to the window manager's
+by app, title and size; it tells lookalikes apart only by the focused one and, once that is set aside,
+the last one left.
+
+**Do**: close the windows the Scenario does not need before it clicks in the one it does.
 
 ## A drag after a drag of selected text selects nothing (Xfce, GTK 4)
 
