@@ -4,6 +4,8 @@ Release notes, cut from here by the release workflow; see the README's Release s
 
 ## Unreleased
 
+## 2.0.0-beta.5
+
 - Labs: `grant` under `[labs.NAME]` gives apps the permissions the OS would ask for by a dialog,
   e.g. `grant = { screen_capture = ["/Applications/MyApp.app"] }`,
   with names that do not depend on the OS (screen_capture, accessibility, input_monitoring, camera, microphone) and apps
