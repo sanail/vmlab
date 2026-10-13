@@ -90,7 +90,13 @@ replayd, though, files an ad-hoc signed app's approval under the app's location:
 `screen_capture`, or replayd still raises its alert.
 On Wayland an app started from a shell, as the `launch` recipe starts it, has no app id: a path grants every such app;
 an app id grants an app the portal knows by it (a `.desktop` launch).
-The portal's ScreenCast (screen sharing) still asks in its own picker, every session: `grant` does not cover it.
+The portal's ScreenCast (screen sharing) asks in its own picker unless the app passes a `restore_token` the portal's
+store holds, and the portal makes that token and gives it only to the app, so `grant` does not cover it.
+An app or a test fixture that reads its token from its settings can be allowed ahead: put a UUID there and the same one
+in the store, for an app started from a shell
+`gdbus call --session -d org.freedesktop.impl.portal.PermissionStore -o /org/freedesktop/impl/portal/PermissionStore -m org.freedesktop.impl.portal.PermissionStore.Set screencast true <uuid> "{'': ['yes']}" "<('GNOME', uint32 1, <(int64 0, int64 0, [(uint32 0, uint32 1, <'Virtual-1'>)])>)>"`
+(`Virtual-1` is the Lab's monitor; a name that matches none brings the picker back and drops the entry).
+The app then asks with that token and `persist_mode` 2, gets the monitor with no picker, and the token stays valid.
 `vmlab doctor` checks a running Guest's grants and names any that does not hold.
 
 ## Building for another OS on a Mac
