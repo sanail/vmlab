@@ -47,7 +47,8 @@ vmlab reads them without running the file, before any Lab builds or boots,
 so each must be a literal non-empty list of strings: `OS` of `"macos"`, `"windows"`,
 `"linux"` (what `g.os` holds), `LANGUAGES` of `ll-RR` tags (what `g.language` holds),
 `SESSIONS` of `"wayland"`, `"x11"` (what `g.session` holds, the Lab's `session`);
-anything else is a config error naming the file. Given together, all must match.
+anything else is a config error naming the file.
+Given together, all must match.
 `SESSIONS` limits Linux Labs only: macOS and Windows have one session, so a cross-OS Scenario whose Linux path needs X11
 declares `SESSIONS = ["x11"]` and still runs there; with `OS = ["linux"]` it runs on Linux X11 Labs only.
 On a Lab they do not match, the Scenario is left out: not a Run, no result, no Skipped Check;
