@@ -18,7 +18,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # the stable push checks it is a fast-forward, which takes stable's commit
       - name: Build, and check the tag names the version the code has
