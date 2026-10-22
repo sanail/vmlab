@@ -4,6 +4,8 @@ Release notes, cut from here by the release workflow; see the README's Release s
 
 ## Unreleased
 
+## 2.1.0
+
 - UI: g.find and g.wait_for take focused=True or False (vmlab ui find / wait-for --focused, --unfocused) to match
   an element's keyboard focus, so a Scenario waits for the focus to land on an element, or with gone=True to leave it,
   in one call.
