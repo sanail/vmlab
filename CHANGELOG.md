@@ -4,6 +4,10 @@ Release notes, cut from here by the release workflow; see the README's Release s
 
 ## Unreleased
 
+- UI: g.find and g.wait_for take focused=True or False (vmlab ui find / wait-for --focused, --unfocused) to match
+  an element's keyboard focus, so a Scenario waits for the focus to land on an element, or with gone=True to leave it,
+  in one call.
+
 ## 2.0.0
 
 - Breaking: every coordinate of the UI contract (node bounds, click(at=), the desktop node) is in Desktop pixels on

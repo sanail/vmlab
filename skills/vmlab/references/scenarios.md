@@ -156,7 +156,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | Scenario | CLI | Result |
 | --- | --- | --- |
 | `g.tree(app=None)` | `ui tree [--app APP]` | node tree |
-| `g.find(text=, role=, app=, checked=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
+| `g.find(text=, role=, app=, checked=, focused=)` | `ui find` | `{"matches": [node without children, plus "app"]}` |
 | `g.displays()` | `ui displays` | `{"displays": [{"bounds", "scale", "primary"}]}` |
 | `g.click(text=, role=, app=, checked=, index=None, timeout=None, button="left", hold=None)`, `g.click(at=(x, y))` | `ui click [--index N] [--timeout S] [--button B] [--hold MODS]` | `{"x", "y", "element", "index", "under"}` |
 | `g.pointer("move"\|"down"\|"up", x, y, button="left", hold=None)` | `ui pointer ACTION X Y` | `{"action", "x", "y", "button", "hold"}` |
@@ -169,7 +169,7 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
 | `g.close_staged(staged)` | `ui close-staged --file PATH [--app]` | `{"file", "closed"}` |
 | `g.tray(app, choose=None, timeout=None)` | `ui tray --app APP [--choose LABEL]... [--timeout S]` | `{"items": [{"name", "enabled", "checked", "children"}], "chosen"}` |
 | `g.notifications(app=None, text=None, since=None)` | `ui notifications [--app ID] [--text PATTERN] [--since TIME]` | `{"notifications": [{"app", "title", "body", "time"}]}` |
-| `g.wait_for(text=, role=, app=, checked=, process=, file=, log=, exec=, pattern=, notification=, since=, tray=, gone=False, timeout=None)` | `ui wait-for` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "notifications"][, "detail"][, "error"]}` |
+| `g.wait_for(text=, role=, app=, checked=, focused=, process=, file=, log=, exec=, pattern=, notification=, since=, tray=, gone=False, timeout=None)` | `ui wait-for` | `{"met", "waited_s", "condition"[, "matches"][, "code", "stdout"][, "notifications"][, "detail"][, "error"]}` |
 | `g.screenshot(name)` | `ui screenshot` | `{"path"}` |
 
 - Coordinates are Desktop pixels on every OS: node `bounds`, `click(at=)` and `displays()` share the screenshot's
@@ -206,6 +206,16 @@ Each mirrors a `vmlab ui` command and returns the same JSON as a dict.
       g.click(text="Pictures", role="checkbox", app="MyApp")
       ticked = g.wait_for(text="Pictures", role="checkbox", app="MyApp", checked=True, timeout=5)
       g.check("Pictures is ticked", ticked["met"], detail=ticked)
+
+- `focused` is whether the element has the keyboard focus: on macOS and Linux within its window (an element in a
+  background window may keep it), on Windows system-wide; on an `application` node it means the app is frontmost.
+  `find` and `wait_for` take `focused=True` or `False` (`ui find`/`ui wait-for --focused`/`--unfocused`) to match it
+  exactly; with `gone=True`, `wait_for` waits until no match has it.
+  To check that focus returns to the button that opened a dialog once the dialog closes:
+
+      g.click(text="Close", role="button", app="MyApp")
+      back = g.wait_for(text="Settings", role="button", app="MyApp", focused=True, timeout=5)
+      g.check("focus is back on Settings", back["met"], detail=back)
 
 - `stage_text` closes nothing: every call opens one more Staged document (its `"file"`).
   Close each with `g.close_staged(staged)` (the `stage_text` result or its `"file"`) once the Check that needed it is

@@ -1400,6 +1400,10 @@ def scenario(g):
     g.screenshot("before the click")  # evidence, should something cover the text area
     clicked = g.click(role="textarea", text=typed, app=app)
     g.check("the click landed on the text area", clicked["element"]["role"] == "textarea", detail=clicked)
+    landed = g.wait_for(role="textarea", text=typed, app=app, focused=True, timeout=5)
+    g.check("wait-for sees the focus on the clicked text area", landed["met"], detail=landed)
+    elsewhere = g.wait_for(role="window", app=app, focused=True, timeout=1)
+    g.check("wait-for the focus on another element times out unmet", not elsewhere["met"], detail=elsewhere)
     g.press(mod + "+a")
     g.press(mod + "+c")
     g.check("chords select and copy after a click", g.clipboard()["text"] == typed, detail=g.clipboard())

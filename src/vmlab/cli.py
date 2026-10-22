@@ -285,13 +285,17 @@ def _ui_parser(sub):
     tick.add_argument("--checked", action="store_const", const=True, help="only ticked checkboxes, radio buttons, toggles and menu items")
     tick.add_argument("--unchecked", dest="checked", action="store_const", const=False, help="only unticked ones")
     tick.add_argument("--mixed", dest="checked", action="store_const", const="mixed", help="only tri-state ones in their middle state")
+    focus = argparse.ArgumentParser(add_help=False)
+    focused = focus.add_mutually_exclusive_group()
+    focused.add_argument("--focused", action="store_const", const=True, help="only the element with the keyboard focus")
+    focused.add_argument("--unfocused", dest="focused", action="store_const", const=False, help="only elements without it")
 
     p = sub.add_parser("ui", help="read and drive a running Guest's UI; prints JSON (the same shapes on every OS)")
     ui_sub = p.add_subparsers(dest="ui_command", metavar="UI_COMMAND")
     ui_sub.required = True
     p = ui_sub.add_parser("tree", parents=[common], help="the accessibility tree of the desktop or one app")
     p.add_argument("--app")
-    ui_sub.add_parser("find", parents=[common, element], help="elements by text and/or role")
+    ui_sub.add_parser("find", parents=[common, element, focus], help="elements by text and/or role")
     ui_sub.add_parser("displays", parents=[common], help="the Guest's Display: its bounds in Desktop pixels and its scale")
     p = ui_sub.add_parser("click", parents=[common, element], help="click an element's middle (or --at X Y)")
     p.add_argument("--index", type=int, help="which match to click, counting from 0 (default: the first one in view)")
@@ -318,7 +322,7 @@ def _ui_parser(sub):
     p.add_argument("chord")
     p = ui_sub.add_parser("type", parents=[common], help="type text into whatever has focus")
     p.add_argument("text")
-    p = ui_sub.add_parser("wait-for", parents=[common, element], help="wait for one condition; exit 1 if it is not met in time")
+    p = ui_sub.add_parser("wait-for", parents=[common, element, focus], help="wait for one condition; exit 1 if it is not met in time")
     p.add_argument("--gone", action="store_true", help="wait for the condition to stop holding (an element, process or file gone, ...)")
     p.add_argument("--process", help="a process of this name runs")
     p.add_argument("--file", help="this Guest path exists (~ is the Guest user's home)")
@@ -450,7 +454,7 @@ def _ui(project, args):
     if c == "tree":
         result = contract.tree(args.app)
     elif c == "find":
-        result = contract.find(ui.Query(args.text, args.role, args.app, args.checked))
+        result = contract.find(ui.Query(args.text, args.role, args.app, args.checked, args.focused))
     elif c == "displays":
         result = contract.displays()
     elif c == "click":
@@ -472,7 +476,7 @@ def _ui(project, args):
             app = app or lab.app.notification_id
             since = since or ui.HostTime(time.time())
         condition = ui.condition(
-            text=args.text, role=args.role, app=app, checked=args.checked, gone=args.gone, process=args.process, file=args.file,
+            text=args.text, role=args.role, app=app, checked=args.checked, focused=args.focused, gone=args.gone, process=args.process, file=args.file,
             log=args.log, pattern=args.pattern, exec=args.exec, notification=args.notification, since=since, tray=args.tray,
         )  # fmt: skip
         result = contract.wait_for(condition, timeout=args.timeout)

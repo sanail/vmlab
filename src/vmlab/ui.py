@@ -278,15 +278,18 @@ def label(node):
 class Query:
     """Which elements: by text (name, value or description; exact matches win,
     otherwise substrings), by role (cross-OS or native), inside app, with a tick state (checked:
-    True, False or "mixed", matched exactly). Any may be None.
+    True, False or "mixed") and with the keyboard focus or without it (focused: True or False),
+    both matched exactly. Any may be None.
 
     The Guest's helper chooses the app (by name, bundle id or process name, per OS):
     matches takes the tree tree(app) returns and does not filter by app again."""
 
-    def __init__(self, text=None, role=None, app=None, checked=None):
+    def __init__(self, text=None, role=None, app=None, checked=None, focused=None):
         if not any(same_tick(checked, s) for s in (None, True, False, "mixed")):
             raise UsageError('checked must be True, False or "mixed" (or None for any), not %r' % (checked,))
-        self.text, self.role, self.app, self.checked = text, role, app, checked
+        if not any(focused is s for s in (None, True, False)):
+            raise UsageError("focused must be True or False (or None for any), not %r" % (focused,))
+        self.text, self.role, self.app, self.checked, self.focused = text, role, app, checked, focused
 
     def require(self, command):
         if self.text is None and self.role is None:
@@ -297,7 +300,7 @@ class Query:
         return ", ".join("%s=%r" % kv for kv in self.fields().items())
 
     def fields(self):
-        return {k: v for k, v in (("text", self.text), ("role", self.role), ("app", self.app), ("checked", self.checked)) if v is not None}
+        return {k: v for k, v in (("text", self.text), ("role", self.role), ("app", self.app), ("checked", self.checked), ("focused", self.focused)) if v is not None}
 
     def matches(self, tree):
         """Matching elements of tree (as tree(self.app) returns it) in tree order, without their children, each with its app's name as "app"."""
@@ -307,7 +310,7 @@ class Query:
             if node["role"] == "application":
                 app_name = node["name"]
             if node["role"] != "desktop":
-                if self.role in (None, node["role"], node["native_role"]) and (self.checked is None or same_tick(node["checked"], self.checked)):
+                if self.role in (None, node["role"], node["native_role"]) and (self.checked is None or same_tick(node["checked"], self.checked)) and self.focused in (None, node["focused"]):
                     candidates.append((node, app_name))
             for child in node["children"]:
                 visit(child, app_name)
@@ -583,12 +586,12 @@ def flag(key):
 
 
 def condition(text=None, role=None, app=None, gone=False, process=None, file=None, log=None, pattern=None, exec=None, notification=None, since=None, tray=None, checked=None,
-              named=flag):  # fmt: skip
+              focused=None, named=flag):  # fmt: skip
     """The one wait_for condition these arguments describe; ConditionError unless there is exactly one.
 
-    checked (True, False or "mixed") goes with an element. gone=True inverts it. exec is an
-    argv. notification is a pattern; since (a Guest time in ISO 8601, or a HostTime) goes with
-    it, and None counts every Notification. tray is an app, as g.tray takes it. named(key)
+    checked (True, False or "mixed") and focused (True or False) go with an element. gone=True
+    inverts the condition. exec is an argv. notification is a pattern; since (a Guest time in
+    ISO 8601, or a HostTime) goes with it, and None counts every Notification. tray is an app, as g.tray takes it. named(key)
     spells an argument in errors (default: its flag)."""
     element = text is not None or role is not None
     given = [element, process is not None, file is not None, log is not None, exec is not None, notification is not None, tray is not None]
@@ -605,6 +608,8 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
         raise ConditionError("app", "goes with %s or %s (an element in one app) or %s (one app's)" % (named("text"), named("role"), named("notification")), named)
     if checked is not None and not element:
         raise ConditionError("checked", "goes with %s or %s (an element's tick state)" % (named("text"), named("role")), named)
+    if focused is not None and not element:
+        raise ConditionError("focused", "goes with %s or %s (an element's keyboard focus)" % (named("text"), named("role")), named)
     if notification is not None:
         if gone:
             raise ConditionError("gone", "does not go with %s: a Notification, once posted, stays posted" % named("notification"), named)
@@ -631,7 +636,7 @@ def condition(text=None, role=None, app=None, gone=False, process=None, file=Non
         except re.error as exc:
             raise ConditionError("pattern", "%r is not a valid regular expression: %s" % (pattern, exc), named)
     if element:
-        found = ElementCondition(Query(text, role, app, checked))
+        found = ElementCondition(Query(text, role, app, checked, focused))
     elif process is not None:
         found = ProcessCondition(process)
     elif file is not None:

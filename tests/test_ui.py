@@ -1333,6 +1333,75 @@ class CheckedTest(UiTestCase):
         self.assertExit(r, 0)
 
 
+class FocusedTest(UiTestCase):
+    """Queries that match on a node's keyboard focus ("focused")."""
+
+    def setUp(self):
+        super().setUp()
+        self.write_settings("Music")
+
+    def write_settings(self, focus):
+        tree = json.loads(json.dumps(SETTINGS))
+        for node in tree["children"][0]["children"][0]["children"]:
+            node["focused"] = node["name"] == focus
+        write_whole(self.project.dir / "tree.json", json.dumps(tree))
+
+    def names(self, *args):
+        return [m["name"] for m in self.ui("find", *args)["matches"]]
+
+    def test_find_matches_the_focus_exactly(self):
+        self.assertEqual(self.names("--role", "checkbox", "--focused"), ["Music"])
+        self.assertEqual(self.names("--role", "checkbox", "--unfocused"), ["Pictures", "Some"])
+        self.assertEqual(self.names("--role", "checkbox"), ["Pictures", "Music", "Some"])
+        self.assertEqual(self.names("--role", "checkbox", "--focused", "--checked"), [])
+        self.assertEqual(self.names("--role", "checkbox", "--unfocused", "--checked"), ["Pictures"])
+
+    def test_the_focus_flags_exclude_each_other(self):
+        r = self.ui("find", "--role", "checkbox", "--focused", "--unfocused", code=2)
+        self.assertIn("not allowed with argument", r.err)
+
+    def test_click_takes_no_focus(self):
+        r = self.ui("click", "--role", "checkbox", "--focused", code=2)
+        self.assertIn("unrecognized arguments: --focused", r.err)
+
+    def test_focus_goes_with_an_element_in_wait_for(self):
+        r = self.ui("wait-for", "--process", "MyApp", "--focused", code=2)
+        self.assertIn("--focused goes with --text or --role", r.err)
+
+    def test_wait_for_the_focus_to_land_and_leave(self):
+        r = self.ui("wait-for", "--text", "Save", "--focused", "--timeout", "0.5", code=1)
+        self.assertEqual(json.loads(r.out)["condition"], {"text": "Save", "focused": True})
+        self.later(1, lambda: self.write_settings("Save"))
+        waited = self.ui("wait-for", "--text", "Save", "--focused", "--timeout", "10")
+        self.assertEqual([m["name"] for m in waited["matches"]], ["Save"])
+        self.later(1, lambda: self.write_settings("Music"))
+        self.assertTrue(self.ui("wait-for", "--text", "Save", "--focused", "--gone", "--timeout", "10")["met"])
+
+    def test_scenario_api(self):
+        self.later(1, lambda: self.write_settings("Save"))
+        self.project.scenario("focus.py", """
+            def scenario(g):
+                g.check("find", [m["name"] for m in g.find(role="checkbox", focused=True)["matches"]] == ["Music"])
+                waited = g.wait_for(text="Save", role="button", focused=True, timeout=10)
+                g.check("landed", waited["met"], detail=waited)
+                left = g.wait_for(text="Music", focused=True, gone=True, timeout=10)
+                g.check("left", left["met"], detail=left)
+                for bad in (1, "yes"):
+                    try:
+                        g.find(text="Save", focused=bad)
+                        g.check("bad focus", False)
+                    except Exception as exc:
+                        g.check("bad focus", "focused must be True or False" in str(exc), detail=str(exc))
+                try:
+                    g.wait_for(process="MyApp", focused=True)
+                    g.check("alone", False)
+                except Exception as exc:
+                    g.check("alone", "focused goes with text or role" in str(exc), detail=str(exc))
+        """)
+        r = self.project.vmlab("run")
+        self.assertExit(r, 0)
+
+
 class UiScenarioTest(UiTestCase):
     def test_scenario_api_returns_the_cli_shapes(self):
         self.project.scenario("ui.py", """
