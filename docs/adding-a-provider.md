@@ -4,7 +4,7 @@ A **Provider** adapts one hypervisor to vmlab.
 Scenarios never see it.
 They talk to the Scenario API, which reaches the Provider through the Runner and Deploy.
 So a new Provider needs no changes to Scenarios, reports or the CLI.
-Vocabulary: `CONTEXT.md`.
+Vocabulary: `GLOSSARY.md`.
 Channel design: ADR 0003.
 
 The Tart Provider (`src/vmlab/providers/tart.py`) is a complete example: Base guest creation and provisioning,

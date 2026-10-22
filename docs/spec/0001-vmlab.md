@@ -2,7 +2,7 @@
 
 Status: ready-for-agent (local; move to the issue tracker once one is configured)
 
-Vocabulary follows `CONTEXT.md`.
+Vocabulary follows `GLOSSARY.md`.
 Decisions respect ADR 0001 (stdlib Python host CLI), ADR 0002 (vendored zipapp) and ADR 0003 (Channel per Provider with
 fallback).
 

@@ -1,7 +1,7 @@
 # vmlab
 
 An agent skill plus a host CLI for testing desktop applications inside macOS, Windows and Linux **Guests**.
-Vocabulary: `CONTEXT.md`.
+Vocabulary: `GLOSSARY.md`.
 Design: `docs/spec/0001-vmlab.md` and `docs/adr/`.
 
 Status: CLI core, the Fake Provider, the Tart Provider (macOS Guests),
